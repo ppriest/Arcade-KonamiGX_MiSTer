@@ -1,0 +1,44 @@
+# Shell scripts MUST keep LF endings, whatever core.autocrlf says.
+#
+# This is not a tidiness preference. With CRLF, `set -euo pipefail` becomes
+# `set -euo pipefail\r` and bash rejects it as "invalid option name", so the
+# script dies on line 1. It bit on the Seta core after a `git reset --hard`,
+# which rewrote the working tree through autocrlf: scripts/run_sim.sh still ran
+# under the MSYS bash on PATH but failed under the Git bash a Python subprocess
+# picked, so the same script passed interactively and failed from a wrapper.
+*.sh text eol=lf
+
+# Same reasoning for anything else with a shebang or a strict parser -- but
+# SCOPED to this project's own scripts. A bare `*.tcl` also matches sys/*.tcl,
+# which is vendored MiSTer framework code; rewriting its line endings would
+# diverge from upstream Template_MiSTer for no benefit and make the next sys/
+# update a needless conflict.
+scripts/**/*.tcl text eol=lf
+scripts/**/*.lua text eol=lf
+
+# Verilog/VHDL and docs are read by tools that do not care; leave them to
+# core.autocrlf so Windows editors behave normally.
+
+# VENDORED SOURCE IS STORED BYTE-FOR-BYTE.
+#
+# `-text` turns off all end-of-line conversion, in both directions. Without it
+# `core.autocrlf` normalises on commit and converts back on checkout, so a
+# vendored file is no longer byte-identical to the upstream commit its
+# PROVENANCE.md names -- and two of TG68K.C's four files have MIXED CRLF and LF
+# endings upstream, which a round trip silently makes uniform. That would turn
+# "verbatim at <commit>" from a checkable claim into a hopeful one, and the
+# whole point of vendoring verbatim first is that `git log -p` on the directory
+# is then an exact record of every local divergence.
+#
+# Add a line here for each vendored directory as it lands.
+rtl/cpu/tg68k/** -text
+rtl/video/k054338/** -text
+rtl/video/k053252/** -text
+rtl/jtframe/** -text
+sim/jtframe_ver/** -text
+sim/k053252_tb/053252.v -text
+sim/k053252_tb/74163.v -text
+sim/k053252_tb/test.v -text
+rtl/video/k055673/** -text
+rtl/video/k056832/** -text
+tools/jtframe/src/** -text
