@@ -1,10 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 18-12-2022 */
-/* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * BPP parameter (4 or 5 bits per pixel).
- * Lines changed are marked [GX]; the unmodified file is kept beside this
- * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
 // Draws one line of a 16x16 tile
 // It could be extended to 32x32 easily
@@ -17,8 +13,7 @@ module jtframe_draw#( parameter
     ZI       =  ZW-1, // integer part of the zoom, use for enlarging. ZI=ZW-1=no enlarging
     ZENLARGE =  0,    // enable zoom enlarging
     SWAPH    =  0,    // swaps the two horizontal halves of the tile
-    KEEP_OLD =  0,    // slows down drawing to be compatible with jtframe_obj_buffer's KEEP_OLD parameter
-    BPP      =  4     // [GX] bits per pixel, 4 or 5: one plane per byte of rom_data
+    KEEP_OLD =  0     // slows down drawing to be compatible with jtframe_obj_buffer's KEEP_OLD parameter
 )(
     input               rst,
     input               clk,
@@ -36,12 +31,12 @@ module jtframe_draw#( parameter
                                  // sprite, 1 for the rest of the tiles
     input               hflip,
     input               vflip,
-    input  [PW-BPP-1:0] pal,
+    input      [PW-5:0] pal,
 
     output     [CW+6:2] rom_addr, // HVVVV format
     output reg          rom_cs,
     input               rom_ok,
-    input  [8*BPP-1:0]  rom_data, // leftmost pixel in LSB
+    input      [31:0]   rom_data, // leftmost pixel in LSB
                                   // one plane per byte
 
     output reg [AW-1:0] buf_addr,
@@ -51,22 +46,19 @@ module jtframe_draw#( parameter
 
 localparam [ZW-1:0] HZONE = { {ZW-1{1'b0}},1'b1} << ZI;
 
-reg [8*BPP-1:0] pxl_data;
+reg      [31:0] pxl_data;
 reg             rom_lsb;
 reg      [ 3:0] cnt;
-wire     [ 3:0] ysubf;
-wire [BPP-1:0]  pxl;
+wire     [ 3:0] ysubf, pxl;
 reg    [ZW-1:0] hz_cnt, nx_hz;
 wire  [ZW-1:ZI] hzint;
 reg             cen=0, moveon, readon, no_zoom;
 
 assign ysubf   = ysub^{4{vflip}};
 assign buf_din = { pal, pxl };
-// [GX] one bit from each byte: bit 7 of each (hflip) or bit 0, MSB plane first
-genvar gb;
-generate for (gb = 0; gb < BPP; gb = gb + 1) begin : g_pxl
-    assign pxl[gb] = hflip ? pxl_data[8*gb+7] : pxl_data[8*gb];
-end endgenerate
+assign pxl     = hflip ?
+    { pxl_data[31], pxl_data[23], pxl_data[15], pxl_data[ 7] } :
+    { pxl_data[24], pxl_data[16], pxl_data[ 8], pxl_data[ 0] };
 
 assign rom_addr = { code, rom_lsb^SWAPH[0], ysubf[3:0] };
 assign buf_we   = busy & ~cnt[3];

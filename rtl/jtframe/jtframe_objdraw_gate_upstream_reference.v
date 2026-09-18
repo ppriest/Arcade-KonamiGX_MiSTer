@@ -1,10 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 18-12-2022 */
-/* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * BPP and KEYW parameters; with KEYW>0 the line buffer is gx_obj_linebuf.
- * Lines changed are marked [GX]; the unmodified file is kept beside this
- * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
 // Draws 16x16 sprites in a double-line buffer
 // Assumes that the inputs are still during drawing,
@@ -40,12 +36,8 @@ module jtframe_objdraw_gate #( parameter
     SW         =1, // Shadow bits width (Use with SHADOW==1)
     SHADOW_PEN = ALPHA, // Value used by only-shadow sprites. Use independently from SHADOW
     // object line buffer
-    PACKED     =0, // 0 if rom_data is { plane3, plane2, plane1, plane0 }, 8 bits each
+    PACKED     =0  // 0 if rom_data is { plane3, plane2, plane1, plane0 }, 8 bits each
                    // 1 if rom_data packs the 4 planes in nibbles
-    BPP        =4, // [GX] 4 or 5 bits per pixel; PACKED only for 4
-    KEYW       =0  // [GX] >0: the top KEYW bits of each pixel are a key and a pixel is
-                   // written only over a blank one or one with a greater key --
-                   // rtl/video/gx_obj_linebuf.v replaces jtframe_obj_buffer
 )(
     input               rst,
     input               clk,
@@ -67,12 +59,12 @@ module jtframe_objdraw_gate #( parameter
 
     input               hflip,
     input               vflip,
-    input  [PW-BPP-1:0] pal,
+    input      [PW-5:0] pal,
 
     output     [CW+6:2] rom_addr, // {code,H,Y}
     output              rom_cs,
     input               rom_ok,
-    input  [8*BPP-1:0]  rom_data,
+    input      [31:0]   rom_data,
 
     output     [PW-1:0] buf_pred,   // line buffer data to be altered and
     input      [PW-1:0] buf_din,    // then fed back through these ports
@@ -87,28 +79,22 @@ reg  [CW-1:0] dr_code;
 reg  [AW-1:0] dr_xpos;
 reg    [ 3:0] dr_ysub;
 reg           dr_hflip, dr_vflip, dr_draw;
-reg  [PW-BPP-1:0] dr_pal;
+reg  [PW-5:0] dr_pal;
 
 reg  [ZW-1:0] dr_hzoom;
 reg           dr_hz_keep;
 
 wire [AW-1:0] buf_addr;
 wire          buf_we, we_dly;
-wire [8*BPP-1:0] rom_sorted;
+wire   [31:0] rom_sorted;
 
 wire          pre_bsy;
 
-generate
-    if( PACKED==0 || BPP!=4 ) begin : g_unpacked
-        assign rom_sorted = rom_data;
-    end else begin : g_packed
-        assign rom_sorted =
+assign rom_sorted = PACKED==0 ? rom_data :
 {rom_data[31], rom_data[27], rom_data[23], rom_data[19], rom_data[15], rom_data[11], rom_data[7], rom_data[3],
  rom_data[30], rom_data[26], rom_data[22], rom_data[18], rom_data[14], rom_data[10], rom_data[6], rom_data[2],
  rom_data[29], rom_data[25], rom_data[21], rom_data[17], rom_data[13], rom_data[ 9], rom_data[5], rom_data[1],
  rom_data[28], rom_data[24], rom_data[20], rom_data[16], rom_data[12], rom_data[ 8], rom_data[4], rom_data[0] };
-    end
-endgenerate
 
 generate
     if( LATCH ) begin
@@ -205,8 +191,7 @@ jtframe_draw #(
     .ZI      ( ZI       ),
     .ZENLARGE( ZENLARGE ),
     .SWAPH   ( SWAPH    ),
-    .KEEP_OLD( KEEP_OLD ),
-    .BPP     ( BPP      )
+    .KEEP_OLD( KEEP_OLD )
 )u_draw(
     .rst        ( rst       ),
     .clk        ( clk       ),
@@ -231,47 +216,27 @@ jtframe_draw #(
     .buf_din    ( buf_pred  )
 );
 
-// [GX] with a key, the GX line buffer; otherwise jotego's, unchanged
-generate if( KEYW>0 ) begin : g_keybuf
-    gx_obj_linebuf #(
-        .DW     ( PW   ),
-        .AW     ( AW   ),
-        .ALPHAW ( BPP  ),
-        .ALPHA  ( ALPHA),
-        .KEYW   ( KEYW )
-    ) u_linebuf(
-        .clk     ( clk     ),
-        .LHBL    ( ~hs     ),
-        .wr_data ( buf_din ),
-        .wr_addr ( adly    ),
-        .we      ( we_dly  ),
-        .rd      ( pxl_cen ),
-        .rd_addr ( hdf     ),
-        .rd_data ( pxl     )
-    );
-end else begin : g_jtbuf
-    jtframe_obj_buffer #(
-        .AW         ( AW          ),
-        .DW         ( PW          ),
-        .ALPHAW     ( ALPHAW      ),
-        .ALPHA      ( ALPHA       ),
-        .SW         ( SW          ),
-        .SHADOW     ( SHADOW      ),
-        .SHADOW_PEN ( SHADOW_PEN  ),
-        .KEEP_OLD   ( KEEP_OLD    )
-    ) u_linebuf(
-        .clk        ( clk       ),
-        .flip       ( 1'b0      ),      // flip is solved before this instance
-        .LHBL       ( ~hs       ),
-        // New line writting
-        .we         ( we_dly    ),
-        .wr_data    ( buf_din   ),
-        .wr_addr    ( adly      ),
-        // Previous line reading
-        .rd         ( pxl_cen   ),
-        .rd_addr    ( hdf       ),
-        .rd_data    ( pxl       )
-    );
-end endgenerate
+jtframe_obj_buffer #(
+    .AW         ( AW          ),
+    .DW         ( PW          ),
+    .ALPHAW     ( ALPHAW      ),
+    .ALPHA      ( ALPHA       ),
+    .SW         ( SW          ),
+    .SHADOW     ( SHADOW      ),
+    .SHADOW_PEN ( SHADOW_PEN  ),
+    .KEEP_OLD   ( KEEP_OLD    )
+) u_linebuf(
+    .clk        ( clk       ),
+    .flip       ( 1'b0      ),      // flip is solved before this instance
+    .LHBL       ( ~hs       ),
+    // New line writting
+    .we         ( we_dly    ),
+    .wr_data    ( buf_din   ),
+    .wr_addr    ( adly      ),
+    // Previous line reading
+    .rd         ( pxl_cen   ),
+    .rd_addr    ( hdf       ),
+    .rd_data    ( pxl       )
+);
 
 endmodule

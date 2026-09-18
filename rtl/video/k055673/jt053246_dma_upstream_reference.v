@@ -1,10 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 4-2-2024 */
-/* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * GX_ORDER parameter: copy the first 256 sprites in RAM order instead of sorting them into one slot per priority byte.
- * Lines changed are marked [GX]; the unmodified file is kept beside this
- * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
 module jt053246_dma(
     input             rst,
@@ -32,13 +28,7 @@ module jt053246_dma(
     output reg        flicker
 );
 
-parameter K55673=0, K55673_DESC_SORT=0, EDGE_TRIGGER=0,
-          // [GX] 1: copy the first 256 sprites in RAM order instead of into the
-          // slot named by each one's priority byte. The slot sort keeps one
-          // sprite per priority value, and Konami GX games give many sprites
-          // the same z-code (daiskiss: 35 sprites on 2 values on its title).
-          // Ordering is then decided per pixel in the line buffer.
-          GX_ORDER=0;
+parameter K55673=0, K55673_DESC_SORT=0, EDGE_TRIGGER=0;
 
 wire        dma_we, hs_pos;
 reg  [ 1:0] lvbl_sh;
@@ -124,16 +114,14 @@ always @(posedge clk) begin
                 // I was skipping it before, but priority 0 is used in Vendetta and it must take priority
                 // over the rest (see scene vendetta/3)
                 // LUT half as big for 053244 and reversed order
-                dma_bufa <= GX_ORDER==1 ? { dma_addr[11:4], 3'd0 } :
-                            { K55673==1 ? sort_673 : sort_24x, 3'd0 };
+                dma_bufa <= { K55673==1 ? sort_673 : sort_24x, 3'd0 };
                 dma_ok   <= dma_data[15] && (dma_data[7:0]!=0 || !simson);
             end
             dma_addr[12:1] <= dma_addr[12:1] + 1'd1;
             dma_bufa[ 3:1] <= dma_addr[3:1];
             if( dma_addr[3:1]==6 ) begin
                 dma_addr[12:1] <= dma_addr[12:1] + 12'd2; // skip 7
-                dma_bsy <= GX_ORDER==1 ? !(&dma_addr[11:2]) : // [GX] 256 sprites, words 0-2047
-                           !(&dma_addr[10:2] && (k44_en || &dma_addr[12:11]));
+                dma_bsy <= !(&dma_addr[10:2] && (k44_en || &dma_addr[12:11]));
             end
         end
     end

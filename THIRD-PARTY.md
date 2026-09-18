@@ -52,7 +52,12 @@ Note the upstream README's own caveat, because it is a technical risk rather tha
 GPLv3 text and the individual files carry
 `SPDX-License-Identifier: GPL-3.0-or-later` headers, which is the grant this project relies on.
 
-All from commit `e7958c86`. **Verbatim** — no local changes to any of them.
+All from commit `e7958c86`. **Verbatim except five files**, modified for GX and listed with their
+reasons under "Local changes" in `rtl/video/k055673/PROVENANCE.md` (`jt053246.sv`,
+`jt053246_scan.sv`, `jt053246_dma.v`) and `rtl/jtframe/PROVENANCE.md` (`jtframe_draw.v`,
+`jtframe_objdraw_gate.v`). Each carries the §5(a) notice below and keeps its unmodified original
+beside it as `*_upstream_reference`. `rtl/video/gx_obj.v` is derived from `jtsimson_obj.v` and says
+so in its header.
 
 | module | where | state |
 |---|---|---|

@@ -1291,6 +1291,19 @@ hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes
 - **`set_instance_assignment -name RAMSTYLE` is rejected by the .qsf parser in Quartus 17.0**
   (`Error (125048): Error reading Quartus Prime Settings File ... line N`, which aborts the whole
   project open). Use the HDL `(* ramstyle = "..." *)` attribute instead.
+- **[GX] Put every inferred memory in a one-write, one-read template module of its own.**
+  `gx_tilemap.sv` hit three failures in a row, each passing ModelSim unchanged
+  (`rtl/synth_check/gx_tilemap/README.md`): a packed `[3:0][7:0]` VRAM with byte enables and two
+  read ports was "uninferred due to asynchronous read logic" (276007) and synthesis failed with
+  276003; split into byte lanes it inferred but duplicated every lane for the second read port
+  (the replication entry above, hit again); and line buffers declared inside a `generate` loop,
+  each driving an element of an unpacked output-port array, became ~24K ALMs and 46K registers
+  with **no inference message naming them at all**. What worked is `rtl/video/gx_sdpram.sv` —
+  the textbook template in its own module, instanced per memory — plus one read port shared
+  between the two readers. The standalone harness found all three; in the full design they
+  would have surfaced as a failed fit with nothing pointing at the cause.
+- **[GX] Quartus 17 rejects `for (genvar i = ...)`** (`Error (10170) ... near text: "genvar"`),
+  which ModelSim accepts. Declare `genvar i;` before the `generate`.
 - **`quartus_map` (Analysis & Synthesis only) is a fast pre-check** (~2-3 min vs ~5-6 min for a full
   compile) for whether an RTL change even elaborates. Quartus auto-parallelizes across cores;
   ModelSim in this edition is single-threaded.
@@ -1929,6 +1942,24 @@ one is most tempted to keep polishing while waiting for a result.
 
 Rule: once a background run has started, the files it reads are frozen until
 it reports. Queue the edit, or run against a copy.
+
+### [GX] A per-line object scan that runs out of time drops sprites without an error
+
+`jt053246_scan` walks all 256 table entries every line and restarts at the next `hs` wherever it
+has got to. When the drawing behind it is slow, the sprites late in the table are simply not
+drawn on that line: no error, and the only trace is a `$display("Obj scan did not finish")` that a
+bench log shows only if someone greps for it. On `daiskiss` frame 4800 a line buffer taking two
+clocks per pixel lost the large text sprites on 94 lines; it looked like a missing layer, not a
+timing fault. Grep every sprite bench log for that message, and count it as a failure; when a
+sprite is missing, look at where it sits in the table before looking at its attributes.
+
+### [GX] jtframe_objdraw_gate's readout counter needs `hs` across the `hdump` wrap
+
+With `HFIX=1` the line buffer is read through a counter that re-synchronises to `hdump` only while
+`hs` is high and otherwise just counts. A bench with `hs` before the wrap drew every sprite into
+the buffer and displayed none: after the wrap the counter ran on through 0x200+, the half of the
+1,024-entry buffer nothing writes. The symptom — thousands of buffer writes, zero pixels out — says
+"read side", and a counter of non-blank values read back found it in one run.
 
 ### [GX] Never read a file inside the argument list of the call that truncates it
 

@@ -183,10 +183,12 @@ def k056832_tiles(set_name, bpp):
 LAYER_OFFS = [(-2, 0), (0, 0), (2, 0), (3, 0)]
 
 
-def stage_layer(cap, layer):
-    """One K056832 tilemap layer, rendered alone.
+def layer_fields(cap, layer):
+    """One K056832 tilemap layer before the K055555: per visible pixel, the
+    tile's 6-bit colour field (after the attribute decode) and its 5-bit
+    pixel. This is what rtl/video/gx_tilemap.sv outputs, and what
+    scripts/check_gx_tilemap.py compares it against.
 
-    Returns (rgb, opaque): the layer's colours, and where it drew anything.
     Only plain X/Y scroll (m_regs[5] mode 3) and no screen flip are modelled;
     anything else is an error rather than a wrong picture.
     """
@@ -216,7 +218,6 @@ def stage_layer(cap, layer):
                                   (2, 0x03, 2, 0x3c), (0, 0x00, 2, 0x3f)][fbits]
     flip_en = r[1] >> (layer << 1) & 3
     tilebank = (cap.path / "reg_tilebank.bin").read_bytes()
-    vcb = cap.k055555[23 + layer] << 6          # K55_PALBASE_A + layer
 
     # Map coordinates for every visible pixel, in BITMAP coordinates.
     by = VIS_Y0 + np.arange(VIS_H)[:, None]
@@ -233,13 +234,23 @@ def stage_layer(cap, layer):
     # type2_tile_callback: tile bank substitution, then K055555 vmixcolor.
     tb = np.frombuffer(tilebank[:8], dtype=np.uint8).astype(np.int32)
     code = (tb[(code & 0xe000) >> 13] << 13) + (code & 0x1fff)
-    pal = (color & 0x3f) | vcb      # V INMIX ON = 0xff here: all six bits internal
 
     ty = my & 7
     tx = mx & 7
     ty = np.where(flip & 2, 7 - ty, ty)
     tx = np.where(flip & 1, 7 - tx, tx)
     pix = tiles[code % len(tiles), ty, tx]
+    return color & 0x3f, pix
+
+
+def stage_layer(cap, layer):
+    """One K056832 tilemap layer, rendered alone.
+
+    Returns (rgb, opaque): the layer's colours, and where it drew anything.
+    """
+    col6, pix = layer_fields(cap, layer)
+    vcb = cap.k055555[23 + layer] << 6          # K55_PALBASE_A + layer
+    pal = col6 | vcb        # V INMIX ON = 0xff here: all six bits internal
     # COLOUR GRANULARITY IS 16, WHATEVER THE BIT DEPTH. k054156_k054157_k056832.cpp
     # decodes the tiles with konami_decode_gfx -- which would give 32 for 5 bpp --
     # and then immediately overrides it: gfx(gfx_index)->set_granularity(16).
@@ -578,6 +589,8 @@ class Canvas:
         self.shd_z = np.full((VIS_H, VIS_W), 0xff, dtype=np.int32)
         self.shd_pri = np.full((VIS_H, VIS_W), 0xff, dtype=np.int32)
         self.opaque = np.zeros((VIS_H, VIS_W), dtype=bool)
+        self.pen = np.zeros((VIS_H, VIS_W), dtype=np.int32)     # solid sprite pixels only
+        self.pri = np.zeros((VIS_H, VIS_W), dtype=np.int32)
 
 
 def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
@@ -623,6 +636,8 @@ def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
         zb[draw] = z8
         rgb[draw] = cap.pal[(color % 256) * 32 + s[draw]]
         cv.opaque[win] |= draw
+        cv.pen[win][draw] = (color % 256) * 32 + s[draw]
+        cv.pri[win][draw] = pri
     else:
         sz, sp = cv.shd_z[win], cv.shd_pri[win]
         draw = (s >= shdpen) & ~(sz < z8) & ~(sp <= pri)
@@ -660,8 +675,8 @@ def stage_sprites_only(cap):
     for order, offs, code, color in sort_pool(pool):
         for blit in sprite_blits(sr, cfg, spr, offs, code):
             draw_sprite_tile(cv, cap, gfx, blit[0], color, *blit[1:], order >> 4 & 0xf,
-                             order >> 16 & 0xff)
-    info = dict(objects=len(pool), **skipped)
+                             order >> 16 & 0xff, order >> 24 & 0xff)
+    info = dict(objects=len(pool), **skipped, pen=cv.pen, pri=cv.pri)
     return cv.rgb.astype(np.uint8), cv.opaque, info
 
 
@@ -855,7 +870,7 @@ def main():
     if a.stage == "sprites":
         ok, n, info = score_sprites(cap, ref)
         print(f"  sprites  {ok:>6} of {n:<6} pixels they draw are shown unchanged by MAME"
-              f"   {info}")
+              f"   objects {info['objects']}, shadow {info['shadow']}, primode-filtered {info['primode']}")
     print(f"  reference | model | diff  ->  {out_png}")
     return 0
 

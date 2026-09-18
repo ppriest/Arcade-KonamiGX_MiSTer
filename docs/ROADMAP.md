@@ -162,6 +162,86 @@ layer in front (3600), the glass bowl at layer-A alpha 165/256 (4800), and spotl
 listed in [`MAME_KLUDGES.md`](MAME_KLUDGES.md). Not exercised by any capture yet: additive blend,
 alpha sprites, layer brightness, sub layers, and a visible non-black background.
 
+**The first video RTL matches the model: `rtl/video/gx_tilemap.sv` reproduces all four tile layers
+on every captured frame.** `scripts/check_gx_tilemap.py <capture>` loads the capture's registers,
+tile banks and all 16 VRAM pages into the module through its write ports, renders every visible
+line in ModelSim, and compares each pixel's 6-bit colour field and 5-bit pixel with
+`render_model.layer_fields()`. `daiskiss` frames 300, 1200, 2400, 3600, 4800 and 6000: **64,512 of
+64,512 on each of layers A–D**. The check does catch errors: frame 6000's RTL output scored against
+frame 4800's model gives 52,224 and 28,597 matches on layers A and B.
+
+It is written from the model rather than ported, because `jt05415x` does not fit GX in three ways
+the planned 6/8 bpp extension would not fix (details in the module header): it addresses 4 VRAM
+pages where `daiskiss` uses all 16; it outputs tile-ROM addresses and leaves the pixel path to each
+game's video module; and its register outputs drop the top bits of the scroll registers, which
+MAME uses whenever a layer is not a power of two tall. `jt05415x` stays vendored as the reference
+for line scroll and flip, which this module does not do yet (it raises `unsupported` instead).
+
+It is a line renderer: per line, each layer's 288 pixels go into a line buffer, a tile fetcher
+running one tile ahead of a one-pixel-a-cycle emitter. Measured on the bench: **1,835 cycles for
+the worst line with a 6-cycle tile ROM, 3,826 with a 20-cycle one.** A line is 512 dots at 8 MHz
+(`set_raw(8000000, 512, ...)`), 3,072 cycles of a 48 MHz `clk_sys`, so the tile ROM path must
+answer within about 14 cycles on average. That is a requirement on the SDRAM arbiter, to be met or
+the renderer widened when the arbiter exists.
+
+Standalone synthesis (`rtl/synth_check/gx_tilemap/`): **117.72 MHz** at the slow 100 °C corner,
+454 ALMs, and **136 M10K** holding exactly the arithmetic 1,093,632 bits — the 1 Mbit VRAM and four
+line buffers, nothing duplicated. The VRAM is the RAM budget's 16 × 8 KB, now measured in blocks.
+Getting there took three rewrites of the memories, recorded in LESSONS_LEARNED ("[GX] Put every
+inferred memory in a one-write, one-read template module of its own").
+
+**Sprites and mixer follow the hardware's structure, not MAME's painter** (decided after the
+tilemap RTL). The sprite path is `jt053246`'s: a per-line list scan feeding a line buffer, one
+winning sprite pixel per position, whose priority the K055555 then compares with the tile layers
+pixel by pixel. MAME's object pool with a shared z-buffer gives the same per-pixel structure, so
+the two should agree except where noted, and every place they differ is explained and recorded
+in `MAME_KLUDGES.md` rather than copied.
+
+**`jt053246`'s DMA ordering does not work on GX, and is not hardware evidence.** It copies each
+sprite into the table slot named by its z-code byte, so sprites sharing a z-code overwrite each
+other. jotego's README calls that "this implementation" and cites PCB measurements only for the
+DMA's duration. `daiskiss` shares z-codes heavily. Scored in software against the captures, the
+one-slot-per-z-code table keeps **2 of 35 objects on the title frame, 1 of 19 on frame 2400, 8 of
+122 on frame 6000**. The hardware-shaped alternative — scan the list in RAM order and give the
+line buffer a key per pixel, written only when the new key is strictly lower — reproduces
+MAME's sprite picture on all five sprite frames, 64,512 of 64,512 pixels each. That is the plan:
+keep `jt053246`'s register file, scan state machine, zoom tables and `jtframe_objdraw` line
+buffer; replace the slot sort with the compare in the line buffer; widen the pen to 5 bpp.
+
+**Ties follow MAME.** On sprites either the first or the last of two equal entries wins, visibly,
+so MAME's choice is taken. MAME paints back to front (the draw order is the reverse of priority),
+so its "last drawn wins" is "first in priority wins": `konamigx_mixer` draws the pool in
+descending (priority, z-code, RAM offset) and its z test skips only when the stored z-code is
+lower, so the visible sprite is the lowest **(z-code, priority, RAM offset)**. In RAM-order
+scanning that is a strict less-than on (z-code, priority). The captures separate first-wins from
+last-wins — taking ties the other way loses 369 pixels on frame 3600 and 2,560 on frame 6000 — but
+none has overlapping equal-z sprites of different priority, so the priority term is transcribed,
+not yet exercised.
+
+**The sprite RTL matches the model: `jt053246` with the GX changes reproduces every solid-sprite
+pixel on all five sprite frames.** `scripts/check_gx_obj.py <capture> --voffset 281` loads sprite
+RAM and registers through the module's ports, runs GX-shaped video timing in ModelSim until the DMA
+has copied the list, records a whole frame and compares valid bit, pen and priority per pixel with
+the model: title, 2400, 3600, 4800 and 6000, **64,512 of 64,512 each**. The changes to jotego's
+files and why are in `rtl/video/k055673/PROVENANCE.md` and `rtl/jtframe/PROVENANCE.md`, "Local
+changes": RAM-order DMA, z-code and word-6 outputs from the scan, 5 bpp drawing, and a line buffer
+(`rtl/video/gx_obj_linebuf.v`) that orders pixels on `{z-code, priority}` at one pixel per clock.
+The GX callback, solid/shadow split and `primode` filter are in `rtl/video/gx_obj.v`, derived from
+`jtsimson_obj.v`.
+
+Two things the bench established that the integration has to keep:
+
+- **`jt053246_scan` walks the whole 256-entry table every line, and runs out of time silently.**
+  With a line buffer taking two clocks per pixel, frame 4800's busiest lines ended before the scan
+  passed entry 0xb0, and every sprite after it — the large text across rows 176–213 — was not
+  drawn. The scan's only sign is a `$display`. The one-pixel-per-clock buffer removed it (no line
+  fails on the five frames), but the margin on a heavier frame is not measured yet.
+- **`hs` must span `hdump`'s wrap** for `jtframe_objdraw_gate`'s readout counter, or the display
+  reads the unused half of the line buffer. A constraint on the K053252 setup.
+
+Not covered yet: shadow pens and full-shadow sprites (drawn by neither side of the comparison so
+far), alpha sprites, zoom beyond the one 4x-magnified sprite on the title frame, flip X, and 6/8 bpp.
+
 One finding from the sprite stage: **`daiskiss` runs with K053246 OBJSET1 bit 1 (flip Y) set on every frame**,
 and its picture is the right way up, because MAME negates Y twice (`oy = -oy` for the flip, then
 `oy = (-oy - offy)`). On GX that bit set is the normal orientation, so the RTL must not read it as
@@ -475,8 +555,8 @@ here yet.
 | **68EC020** | **TG68K.C**, `CPU => "11"`, with this project's own bus wrapper. Proven in `Arcade-Psikyo_MiSTer` at 16 MHz including `MOVEC`/`CACR` | [TobiFlex/TG68K.C](https://github.com/TobiFlex/TG68K.C), LGPL-3.0-or-later. Psikyo's `rtl/cpu/maincpu.sv` is the integration reference and its `PROVENANCE.md` the warning list |
 | **68000 (sound)** | **fx68k**, cycle-accurate, already vendored and running in `Arcade-Seta_MiSTer` | `Arcade-Seta_MiSTer/rtl/cpu/fx68k/` |
 | **K053252 CRTC** | **Port `jtk053252.v`** | `jotego/jtcores/cores/rungun/hdl/jtk053252.v` (+ `cores/rungun/ver/k053252/` testbench), GPL-3.0-or-later. furrtek has the schematic and a netlist |
-| **K054156/K056832 tilemaps** | **Port `jt05415x`**, extend to 6/8 bpp | `jotego/jtcores/modules/jt05415x/`, GPL-3.0-or-later, reconstructed from furrtek's 054156/054157 schematics |
-| **K053246/K055673 sprites** | **Port `jt053246.sv` + `jt053246_dma.v` + `jt053246_mmr.v` + `jt053246_scan.sv` + `jtsimson_obj.v`**, extend the graphics side to 5/6/8 bpp | `jotego/jtcores/cores/simson/hdl/`, as wired by `cores/rungun` (which drives a real K055673), GPL-3.0-or-later |
+| **K054156/K056832 tilemaps** | **Written from the software model** (`rtl/video/gx_tilemap.sv`); `jt05415x` did not fit — 4 VRAM pages, no pixel path (see "Progress"). Kept as the reference for line scroll and flip | `jotego/jtcores/modules/jt05415x/`, GPL-3.0-or-later, reconstructed from furrtek's 054156/054157 schematics |
+| **K053246/K055673 sprites** | **Port `jt053246.sv` + `jt053246_mmr.v` + `jt053246_scan.sv` + `jtsimson_obj.v`**, extend the graphics side to 5/6/8 bpp. **Not `jt053246_dma.v`'s slot-per-z-code sort**, which loses most of `daiskiss`'s sprites: RAM-order scan and a z-compared line buffer instead (see "Progress") | `jotego/jtcores/cores/simson/hdl/`, as wired by `cores/rungun` (which drives a real K055673), GPL-3.0-or-later |
 | **K054338 alpha blender** | **Port `jt054338.v`**, which already has the `ALPHA_INV` parameter GX's `set_alpha_invert(1)` needs | `jotego/jtcores/cores/moo/hdl/jt054338.v`, GPL-3.0-or-later |
 | **K055555 mixer** | **From scratch.** MAME's `konamigx_mixer()` transcribed literally; furrtek's register notes as the explanation. `jtmoo_colmix.v` is the shape of the surrounding wiring even though its priority chip is the earlier K053251 | `konamigx_v.cpp`, `k055555.cpp/.h`, furrtek `Konami/055555/README.md` |
 | **K054539 ×2 PCM** | **Port furrtek's Verilog**, on the licence assumption in [`THIRD-PARTY.md`](../THIRD-PARTY.md) | [furrtek/SiliconRE `Konami/054539/hdl/`](https://github.com/furrtek/SiliconRE/tree/master/Konami/054539) (41 KB of Verilog plus ROM contents dumped from the die). jotego's `jt539` is used by `moo`, `xmen` and `rungun` but is a **private submodule** and 404s |
@@ -888,8 +968,8 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
 6. **Phase 0 is met on criteria 1, 2, 4 and 5, and measured on 3.** What it leaves open is
    written against each criterion under "Phased roadmap": interrupts unexercised by the boot bench,
    and what each DSP upload contains.
-7. **Phase 1: the software model is pixel-identical to MAME on six `daiskiss` frames** (see
-   "Progress"). Next: the RTL against it, layer by layer — the vendored K056832 first, driven by
-   the captured VRAM and registers in simulation and compared with `stage_layer`, then the sprite
-   path, then the K055555 mixer, which has no implementation anywhere and is written from the
-   model.
+7. **Phase 1: the software model is pixel-identical to MAME on six `daiskiss` frames, and
+   `gx_tilemap.sv` matches the model on all four layers of all six** (see "Progress"). Sprites and
+   mixer follow the hardware's structure. `jt053246` with the GX changes matches
+   `stage_sprites_only` on all five sprite frames (see "Progress"). Next: sprite shadows through
+   the line buffer, then a per-pixel K055555 and K054338 against `stage_mix`.

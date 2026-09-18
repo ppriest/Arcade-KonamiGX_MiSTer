@@ -1,7 +1,8 @@
 # jtframe helper modules provenance
 
 Small shared primitives from <https://github.com/jotego/jtcores> at commit
-`e7958c86d79d549cf5b14b7bbdb517b109a21691`, path `modules/jtframe/hdl/`. **Verbatim.**
+`e7958c86d79d549cf5b14b7bbdb517b109a21691`, path `modules/jtframe/hdl/`. **Verbatim except two
+files** (see "Local changes").
 
 | file | pulled in by |
 |---|---|
@@ -40,3 +41,16 @@ design does not (`jtframe_frac_cen`, `jtframe_vtimer`, `jtframe_test_clocks`, `t
 This is not a vendoring of jtframe. It is the handful of files the vendored chip modules need, taken
 one at a time. Pulling in jtframe wholesale would bring a framework this project does not use and
 does not want — `sys/` is the framework here.
+
+## Local changes
+
+Two files are **modified**, with the GPL-3.0 §5(a) notice after jotego's header, changed lines
+marked `[GX]`, and the unmodified file beside each as `<name>_upstream_reference.v`. With the new
+parameters at their defaults both behave exactly as upstream.
+
+| file | change | why |
+|---|---|---|
+| `jtframe_draw.v` | `BPP` parameter, 4 (default) or 5: `rom_data` is `8*BPP` bits, one plane per byte, and the pixel takes one bit from each byte | K055673_LAYOUT_GX sprites are 5 bpp |
+| `jtframe_objdraw_gate.v` | `BPP` passed through; `KEYW` parameter: when non-zero the line buffer is [`../video/gx_obj_linebuf.v`](../video/gx_obj_linebuf.v) instead of `jtframe_obj_buffer` | the per-pixel `{z-code, priority}` order GX needs. `jtframe_obj_buffer`'s `KEEP_OLD` path reads and writes through one RAM port, so a pixel takes two clocks, and on `daiskiss` frame 4800 (145 sprites) `jt053246_scan` then ran out of line time on 94 lines and dropped every sprite after table entry 0xb0. The GX buffer gives each line half its own RAM and runs at one pixel per clock |
+
+`jtframe_obj_buffer.v` itself is unmodified.

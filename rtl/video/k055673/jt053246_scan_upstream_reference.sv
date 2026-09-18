@@ -1,10 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 23-9-2024 */
-/* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * zcode and attr_full outputs; HADJ made a parameter.
- * Lines changed are marked [GX]; the unmodified file is kept beside this
- * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
 // See JTSIMSON's README.md
 
@@ -24,8 +20,6 @@ module jt053246_scan (    // sprite logic
     output     [ 3:0] ysub,
     output reg [11:0] hzoom,
     output reg        hz_keep,
-    output reg [ 7:0] zcode,    // [GX] word 0 bits 7:0, the z-code
-    output     [15:0] attr_full,// [GX] word 6 as scanned: {mirror y, mirror x, reserved, shadow, attr}
 
     // base video
     input      [ 8:0] hdump,    // Not inputs in the original, but
@@ -54,10 +48,10 @@ module jt053246_scan (    // sprite logic
 parameter [7:0] SCAN_START = 8'd0;
 parameter [8:0] BOTTOM     = 9'h1F7;
 parameter [9:0] HOFFSET    = 10'd62;
-parameter [9:0] HADJ       = 10'h008; // [GX] was a localparam: shift for sprites starting left of HDUMP_MIN
 
 localparam [11:0] MAX_ZOOMIN= 6; // a value below 3 will break the "pass" scene in run&gun
-localparam [ 9:0] HDUMP_MIN = 10'h020;
+localparam [ 9:0] HDUMP_MIN = 10'h020,
+                  HADJ      = 10'h008;
 
 reg  [18:0] yz_add;
 reg  [11:0] vzoom;
@@ -78,7 +72,6 @@ reg  [ 3:0] pzoffset[0:15 ];
 integer     missing;
 
 assign hflip     = ghf ^ pre_hf ^ hmir_eff;
-assign attr_full = { vmir, hmir, reserved, shd, attr };
 assign scan_addr = { scan_obj, scan_sub };
 assign ysub      = ydiff[3:0];
 assign last_obj  = &scan_obj[7:0];
@@ -202,7 +195,6 @@ always @(posedge clk) begin : A
                 0: begin
                     hhalf <= 0;
                     { sq, pre_vf, pre_hf, size } <= scan_even[14:8];
-                    zcode   <= scan_even[7:0];
                     code    <= scan_odd;
                     hstep   <= 0;
                     hz_keep <= 0;

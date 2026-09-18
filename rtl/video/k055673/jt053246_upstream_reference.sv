@@ -1,10 +1,6 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 30-7-2023 */
-/* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * GX_ORDER and HADJ parameters, zcode and attr_full outputs passed through.
- * Lines changed are marked [GX]; the unmodified file is kept beside this
- * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
 // See JTSIMSON's README.md
 
@@ -42,8 +38,6 @@ module jt053246(    // sprite logic
     output     [ 3:0] ysub,
     output reg [11:0] hzoom,
     output reg        hz_keep,
-    output     [ 7:0] zcode,     // [GX]
-    output     [15:0] attr_full, // [GX]
 
     // base video
     input      [ 8:0] hdump,    // Not inputs in the original, but
@@ -67,10 +61,8 @@ module jt053246(    // sprite logic
     input      [ 7:0] st_addr,
     output     [ 7:0] st_dout
 );
-parameter       K55673=0, K55673_DESC_SORT=0, EDGE_TRIGGER=0,
-                GX_ORDER=0;            // [GX] see jt053246_dma
-parameter [9:0] HOFFSET   = 10'd62,
-                HADJ      = 10'h008;   // [GX] see jt053246_scan
+parameter       K55673=0, K55673_DESC_SORT=0, EDGE_TRIGGER=0;
+parameter [9:0] HOFFSET   = 10'd62;
 
 localparam [2:0] REG_XOFF  = 0, // X offset
                  REG_YOFF  = 1, // Y offset
@@ -93,7 +85,7 @@ assign mode8     = cfg[2]; // guess, use it for 8-bit access on 46/47 pair
 assign cpu_bsy   = cfg[3];
 assign dma_en    = cfg[4];
 
-jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
+jt053246_scan #(.HOFFSET(HOFFSET),.SCAN_START(SCAN_START)) u_scan(
     .rst       ( rst        ),
     .clk       ( clk        ),
     .done      ( ln_done    ),
@@ -105,8 +97,6 @@ jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
     .ysub      ( ysub       ),
     .hzoom     ( hzoom      ),
     .hz_keep   ( hz_keep    ),
-    .zcode     ( zcode      ),
-    .attr_full ( attr_full  ),
     .hdump     ( hdump      ),
     .vdump     ( vdump      ),
     .voffset   ( voffset    ),
@@ -128,8 +118,7 @@ jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
 jt053246_dma #(
     .K55673          ( K55673           ),
     .K55673_DESC_SORT( K55673_DESC_SORT ),
-    .EDGE_TRIGGER    ( EDGE_TRIGGER     ),
-    .GX_ORDER        ( GX_ORDER         )
+    .EDGE_TRIGGER    ( EDGE_TRIGGER     )
 )u_dma(
     .rst        ( rst       ),
     .clk        ( clk       ),

@@ -1,7 +1,8 @@
 # K053246/K055673 (sprite generator) provenance
 
 From <https://github.com/jotego/jtcores> at commit `e7958c86d79d549cf5b14b7bbdb517b109a21691`,
-path `cores/simson/hdl/`. **Verbatim**, GPL-3.0-or-later by their SPDX headers. See
+path `cores/simson/hdl/`. **Verbatim except three files** (see "Local changes"), GPL-3.0-or-later
+by their SPDX headers. See
 [`../../../THIRD-PARTY.md`](../../../THIRD-PARTY.md); `.gitattributes` marks this directory `-text`.
 
 | file | role |
@@ -63,3 +64,38 @@ here is this project's own: the Phase 1 software model of `konamigx_v.cpp`, chec
 against MAME captures first, then the RTL checked against the model.
 
 Analysis under Quartus 17.0.2 is checked by the staged build.
+
+## Local changes
+
+Three files are **modified**; the rest are verbatim. Each modified file carries the GPL-3.0 §5(a)
+notice after jotego's header, its changed lines are marked `[GX]`, and the unmodified upstream
+file sits beside it as `<name>_upstream_reference.<ext>`, so the whole change is
+
+```
+git diff --no-index rtl/video/k055673/jt053246_dma_upstream_reference.v rtl/video/k055673/jt053246_dma.v
+```
+
+(`scripts/run_sim.sh` skips `*_upstream_reference.*`, and `files.qip` does not list them.)
+
+| file | change | why |
+|---|---|---|
+| `jt053246_dma.v` | `GX_ORDER` parameter: copy the first 256 sprites (words 0–2047) in RAM order, instead of into the table slot named by each sprite's priority byte | The slot sort keeps one sprite per priority value. `daiskiss` gives many sprites the same z-code — 35 sprites on 2 values on its title frame — and scored in software the slot sort kept 2 of them. jotego's README calls the sort "this implementation"; its PCB measurements are of the DMA's duration only. Ordering moves to the line buffer (below). |
+| `jt053246_scan.sv` | outputs `zcode` (word 0 bits 7:0) and `attr_full` (word 6 as scanned); `HADJ` made a parameter | the line buffer's key needs the z-code; GX's colour callback and `primode` filter need word 6 bits 10–15. `HADJ` is a Simpsons-specific shift for sprites starting left of `hdump` 0x20; GX runs with 0 |
+| `jt053246.sv` | passes `GX_ORDER`, `HADJ`, `zcode`, `attr_full` through | plumbing |
+
+`jtsimson_obj.v` is **unmodified and not used by GX**. Its GX counterpart is
+[`../gx_obj.v`](../gx_obj.v), derived from it and saying so in its header: GX's sprite callback
+(VRC code banks, colour and priority through the K055555 fields), `konamigx_mixer`'s solid/shadow
+split and `primode` 4 filter, 5 bpp, and the line buffer with a `{z-code, priority}` key —
+[`../gx_obj_linebuf.v`](../gx_obj_linebuf.v), written for this project — where a pixel is written
+only over a blank one or one with a greater key (MAME's order; `docs/MAME_KLUDGES.md`).
+
+**Result.** `scripts/check_gx_obj.py <capture> --voffset 281` runs `sim/gx_obj_tb` and compares
+every pixel's valid bit, pen and priority with the model's solid-sprite stage: `daiskiss` title,
+2400, 3600, 4800 and 6000, **64,512 of 64,512 each**, with no line on which the list scan fails to
+finish. `voffset` 281 and `HOFFSET` 62 place bitmap row 16 at `vdump` 0x110 and bitmap column 24 at
+`hdump` 0x70 in the bench's timing; the real values come with the K053252 setup.
+
+**A timing constraint for that setup:** `jtframe_objdraw_gate` reads the line buffer through a
+counter (`HFIX`) that re-synchronises to `hdump` only while `hs` is high, so `hs` must span
+`hdump`'s wrap. With `hs` placed before the wrap, the bench drew every sprite and displayed none.
