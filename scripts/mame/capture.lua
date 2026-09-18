@@ -171,6 +171,34 @@ subs[#subs + 1] = emu.add_machine_frame_notifier(guard("frame", function()
 
     scr:snapshot(OUT .. "/reference.png")
 
+    -- CROSS-CHECK: read every VRAM page straight out of MAME.
+    --
+    -- The vram_bank*.bin files above are RECONSTRUCTED from write taps, which
+    -- is only as good as the assumption that every write was seen and bucketed
+    -- to the right page. This reads the ground truth instead: select each page
+    -- through the bank register (0xd40032, the word m_regs[0x19] lives in; the
+    -- write goes through k056832_device::word_w -> change_rambank exactly as
+    -- the game's would) and read the 8 KB window back.
+    --
+    -- It PERTURBS MAME's state, so it runs last, after the snapshot and every
+    -- other dump, immediately before exit. The page-select value is restored
+    -- anyway, in case this is ever moved -- from the write tap's record, not by
+    -- reading 0xd40032 back: the K056832's registers are mapped write-only, so
+    -- a read there returns nothing the chip holds.
+    local k = regs.k056832
+    local saved = ((k[0x32] or 0) << 8) | (k[0x33] or 0)
+    for page = 0, 15 do
+        local bank = ((page & 0xc) << 1) | (page & 3)    -- inverse of change_rambank
+        sp:write_u16(0xd40032, bank)
+        local t = {}
+        for a = 0, 0x2000 - 2, 2 do
+            local v = sp:read_u16(0xda0000 + a)
+            t[#t + 1] = string.char((v >> 8) & 0xff, v & 0xff)
+        end
+        wr(string.format("vram_direct_page%02d.bin", page), table.concat(t))
+    end
+    sp:write_u16(0xd40032, saved)
+
     local f = assert(io.open(OUT .. "/manifest.txt", "w"))
     f:write("set ", m.system.name, "\n")
     f:write("mame ", emu.app_version(), "\n")

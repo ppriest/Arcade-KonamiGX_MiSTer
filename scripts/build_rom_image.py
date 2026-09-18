@@ -21,21 +21,22 @@ trace in place of a disassembly. For daiskiss the program ROM scores
 1,049,951 of 1,049,951 reads; the three wrong permutations of the same two
 files score 12-21%. A wrong interleave cannot hide in that.
 
-LOAD FORMS HANDLED (maincpu only, for now -- the other regions come with the
-engines that read them):
+LOAD FORMS. Every form the in-scope sets use is in the FORMS table below,
+reduced to MAME's own (group, skip, reverse) semantics rather than special-
+cased, including konamigx.cpp's TILE_* and _48_WORD macros. GX_BIOS is
+ROM_LOAD("300a01.34k", 0, 0x20000) from konamigx.zip, which the merged set
+zips do NOT carry. Any other form is an ERROR rather than a silent omission.
 
-  ROM_LOAD(name, off, len)             contiguous
-  GX_BIOS                              ROM_LOAD("300a01.34k", 0, 0x20000), from
-                                       konamigx.zip, which the merged set zips
-                                       do NOT carry
-  ROM_LOAD32_WORD_SWAP(name, off, len) = ROMX_LOAD(GROUPWORD | REVERSE | SKIP(2)):
-                                       each 16-bit word of the file goes to every
-                                       other 16-bit slot starting at `off`, with
-                                       its two bytes swapped
-  ROM_LOAD32_BYTE(name, off, len)      one byte every four
+WHAT HAS BEEN PROVEN, AND HOW. A form is trusted only once something has
+checked it against MAME:
 
-Any other form in a region this script is asked to build is an ERROR rather
-than a silent omission.
+  maincpu (ROM_LOAD, ROM_LOAD32_WORD_SWAP)   --verify against a boot trace
+  k056832 (TILE_WORD, TILE_BYTE)             the tile pixels scripts/
+                                             render_model.py reproduces --
+                                             the CPU never reads this region
+                                             during boot, so no trace can
+  k055673 (ROM_LOAD32_WORD, ROM_LOAD)        the sprite pixels render_model.py
+                                             reproduces (daiskiss, five frames)
 """
 import argparse
 import re
@@ -103,6 +104,39 @@ def read_file(zips, fname, want_len, set_name):
     raise SystemExit(f"{fname} not found in {[z.filename for z in zips]}")
 
 
+# Every load form in the in-scope sets, as MAME's ROMX_LOAD flags reduce it:
+# (group bytes, skip bytes, reverse). romload.cpp copies the file GROUP bytes
+# at a time -- byte-reversed within the group if REVERSE -- then advances the
+# destination by GROUP + SKIP. The konamigx.cpp macros are defined at the top
+# of its ROM section; the standard ones are in emu/romentry.h.
+FORMS = {
+    "ROM_LOAD":             (1, 0, False),
+    "BIOS":                 (1, 0, False),
+    "ROM_LOAD16_BYTE":      (1, 1, False),   # ROM_SKIP(1)
+    "ROM_LOAD32_BYTE":      (1, 3, False),   # ROM_SKIP(3)
+    "ROM_LOAD32_WORD":      (2, 2, False),   # ROM_GROUPWORD | ROM_SKIP(2)
+    "ROM_LOAD32_WORD_SWAP": (2, 2, True),    # ROM_GROUPWORD | ROM_REVERSE | ROM_SKIP(2)
+    "ROM_LOAD64_WORD":      (2, 6, False),   # ROM_GROUPWORD | ROM_SKIP(6)
+    # konamigx.cpp's own ROMX_LOAD macros
+    "TILE_WORD_ROM_LOAD":   (4, 1, False),   # ROM_GROUPDWORD | ROM_SKIP(1)
+    "TILE_BYTE_ROM_LOAD":   (1, 4, False),   # ROM_GROUPBYTE  | ROM_SKIP(4)
+    "TILE_WORDS2_ROM_LOAD": (4, 2, False),   # ROM_GROUPDWORD | ROM_SKIP(2)
+    "TILE_BYTES2_ROM_LOAD": (2, 4, False),   # ROM_GROUPWORD  | ROM_SKIP(4)
+    "_48_WORD_ROM_LOAD":    (2, 4, False),   # ROM_GROUPWORD  | ROM_SKIP(4)
+}
+
+
+def load_into(img, data, off, group, skip, reverse):
+    """romload.cpp's copy loop: GROUP bytes at a time, then skip SKIP."""
+    dst = off
+    for k in range(0, len(data), group):
+        chunk = data[k:k + group]
+        if reverse:
+            chunk = chunk[::-1]
+        img[dst:dst + len(chunk)] = chunk
+        dst += group + skip
+
+
 def build(set_name, tag):
     games, blocks = parse(DRIVER)
     if set_name not in blocks:
@@ -112,20 +146,11 @@ def build(set_name, tag):
             zipfile.ZipFile(REPO / "roms" / f"{BIOS[0]}.zip")]
     img = bytearray(size)
     for form, fname, off, length in loads:
+        if form not in FORMS:
+            raise SystemExit(f"{fname}: load form {form} is not handled -- add it to "
+                             f"FORMS, and prove it before trusting it")
         data = read_file(zips, fname, length, set_name)
-        if form in ("ROM_LOAD", "BIOS"):
-            img[off:off + length] = data
-        elif form == "ROM_LOAD32_WORD_SWAP":
-            # GROUPWORD | REVERSE | SKIP(2): word k -> off + 4k, bytes swapped
-            for k in range(length // 2):
-                img[off + 4 * k] = data[2 * k + 1]
-                img[off + 4 * k + 1] = data[2 * k]
-        elif form == "ROM_LOAD32_BYTE":
-            for k in range(length):
-                img[off + 4 * k] = data[k]
-        else:
-            raise SystemExit(f"{fname}: load form {form} is not handled -- add it, "
-                             f"and prove it with --verify before trusting it")
+        load_into(img, data, off, *FORMS[form])
         print(f"  {form:<22} {fname:<16} @ {off:06X}  {length:#x}")
     return img
 
@@ -155,7 +180,7 @@ def verify(img, trace, lo, hi):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("set")
-    ap.add_argument("region", choices=["maincpu"])
+    ap.add_argument("region", choices=["maincpu", "k056832", "k055673", "k054539", "soundcpu"])
     ap.add_argument("--verify", metavar="TRACE",
                     help="score this MAME boot trace's ROM reads against the image")
     ap.add_argument("--out", default=None)

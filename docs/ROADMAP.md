@@ -109,6 +109,77 @@ palette through the CPU's own address space, reconstructs the write-only registe
 banked tilemap VRAM from write taps, and saves MAME's screenshot beside a manifest. Its first run on
 `daiskiss` answered the tilemap-VRAM question below.
 
+**The capture is proven, not assumed.** After the snapshot, the capture selects each VRAM page
+through the bank register and reads it straight back out of MAME. The write-tap reconstruction
+agrees with that ground truth on **4,096 of 4,096 words, all 16 pages**. Every colour on MAME's
+screen is found in the captured palette — zero unexplained — which also shows MAME applied no
+brightness or shadow to that frame.
+
+**Phase 1 has started: the tilemap stage of `scripts/render_model.py` reproduces MAME.** Scored
+the only way that means anything before the mixer exists — on the pixels whose colour can only
+have come from one tile layer, which that layer rendered alone must reproduce:
+
+| `daiskiss` frame | layer B | layer C | layer D |
+|---|---|---|---|
+| 1200 | 20,941 / 20,941 | — | — |
+| 2400 | — | 33,188 / 33,188 | 409 / 409 |
+| 4800 | — | 28,442 / 28,442 | 409 / 409 |
+| 6000 | 1,576 / 1,576 | 18,993 / 19,011 | 409 / 721 |
+
+That covers plain X/Y scroll, 5 bpp, no screen flip — what these frames exercise; line and row
+scroll, flip and the other depths are errors in the model rather than silent guesses. Frame 6000
+leaves two patches the tile stage does not reproduce, and neither is a tile fault. The 312 "layer
+D" pixels are layer C under a spotlight beam: layer C draws (255,255,0) and (241,222,0) there, MAME
+shows (255,255,64), which is each +0x40 per channel clamped — and happens to equal pen `0xe4f`, so
+the attribution put it in layer D's bank. (The earlier guess, sprites using bank-3 pens, was tested
+and is wrong: no enabled sprite has a colour in that bank.) The same +0x40 rule accounts for 2,397
+layer-C pixels across that frame. The 18 layer-C pixels show (255,113,113) where layer C draws
+(198,0,0) — not +0x40, and unexplained until the mixer is modelled.
+
+**The sprite stage reproduces MAME wherever MAME shows a sprite unmodified.** Solid objects only,
+z-buffered against each other; shadow and alpha objects are set aside. Scored on the pixels the
+sprites draw:
+
+| `daiskiss` frame | sprite pixels shown unchanged by MAME | the rest |
+|---|---|---|
+| title | 43,571 / 43,571 | — |
+| 2400 | 19,788 / 19,788 | — |
+| 3600 | 23,039 / 23,427 | all 388 show layer C's exact colour: a layer in front |
+| 4800 | 22,669 / 28,792 | under layers A/C: the translucent glass bowl, blended |
+| 6000 | 18,440 / 18,741 | under layers B/C: spotlight beams |
+
+Every miss is under an opaque tile pixel, so all of them are the mixer's — priority, alpha and the
+K054338 highlight — not the sprite stage's. The sprite pool, zoom stepping and z-buffer are
+transcriptions of `konamigx_mixer`, `k053247_draw_single_sprite_gxcore` and `zdrawgfxzoom32GP`.
+
+**The mix stage completes the model: six `daiskiss` frames are pixel-identical to MAME**
+(frames 300, 1200, 2400, 3600, 4800, 6000 — 64,512 of 64,512 pixels each). It transcribes
+`konamigx_mixer`: tile layers and sprites share one object pool sorted by K055555 priority, a
+higher value drawn further back; layer alpha from the K054338 blend levels; sprite shadows through
+MAME's 15-bit shadow tables. Every miss the tile and sprite stages left is accounted for by it —
+layer in front (3600), the glass bowl at layer-A alpha 165/256 (4800), and spotlight highlight
++0x40/+0x80 (6000, 12,302 pixels changed by shadow objects). The MAME kludges it reproduces are
+listed in [`MAME_KLUDGES.md`](MAME_KLUDGES.md). Not exercised by any capture yet: additive blend,
+alpha sprites, layer brightness, sub layers, and a visible non-black background.
+
+One finding from the sprite stage: **`daiskiss` runs with K053246 OBJSET1 bit 1 (flip Y) set on every frame**,
+and its picture is the right way up, because MAME negates Y twice (`oy = -oy` for the flip, then
+`oy = (-oy - offy)`). On GX that bit set is the normal orientation, so the RTL must not read it as
+"screen flipped".
+
+Three things this stage found, all now in the model's comments:
+
+- **K056832 colour granularity is 16 whatever the bit depth.** The driver decodes 5 bpp tiles with
+  a 32-colour stride and then overrides it (`set_granularity(16)`), so a layer's bank is `PAL × 1024`
+  pens — as furrtek's K055555 notes say. Modelled at 32 first, every pen came out exactly `0x800`
+  high; the structure was right and only the colour wrong, which is what pointed at it.
+- **`daiskiss`'s title frame is almost all sprites.** Both characters and the green are drawn by
+  sprites over two full-screen black tilemap planes. A tilemap scored on that frame alone would pass
+  black-on-black — the reason the stage is scored across five frames.
+- **The background-fill stage is unverified.** No frame captured so far shows a background pixel,
+  so a wrong fill would pass (LESSONS_LEARNED, "[Seta] A branch no capture exercises is not
+  covered"). It needs a frame where the fill is visible.
+
 What has been done is the survey, and two of its results changed the plan before it was written:
 
 - **The chip inventory above.** It was found by listing the boards that use each GX chip and then
@@ -816,5 +887,9 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
    one Phase 0's CPU work was proven on.
 6. **Phase 0 is met on criteria 1, 2, 4 and 5, and measured on 3.** What it leaves open is
    written against each criterion under "Phased roadmap": interrupts unexercised by the boot bench,
-   and what each DSP upload contains. Next is Phase 1 — `render_model.py`, the software model of
-   `konamigx_v.cpp`, checked pixel-exact against captures before any video RTL is compared to it.
+   and what each DSP upload contains.
+7. **Phase 1: the software model is pixel-identical to MAME on six `daiskiss` frames** (see
+   "Progress"). Next: the RTL against it, layer by layer — the vendored K056832 first, driven by
+   the captured VRAM and registers in simulation and compared with `stage_layer`, then the sprite
+   path, then the K055555 mixer, which has no implementation anywhere and is written from the
+   model.
