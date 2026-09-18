@@ -1,0 +1,19 @@
+set_global_assignment -name FAMILY "Cyclone V"
+set_global_assignment -name DEVICE 5CSEBA6U23I7
+set_global_assignment -name TOP_LEVEL_ENTITY tg68k_fmax_top
+set_global_assignment -name PROJECT_OUTPUT_DIRECTORY output_files
+set_global_assignment -name OPTIMIZATION_MODE "HIGH PERFORMANCE EFFORT"
+set_global_assignment -name SEED 1
+set_global_assignment -name VHDL_FILE ../../cpu/tg68k/TG68K_Pack.vhd
+set_global_assignment -name VHDL_FILE ../../cpu/tg68k/TG68K_ALU.vhd
+set_global_assignment -name VHDL_FILE ../../cpu/tg68k/TG68KdotC_Kernel.vhd
+set_global_assignment -name SYSTEMVERILOG_FILE tg68k_fmax_top.sv
+set_global_assignment -name SDC_FILE tg68k_fmax.sdc
+# Virtual pins: the pad ring must not enter the measurement.
+set_instance_assignment -name VIRTUAL_PIN ON -to din[*]
+set_instance_assignment -name VIRTUAL_PIN ON -to ipl[*]
+set_instance_assignment -name VIRTUAL_PIN ON -to sig[*]
+set_instance_assignment -name VIRTUAL_PIN ON -to reset
+set_instance_assignment -name VIRTUAL_PIN ON -to clkena
+
+set_global_assignment -name LAST_QUARTUS_VERSION "17.0.2 Lite Edition"

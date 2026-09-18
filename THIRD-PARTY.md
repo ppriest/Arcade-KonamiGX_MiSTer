@@ -25,15 +25,17 @@ text, so this is not a divergence from them.
 
 ## Status
 
-**Nothing is vendored yet.** This file is written ahead of the vendoring so that each dependency's
-obligations are known before the code is in the tree rather than after. Every entry below is marked
-**planned** until its `PROVENANCE.md` exists.
+Entries are marked **in the tree** once their `PROVENANCE.md` exists, and **planned** until then.
+Each vendored directory's `PROVENANCE.md` names the exact upstream commit and records every local
+change; this file records only what each dependency obliges.
 
-## Planned dependencies
+## Dependencies
 
-### TobiFlex/TG68K.C — LGPL-3.0-or-later — *planned*
+### TobiFlex/TG68K.C — LGPL-3.0-or-later — **in the tree**
 
-<https://github.com/TobiFlex/TG68K.C> — the 68EC020 main CPU, to land in `rtl/cpu/tg68k/`.
+<https://github.com/TobiFlex/TG68K.C> — the 68EC020 main CPU, in `rtl/cpu/tg68k/`, at
+`ade33e39`. Modified: explicit zero initializers in two files, each with a §5(a) notice — see its
+`PROVENANCE.md`.
 Copyright (c) Tobias Gubener. Each file's header states LGPL-3.0-or-later; there is no separate
 `LICENSE` file upstream. `Arcade-Psikyo_MiSTer` pins commit `ade33e396a1e647c2de9daf71ff9d5b3979639b2`
 (2025-03-24) and its `rtl/cpu/tg68k/PROVENANCE.md` is the integration writeup to carry over.
@@ -44,22 +46,29 @@ modified file's change notice.
 Note the upstream README's own caveat, because it is a technical risk rather than a licence one:
 "The core does not value cycle accuracy." That is recorded under Phase 0 in the roadmap.
 
-### jotego/jtcores — GPL-3.0-or-later — *planned*
+### jotego/jtcores — GPL-3.0-or-later — **in the tree** (four chips; two planned)
 
 <https://github.com/jotego/jtcores>, Jose Tejada Gomez and contributors. Repository `LICENSE` is the
 GPLv3 text and the individual files carry
 `SPDX-License-Identifier: GPL-3.0-or-later` headers, which is the grant this project relies on.
 
-Planned modules, each to be vendored with its own `PROVENANCE.md` naming the upstream commit:
+All from commit `e7958c86`. **Verbatim** — no local changes to any of them.
 
-| module | files | for |
+| module | where | state |
 |---|---|---|
-| K053252 CRTC | `cores/rungun/hdl/jtk053252.v` | video timing and INT1/INT2 |
-| K054156/K054157 tilemaps | `modules/jt05415x/` | the four tilemap layers |
-| K053246/K053247 sprites | `cores/simson/hdl/jt053246*.{sv,v}`, `jtsimson_obj.v` | the sprite plane, as `cores/rungun` drives a K055673 |
-| K054338 alpha blender | `cores/moo/hdl/jt054338.v` | blending, with the `ALPHA_INV` parameter GX needs |
-| K053936 PSAC2 | `cores/rungun/hdl/jt053936.v` | Type 1/3/4 only, out of the first scope |
-| 93C46 EEPROM | `jotego/jteeprom`, `jt5911.sv` | settings, which the games check at boot |
+| K053252 CRTC | `rtl/video/k053252/` | in the tree; upstream's differential bench passes here |
+| K054156/K056832 tilemaps | `rtl/video/k056832/` | in the tree |
+| K053246/K055673 sprites | `rtl/video/k055673/` | in the tree |
+| K054338 alpha blender | `rtl/video/k054338/` | in the tree |
+| jtframe HDL dependencies | `rtl/jtframe/` | in the tree — 12 files, taken one at a time |
+| jtframe generator (Go) | `tools/jtframe/` | in the tree — the tool, not the framework |
+| K053936 PSAC2 | `cores/rungun/hdl/jt053936.v` | *planned*, Type 1/3/4 only, out of the first scope |
+| 93C46 EEPROM | `jotego/jteeprom`, `jt5911.sv` | *planned* |
+
+Four of the vendored `*_mmr.v` files are **generated** by `tools/jtframe` rather than taken from
+upstream's tree, because jotego generates them rather than committing them. The generator's own
+template says "Do not add generated `*_mmr.v` files to git"; this project does anyway, and
+`tools/jtframe/PROVENANCE.md` says why. `scripts/regen_mmr.sh --check` detects drift.
 
 Obligations: publish the source, and **GPLv3 §5(a) — every modified file must carry prominent notice
 that it was changed, and a date.** jotego's files already carry an SPDX header and an author line;

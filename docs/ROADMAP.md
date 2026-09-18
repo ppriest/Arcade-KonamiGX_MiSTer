@@ -33,6 +33,9 @@ identifiable:
    8 bpp across the game list.
 4. **The K054539**, which is a port rather than a piece of design work, on a licence assumption
    recorded in [`THIRD-PARTY.md`](../THIRD-PARTY.md) rather than on a grant from its author.
+5. **The TMS57002 "DASP" effects DSP.** Phase 0 measured that all 22 in-scope sets load programs
+   into it, so it is required, and no FPGA implementation exists. It was a measure-first item until
+   the survey ran; see "Sound".
 
 Everything else is a port with verification.
 
@@ -189,7 +192,7 @@ sprite-list construction).
 |---|---|---|
 | MC68EC020 @ 24 MHz | main CPU | yes |
 | MC68000 @ 8 MHz (`SUB_CLOCK/2`) | sound CPU | yes |
-| TMS57002 @ 12 MHz (`MASTER_CLOCK/2`) | "DASP" effects DSP | measure first (see Open items) |
+| TMS57002 @ 12 MHz (`MASTER_CLOCK/2`) | "DASP" effects DSP | **yes — all 22 sets use it** (Phase 0, criterion 5) |
 | K053252 @ 6 MHz (`MASTER_CLOCK/4`) | CRTC / interrupt generator | yes |
 | K054156 + K056832 | tilemap generator, 4 layers, 4–8 bpp | yes |
 | K053246 + K055673 | sprite generator, 5–8 bpp | yes |
@@ -339,9 +342,23 @@ Interrupts: K056800 raises IRQ 1 on a message from the 68020; the first K054539'
 IRQ 2, gated by bit 0 of the sound control word.
 
 The TMS57002's data space is `map(0x00000, 0x3ffff).ram()` — 256K words of external RAM in MAME's
-model. That number alone makes it a scope question rather than an implementation task; it is also
-routed at 0.3 gain against the K054539s' 1.0, so its audible contribution is bounded. Measuring
-whether any in-scope game uploads a program to it is a Phase 0 task.
+model — and it is routed at 0.3 gain into the K054539s' aux inputs against their 1.0, so its
+contribution is effects rather than primary audio.
+
+**Every in-scope game uses it.** `scripts/dasp_survey.py` taps the sound 68000's writes to the DSP's
+control word and data port over the first 60 s of attract mode: all 22 sets drive it into
+program-load mode, 12 to 28 times each, and all but the three `le2` sets also load coefficients. So
+the DSP is not optional — it is a fifth block with no FPGA implementation anywhere, alongside the
+K055555, the ESC and the two colour-depth extensions. The fallback, if it proves too large, is to
+run the games without it: the K054539 outputs carry the primary audio on their own, and what would be
+lost is the effects mix. That is a Phase 3 decision, and it needs listening to MAME with the DASP's
+four routes muted before it is made.
+
+What the survey does **not** establish is what each upload contains. The chip's program space is
+256 words (`tms57002.cpp`, `internal_pgm`: `map(0x00, 0xff)`), yet every set has upload sessions of
+1,023 bytes — more than a full program's 774 under the simple three-bytes-per-word model. Either a
+session carries more than one program, the program counter wraps, or the stream is not what that
+model assumes. It has to be settled before the DSP is designed, not after.
 
 ### Protection
 
@@ -399,7 +416,7 @@ here yet.
 | DDRAM backend | Psikyo's `ddram_phy`/`ddram_arbiter`/`ddram_download` | `Arcade-Psikyo_MiSTer/rtl/memory/` |
 | Debug probe, tracer, counters, pause | Port from Seta with header comments intact | `Arcade-Seta_MiSTer/rtl/debug/` |
 | Top-level framework | **MiSTer-devel/Template_MiSTer** (already checked in) | this repo's `sys/` |
-| **TMS57002 DASP** | No implementation found anywhere. Decide by measurement whether it is needed | MAME `cpu/tms57002/` is the behavioural reference |
+| **TMS57002 DASP** | **From scratch — required.** All 22 in-scope sets load programs into it. No implementation found anywhere | MAME `cpu/tms57002/` is the behavioural reference |
 
 ## On-chip RAM budget
 
@@ -582,19 +599,43 @@ Exit criteria:
 
 1. **Every vendored module's own tests pass unchanged, on arrival.** A vendored block that fails its
    own tests is a porting problem, and finding that out after GX-specific edits is how a day is lost.
+   — **Met, as far as tests exist.** Only the K053252 arrived with one; its differential bench
+   against furrtek's silicon-derived reference passes (`scripts/run_jt_unit.sh k053252_tb`). The
+   sprites, tilemaps and K054338 have none upstream, so their regression is Phase 1's model.
 2. **TG68K.C boots the first target's program ROM and matches MAME's bus trace**, diffed access by
    access as a subsequence with duplicates collapsed (Seta's method), every peripheral stubbed to
    whatever MAME's would return. This is the test that catches a wrong interleave, a wrong reset
    vector and wrong DTACK behaviour in one run, and none of TG68K.C's prior use here ran GX's
    `ROM_LOAD32_WORD_SWAP` layout.
+   — **Met for `daiskiss`.** The program-ROM image was proven first, offline: 1,049,951 of 1,049,951
+   MAME reads agree with it, where the three wrong permutations of the same two files score 12–21%.
+   Then `sim/gx_boot_tb` over 1.2M accesses: **194 of 194 writes** match MAME in address, lanes, data
+   and order, both I/O reads match, and every MAME ROM read in the window is covered. The RTL's
+   first program-ROM read is at access 884,944 — **the same access number as MAME's** — and it is
+   executing the game's program when the run ends. Not yet exercised: interrupts, since the window
+   contains none.
 3. **Measured CPI on real game code**, against the 24 MHz the board runs at, with the split between
    execution and memory stall reported the way Model 1 and MS32 did. The number that matters is not
    CPI but which half of it a wider instruction port can move.
+   — **Measured, and it sets the memory budget.** Between two writes inside the game's program
+   (the 31st and 49th byte writes to `0xD56000`, ~197,000 accesses of game code — not the BIOS
+   checksum), MAME's 68EC020 takes **394,808 cycles** at 24 MHz, ±~1% (each mark can be early by one
+   6 kHz scheduler quantum). TG68K.C takes **197,592 kernel clocks** of execution — it makes almost
+   exactly one bus access per clock — so its zero-wait floor is **0.50×** the board. The bench's own
+   one-wait-state handshake lands at **1.001×**. So at a 24 MHz `clk_cpu`, **the memory system has
+   a budget of one wait state per access on average** to match the real board; zero-wait would be
+   2× faster, two wait states 1.5× slower. That is the target the Phase 2 instruction path is sized
+   against.
 4. **Standalone Fmax and area for TG68K.C at this project's settings**, on Cyclone V speed grade 7,
    with the constraint that proves it committed **in the same commit as the measurement**. Starting
    point: 48.74 MHz in the Psikyo design. This decides the clock plan.
+   — **Met: 48.97 MHz** at the slow 100°C corner, 2,927 ALMs, 6 DSPs, 2 M10K
+   (`rtl/synth_check/tg68k/`). The limit is the register-file bypass network, as on Psikyo. A shared
+   48 MHz `clk_sys` would leave 2.0%; a dedicated 24 MHz `clk_cpu` leaves ~2×. **The separate CPU
+   clock domain is decided.**
 5. **The TMS57002 question answered**: a MAME tap showing whether any in-scope set writes a program
    to `0x300001`, and what the audio sounds like with the DASP's four routes muted.
+   — **Answered: yes, all 22.** See "Sound" above. The listening half is not done.
 
 **Phase 1 — Video, against a software model.**
 
@@ -736,8 +777,10 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
   over a z-buffer. furrtek's register notes describe a chip with per-layer colour-bit selection,
   palette banking, a background gradient and MIX/BRIGHT codes. Reconciling the two is Phase 1's
   largest unknown, and the one thing here with no prior implementation at all.
-- **Whether the TMS57002 is needed.** Measurable in Phase 0 and worth measuring before it is
-  designed.
+- ~~**Whether the TMS57002 is needed.**~~ **It is: all 22 in-scope sets load programs into it.**
+  What stays open is what each upload contains — sessions exceed the chip's 256-word program space —
+  and whether the games are acceptable without it, which is a listening test against MAME with the
+  DASP muted.
 - ~~**The tilemap VRAM size the board actually populates.**~~ **Answered, and it is the full
   128 KB.** A write tap over `daiskiss` to frame 1200 shows **16 distinct tilemap bank selections**,
   and no write in any bank ever passes offset `0x2000` — so the game reaches 16 × 8 KB and never
@@ -768,4 +811,10 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
    testbench unchanged.~~ Done for the video chipset and the main CPU; see "Progress". `fx68k` (the
    sound 68000) is Phase 3 and the K054539 waits on
    [furrtek/SiliconRE#40](https://github.com/furrtek/SiliconRE/issues/40).
-5. Build the MAME capture pipeline and settle the first-target set by measurement.
+5. ~~Build the MAME capture pipeline.~~ Done — `scripts/mame_capture.py`, plus a boot tracer and
+   the tools Phase 0 needed. The first-target set is **`daiskiss`**: the smallest ROM set, and the
+   one Phase 0's CPU work was proven on.
+6. **Phase 0 is met on criteria 1, 2, 4 and 5, and measured on 3.** What it leaves open is
+   written against each criterion under "Phased roadmap": interrupts unexercised by the boot bench,
+   and what each DSP upload contains. Next is Phase 1 — `render_model.py`, the software model of
+   `konamigx_v.cpp`, checked pixel-exact against captures before any video RTL is compared to it.

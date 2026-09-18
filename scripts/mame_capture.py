@@ -87,7 +87,7 @@ def main():
     # it is working while the machine never advances a frame (WORKFLOW s9).
     cmd = [str(mame_dir / mame_exe), a.set,
            "-nodebug", "-nowindow", "-video", "none", "-sound", "none",
-           "-skip_gameinfo", "-seconds_to_run", str(seconds),
+           "-skip_gameinfo", "-nothrottle", "-seconds_to_run", str(seconds),
            "-autoboot_script", str(LUA),
            "-rompath", f"{REPO / 'roms'};{mame_dir / 'roms'}"]
 
