@@ -80,20 +80,24 @@ git diff --no-index rtl/video/k055673/jt053246_dma_upstream_reference.v rtl/vide
 | file | change | why |
 |---|---|---|
 | `jt053246_dma.v` | `GX_ORDER` parameter: copy the first 256 sprites (words 0–2047) in RAM order, instead of into the table slot named by each sprite's priority byte | The slot sort keeps one sprite per priority value. `daiskiss` gives many sprites the same z-code — 35 sprites on 2 values on its title frame — and scored in software the slot sort kept 2 of them. jotego's README calls the sort "this implementation"; its PCB measurements are of the DMA's duration only. Ordering moves to the line buffer (below). |
-| `jt053246_scan.sv` | outputs `zcode` (word 0 bits 7:0) and `attr_full` (word 6 as scanned); `HADJ` made a parameter | the line buffer's key needs the z-code; GX's colour callback and `primode` filter need word 6 bits 10–15. `HADJ` is a Simpsons-specific shift for sprites starting left of `hdump` 0x20; GX runs with 0 |
-| `jt053246.sv` | passes `GX_ORDER`, `HADJ`, `zcode`, `attr_full` through | plumbing |
+| `jt053246_scan.sv` | outputs `zcode` (word 0 bits 7:0), `attr_full` (word 6 as scanned) and `obj_idx` (the table index, latched with `zcode`); `HADJ` made a parameter | the line buffer's key needs the z-code; GX's colour callback and `primode` filter need word 6 bits 10–15; the mixer ranks a sprite against a shadow by index, as MAME's order does. `obj_idx` must be latched: `scan_obj` advances in the same step that issues a multi-tile sprite's last draw, and read live it was one high on 60% of frame 6000's sprite pixels. `HADJ` is a Simpsons-specific shift for sprites starting left of `hdump` 0x20; GX runs with 0 |
+| `jt053246.sv` | passes `GX_ORDER`, `HADJ`, `zcode`, `attr_full`, `obj_idx` through | plumbing |
 
 `jtsimson_obj.v` is **unmodified and not used by GX**. Its GX counterpart is
 [`../gx_obj.v`](../gx_obj.v), derived from it and saying so in its header: GX's sprite callback
 (VRC code banks, colour and priority through the K055555 fields), `konamigx_mixer`'s solid/shadow
 split and `primode` 4 filter, 5 bpp, and the line buffer with a `{z-code, priority}` key —
-[`../gx_obj_linebuf.v`](../gx_obj_linebuf.v), written for this project — where a pixel is written
-only over a blank one or one with a greater key (MAME's order; `docs/MAME_KLUDGES.md`).
+[`../gx_obj_linebuf.v`](../gx_obj_linebuf.v), written for this project. It has two planes. The
+solid plane keeps the lowest `{z-code, priority}`, first written winning a tie. The shadow plane
+keeps the *highest* `{shadow priority, z-code}`, last written winning a tie, because MAME draws
+shadows back to front and its shadow z-buffer lets the first one drawn stand (`docs/MAME_KLUDGES.md`).
 
-**Result.** `scripts/check_gx_obj.py <capture> --voffset 281` runs `sim/gx_obj_tb` and compares
-every pixel's valid bit, pen and priority with the model's solid-sprite stage: `daiskiss` title,
-2400, 3600, 4800 and 6000, **64,512 of 64,512 each**, with no line on which the list scan fails to
-finish. `voffset` 281 and `HOFFSET` 62 place bitmap row 16 at `vdump` 0x110 and bitmap column 24 at
+**Result.** `scripts/check_gx_obj.py <capture>` runs `sim/gx_obj_tb` (Verilator by default,
+`--sim modelsim` for the four-state run) and compares every pixel with the model. Solid plane:
+valid bit, pen, priority and sprite index. Shadow plane: valid bit, sprite, shadow code and mode.
+Both planes match on `daiskiss` title, 2400, 3600, 4800 and 6000, **64,512 of 64,512 each**. That
+includes 570 shadow pixels on frame 3600 and 12,302 on frame 6000, and no line on which the list
+scan fails to finish. Frames 3600 and 6000 were also run on ModelSim with the same result. `voffset` 281 and `HOFFSET` 62 place bitmap row 16 at `vdump` 0x110 and bitmap column 24 at
 `hdump` 0x70 in the bench's timing; the real values come with the K053252 setup.
 
 **A timing constraint for that setup:** `jtframe_objdraw_gate` reads the line buffer through a

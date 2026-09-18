@@ -80,3 +80,12 @@ with the same file list instead; `sim/k053252_tb/files.f` is that list.
 
 One benign warning: `invalid file descriptor (0x0) given to $fseek` is the module's optional
 `SIMFILE` power-on-state file (`ccu.bin`) being absent.
+
+## With GX's settings
+
+`sim/k053252_gx_tb` programs this module with the 16 registers `daiskiss` writes and measures its
+output: 384 × 264 total and a 288 × 224 visible area, which is MAME's decoding of the same
+registers (`k053252_device::res_change`). `rtl/video/gx_video.sv` uses it as the video timing, and
+the whole video path then reproduces MAME's screenshots (`scripts/check_gx_video.py`). Sync sits
+one pixel and one line earlier than MAME's register naming implies; MAME does not generate sync,
+so there is nothing to compare it with.

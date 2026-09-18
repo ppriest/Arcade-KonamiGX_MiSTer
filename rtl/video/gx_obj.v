@@ -17,8 +17,12 @@
  *     fields; the code gets the K055673's VRC bank bits.
  *   - solid/shadow split as konamigx_mixer does it: a sprite with shadow
  *     code 0 is solid; with a shadow code it is solid except its shadow pen
- *     (31) if the code is not 1 or OBJSET1 bit 5 is set; otherwise it is all
- *     shadow and is not drawn here. Shadows are the mixer's (not done yet).
+ *     (31), and that pen is a shadow if the code's shadow set is on, when the
+ *     code is not 1 or OBJSET1 bit 5 is set; otherwise every pen is shadow,
+ *     if set 0 is on, and the sprite has no solid pixels. Shadow pixels go
+ *     to the line buffer's shadow plane with the shadow priority
+ *     (SHAD1_PRI.. or the sprite's own, OPSET bit 5; raised to spri_min in
+ *     primodes 4 and 5).
  *   - konamigx_mixer's primode 4 "Daisukiss bad shadow filter".
  *
  * ROM: one request per 8 pixels, rom_addr = { code[17:0], row[3:0], half },
@@ -26,14 +30,16 @@
  * them (byte 0 in [39:32]; within a byte the leftmost pixel is the MSB; the
  * pixel is b4<<4 | b3<<3 | b2<<2 | b1<<1 | b0).
  *
- * OUTPUT per pixel: valid (pen != 0), pen = colour * 32 + pixel (13 bits,
- * K055673 colour granularity 32), pri (the K055555 input priority), zcode.
+ * OUTPUT per pixel, solid plane: valid (pen != 0), pen = colour * 32 +
+ * pixel (13 bits, K055673 colour granularity 32), pri (the K055555 input
+ * priority), zcode, index. Shadow plane: valid, every-pen mode, code (which
+ * K054338 shadow set), index, shadow priority, zcode. The index and zcode
+ * are what the mixer needs to rank a sprite against a shadow as MAME does.
  */
 
 module gx_obj #(parameter
     HOFFSET = 10'd62,
-    HADJ    = 10'd0,
-    KEYW    = 16        // 0 = jotego's last-written-wins buffer (bench A/B only)
+    HADJ    = 10'd0
 )(
     input             rst,
     input             clk,
@@ -70,6 +76,11 @@ module gx_obj #(parameter
     input      [ 7:0] ocblk,       // K55_PALBASE_OBJ
     input      [ 7:0] wrport2,
     input      [ 3:0] primode,     // konamigx_mixer_primode, per machine config
+    input      [ 2:0] shadowon,    // K054338 shadow set i has a delta outside +/-7
+    input      [ 7:0] shdpri0,     // K55_SHAD1_PRI
+    input      [ 7:0] shdpri1,     // K55_SHAD2_PRI
+    input      [ 7:0] shdpri2,     // K55_SHAD3_PRI
+    input      [ 7:0] spri_min,    // highest priority of a layer SHD_ON leaves unshadowed
 
     // sprite ROM
     output     [22:0] rom_addr,
@@ -81,7 +92,14 @@ module gx_obj #(parameter
     output            pxl_valid,
     output     [12:0] pxl_pen,
     output     [ 7:0] pxl_pri,
-    output     [ 7:0] pxl_z
+    output     [ 7:0] pxl_z,
+    output     [ 7:0] pxl_idx,
+    output            shd_valid,
+    output            shd_full,
+    output     [ 1:0] shd_code,
+    output     [ 7:0] shd_idx,
+    output     [ 7:0] shd_pri,
+    output     [ 7:0] shd_z
 );
 
 // ------------------------------------------------------------ registers
@@ -116,7 +134,7 @@ wire [ 3:0] coregshift = 4'd4 + { 1'b0, opj };
 wire [15:0] code;
 wire [ 9:0] attr, hpos;
 wire [15:0] attr_full;
-wire [ 7:0] zcode;
+wire [ 7:0] zcode, obj_idx;
 wire        hflip, vflip, hz_keep, dr_start, dr_busy, dma_bsy;
 wire [ 3:0] ysub;
 wire [11:0] hzoom;
@@ -156,6 +174,7 @@ jt053246 #(
     .hz_keep    ( hz_keep   ),
     .zcode      ( zcode     ),
     .attr_full  ( attr_full ),
+    .obj_idx    ( obj_idx   ),
     .hdump      ( hdump     ),
     .vdump      ( vdump     ),
     .voffset    ( voffset   ),
@@ -206,16 +225,27 @@ always @* begin
     endcase
 end
 
-// konamigx_mixer's solid/shadow split and the primode 4 filter
+// konamigx_mixer's solid/shadow split, shadow priority and primode filter
 wire [1:0] shcode   = attr_full[11:10];
-wire       solid    = shcode==0 || shcode!=1 || objset1[5];
-wire       mode1    = shcode!=0;            // shadow pen is not solid
+wire       partial  = shcode!=0 && ( shcode!=1 || objset1[5] );
+wire [1:0] shset    = partial ? shcode - 2'd1 : 2'd0;
+wire       solid    = shcode==0 || partial;
+wire       mode1    = shcode!=0;            // pen 31 is not solid
+wire [1:0] shmode   = !shcode ? 2'd0 :
+                      partial ? ( shadowon[shset] ? 2'd1 : 2'd0 ) :
+                                ( shadowon[0]     ? 2'd2 : 2'd0 );
 wire       filtered = primode==4 && (attr_full[13:12]!=0 || attr_full==16'h0800);
-wire       draw     = dr_start && solid && !filtered;
+wire       draw     = dr_start && !filtered && ( solid || shmode!=0 );
+reg  [7:0] spri;
+always @* begin
+    spri = opset[5] ? pri : shset==2'd0 ? shdpri0 : shset==2'd1 ? shdpri1 : shdpri2;
+    if( (primode==4 || primode==5) && spri < spri_min ) spri = spri_min;
+end
 
 // ------------------------------------------------------------ draw
-// pal = { zcode, pri, color, mode1 }; the key is its top 16 bits.
-localparam PW = 8+8+8+1+5;
+// The data word gx_obj_linebuf.v documents: { z, pri, spri, index, colour,
+// solid, mode1, shadow mode, shadow code, pen }, padded to PW.
+localparam PW = 72;
 wire [PW-1:0] buf_pred, buf_din, pre_pxl;
 wire [24:2]   draw_addr;
 wire [39:0]   sorted;
@@ -229,15 +259,14 @@ generate for( gk=0; gk<5; gk=gk+1 ) begin : g_plane
     end
 end endgenerate
 
-// mode 1: pen 31 is the shadow pen, not drawn as a colour
-assign buf_din = ( buf_pred[5] && buf_pred[4:0]==5'd31 ) ? { buf_pred[PW-1:5], 5'd0 } : buf_pred;
+assign buf_din = buf_pred;    // the solid/shadow split is in gx_obj_linebuf
 
 // draw_addr = { code, H, Y } -> external { code, Y, H }
 assign rom_addr = { draw_addr[24:7], draw_addr[5:2], draw_addr[6] };
 
 jtframe_objdraw_gate #(
     .AW(10), .CW(18), .PW(PW), .ZW(12), .ZI(6), .ZENLARGE(1),
-    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(5), .KEYW(KEYW)
+    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(5), .KEYW(16), .FIRST_PX(1)
 ) u_draw (
     .rst        ( rst            ),
     .clk        ( clk            ),
@@ -255,7 +284,7 @@ jtframe_objdraw_gate #(
     .hz_keep    ( hz_keep        ),
     .hflip      ( hflip          ),
     .vflip      ( vflip          ),
-    .pal        ( { zcode, pri, color, mode1 } ),
+    .pal        ( { 21'd0, zcode, pri, spri, obj_idx, color, solid, mode1, shmode, shset } ),
     .rom_addr   ( draw_addr      ),
     .rom_cs     ( rom_cs         ),
     .rom_ok     ( rom_ok         ),
@@ -266,8 +295,15 @@ jtframe_objdraw_gate #(
 );
 
 assign pxl_valid = pre_pxl[4:0] != 0;
-assign pxl_pen   = { pre_pxl[13:6], pre_pxl[4:0] };
-assign pxl_pri   = pre_pxl[21:14];
-assign pxl_z     = pre_pxl[29:22];
+assign pxl_pen   = { pre_pxl[12:5], pre_pxl[4:0] };
+assign pxl_idx   = pre_pxl[20:13];
+assign pxl_pri   = pre_pxl[28:21];
+assign pxl_z     = pre_pxl[36:29];
+assign shd_z     = pre_pxl[44:37];
+assign shd_pri   = pre_pxl[52:45];
+assign shd_idx   = pre_pxl[60:53];
+assign shd_code  = pre_pxl[62:61];
+assign shd_full  = pre_pxl[63];
+assign shd_valid = pre_pxl[64];
 
 endmodule

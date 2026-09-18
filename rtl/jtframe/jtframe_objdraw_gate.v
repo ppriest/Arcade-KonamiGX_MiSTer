@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 18-12-2022 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * BPP and KEYW parameters; with KEYW>0 the line buffer is gx_obj_linebuf.
+ * BPP, FIRST_PX and KEYW parameters; with KEYW>0 the line buffer is gx_obj_linebuf.
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -43,6 +43,7 @@ module jtframe_objdraw_gate #( parameter
     PACKED     =0, // 0 if rom_data is { plane3, plane2, plane1, plane0 }, 8 bits each
                    // 1 if rom_data packs the 4 planes in nibbles
     BPP        =4, // [GX] 4 or 5 bits per pixel; PACKED only for 4
+    FIRST_PX   =0, // [GX] see jtframe_draw
     KEYW       =0  // [GX] >0: the top KEYW bits of each pixel are a key and a pixel is
                    // written only over a blank one or one with a greater key --
                    // rtl/video/gx_obj_linebuf.v replaces jtframe_obj_buffer
@@ -206,7 +207,8 @@ jtframe_draw #(
     .ZENLARGE( ZENLARGE ),
     .SWAPH   ( SWAPH    ),
     .KEEP_OLD( KEEP_OLD ),
-    .BPP     ( BPP      )
+    .BPP     ( BPP      ),
+    .FIRST_PX( FIRST_PX )
 )u_draw(
     .rst        ( rst       ),
     .clk        ( clk       ),

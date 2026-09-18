@@ -429,7 +429,7 @@ repository already.
 | **done** `build_staged.py` | worktree build at `build/`, refuses dirty tree, gates on slack |
 | **done** `deploy.py` | slack-gated deploy, incrementing `.rbf` numbering, fallbacks on device. MS32's capture-blob path deliberately not carried over |
 | **done** `run_sim.sh` | one testbench, fresh `work` library every run, and it takes the lock |
-| `run_verilator.py` | the fast second simulator; outside the lock |
+| **done** `run_verilator.sh` | the fast second simulator; outside the lock. Ported from Seta; `-G` parameter overrides go to the build. `scripts/check_gx_obj.py` uses it by default: ~3 s a frame against ~15 s in ModelSim, same result on all five sprite frames |
 | `cfg.py` | read-modify-write of the per-core `.CFG` status word |
 | `read_issp.tcl`, `read_issp.py` | read the probe / write the source bus over JTAG |
 | `report_worst_paths.tcl` | worst setup paths from the compiled database |

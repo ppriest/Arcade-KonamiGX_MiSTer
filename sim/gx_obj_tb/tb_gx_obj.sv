@@ -16,7 +16,6 @@
 module tb_gx_obj;
 
 parameter int HOFFSET = 62;
-parameter int KEYW    = 16;
 
 localparam string DIR = "debug/gx_obj_tb/";
 
@@ -56,6 +55,8 @@ reg  [ 3:0] mmr_addr;
 reg  [ 2:0] k47_addr;
 reg  [ 7:0] opri, oinprion, ocblk, wrport2;
 reg  [ 3:0] primode;
+reg  [ 2:0] shadowon;
+reg  [ 7:0] shdpri0, shdpri1, shdpri2, spri_min;
 reg  [ 9:0] voffset = 0;
 wire [22:0] rom_addr;
 wire        rom_cs;
@@ -63,24 +64,29 @@ reg         rom_ok = 0;
 reg  [39:0] rom_data;
 wire        pxl_valid;
 wire [12:0] pxl_pen;
-wire [ 7:0] pxl_pri, pxl_z;
+wire [ 7:0] pxl_pri, pxl_z, pxl_idx;
+wire        shd_valid, shd_full;
+wire [ 1:0] shd_code;
+wire [ 7:0] shd_idx, shd_pri, shd_z;
 
-gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0), .KEYW(KEYW)) dut (
+gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0)) dut (
     .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset, .hs, .lvbl,
     .ram_cs, .ram_we, .ram_addr, .ram_din, .ram_dout(),
     .reg_cs, .mmr_we, .mmr_addr, .mmr_din, .mmr_dsn,
     .k47_we, .k47_addr, .k47_din,
     .opri, .oinprion, .ocblk, .wrport2, .primode,
+    .shadowon, .shdpri0, .shdpri1, .shdpri2, .spri_min,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
-    .pxl_valid, .pxl_pen, .pxl_pri, .pxl_z
+    .pxl_valid, .pxl_pen, .pxl_pri, .pxl_z, .pxl_idx,
+    .shd_valid, .shd_full, .shd_code, .shd_idx, .shd_pri, .shd_z
 );
 
 // ----------------------------------------------------------- ROM
 reg [15:0] spr_v  [2048];
 reg [ 7:0] k46_v  [8];
 reg [15:0] k47_v  [8];
-reg [ 7:0] misc_v [8];     // opri, oinprion, ocblk, wrport2, primode
-reg [39:0] rom_v  [];
+reg [ 7:0] misc_v [16];    // opri, oinprion, ocblk, wrport2, primode, shadowon, shdpri0-2, spri_min
+reg [39:0] rom_v  [1 << 20];   // fixed size: Verilator cannot $readmemh a dynamic array
 int        ntiles, ROM_LAT = 6;
 
 reg [22:0] last_addr;
@@ -99,7 +105,7 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- probes
-int n_dma = 0, n_draw = 0, n_rom = 0;
+int n_dma = 0, n_draw = 0, n_rom = 0, n_hreq = 0, n_shdraw = 0;
 reg dma_l = 0, cs_l = 0;
 always @(posedge clk) begin
     dma_l <= dut.dma_bsy;
@@ -107,6 +113,8 @@ always @(posedge clk) begin
     if (dut.dma_bsy && !dma_l) n_dma++;
     if (dut.draw) n_draw++;
     if (rom_cs && !cs_l) n_rom++;
+    if (dut.u_draw.g_keybuf.u_linebuf.h_req) n_hreq++;
+    if (dut.draw && dut.shmode != 0) n_shdraw++;
 end
 
 // ----------------------------------------------------------- stimulus
@@ -117,7 +125,7 @@ initial begin
     if (!$value$plusargs("NTILES=%d", ntiles)) $fatal(1, "+NTILES= missing");
     void'($value$plusargs("ROM_LAT=%d", ROM_LAT));
     void'($value$plusargs("VOFFSET=%d", voffset));
-    rom_v = new[ntiles * 32];
+    if (ntiles * 32 > (1 << 20)) $fatal(1, "sprite ROM larger than rom_v");
     $readmemh({DIR, "spr.hex"},  spr_v);
     $readmemh({DIR, "k46.hex"},  k46_v);
     $readmemh({DIR, "k47.hex"},  k47_v);
@@ -125,6 +133,8 @@ initial begin
     $readmemh({DIR, "rom.hex"},  rom_v);
     { opri, oinprion, ocblk, wrport2 } = { misc_v[0], misc_v[1], misc_v[2], misc_v[3] };
     primode = misc_v[4][3:0];
+    shadowon = misc_v[5][2:0];
+    { shdpri0, shdpri1, shdpri2, spri_min } = { misc_v[6], misc_v[7], misc_v[8], misc_v[9] };
 
     repeat (8) @(posedge clk);
     rst <= 0;
@@ -151,11 +161,12 @@ initial begin
     f = $fopen({DIR, "out.hex"}, "w");
     while (frame == cap_frame) begin
         @(posedge clk);
-        if (pxl_cen) $fwrite(f, "%03x %03x %01x%02x%02x%04x\n", vdump, hdump,
-                             pxl_valid, pxl_z, pxl_pri, pxl_pen);
+        if (pxl_cen) $fwrite(f, "%03x %03x %01x%02x%02x%04x %02x %01x%01x%01x%02x%02x%02x\n",
+                             vdump, hdump, pxl_valid, pxl_z, pxl_pri, pxl_pen, pxl_idx,
+                             shd_valid, shd_full, shd_code, shd_idx, shd_pri, shd_z);
     end
     $fclose(f);
-    $display("PROBES dma %0d, draw cycles %0d, rom requests %0d", n_dma, n_draw, n_rom);
+    $display("PROBES dma %0d, draw cycles %0d, rom requests %0d, shadow draws %0d, shadow writes %0d", n_dma, n_draw, n_rom, n_shdraw, n_hreq);
     $display("GX_OBJ_DONE");
     $finish;
 end

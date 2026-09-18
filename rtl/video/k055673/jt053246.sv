@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 30-7-2023 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * GX_ORDER and HADJ parameters, zcode and attr_full outputs passed through.
+ * GX_ORDER and HADJ parameters, zcode, attr_full and obj_idx outputs passed through.
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -44,6 +44,7 @@ module jt053246(    // sprite logic
     output reg        hz_keep,
     output     [ 7:0] zcode,     // [GX]
     output     [15:0] attr_full, // [GX]
+    output     [ 7:0] obj_idx,   // [GX]
 
     // base video
     input      [ 8:0] hdump,    // Not inputs in the original, but
@@ -107,6 +108,7 @@ jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
     .hz_keep   ( hz_keep    ),
     .zcode     ( zcode      ),
     .attr_full ( attr_full  ),
+    .obj_idx   ( obj_idx    ),
     .hdump     ( hdump      ),
     .vdump     ( vdump      ),
     .voffset   ( voffset    ),

@@ -1,0 +1,3 @@
+rtl/video/gx_sdpram.sv
+rtl/video/gx_mixer.v
+sim/gx_mixer_tb/tb_gx_mixer.sv

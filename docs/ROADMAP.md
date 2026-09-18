@@ -242,6 +242,67 @@ Two things the bench established that the integration has to keep:
 Not covered yet: shadow pens and full-shadow sprites (drawn by neither side of the comparison so
 far), alpha sprites, zoom beyond the one 4x-magnified sprite on the title frame, flip X, and 6/8 bpp.
 
+**The mixer's hardware structure reproduces MAME, in software first.** Two checks against MAME's
+screenshots, all six `daiskiss` frames, 64,512 of 64,512 each:
+
+1. `stage_mix(cap, one_sprite_pixel=True)`: MAME's painter, but each solid sprite drawn only where
+   it wins the line buffer. So the one sprite pixel per position the hardware hands the mixer loses
+   nothing MAME shows — MAME's shared z-buffer never lets a losing sprite pixel reach the screen.
+2. `stage_mix_hw`: no painter at all. Per pixel, the sources (background, layers A–D, the winning
+   sprite pixel, at most one sprite shadow) each carry a rank — their place in `konamigx_mixer`'s
+   draw order, which is the K055555 priority compare with its tie-breaks (a layer beats a sprite at
+   equal priority). The top source and the one behind it are chosen; an alpha layer on top is
+   blended over the second; the shadow shades whatever is behind its rank. This is the
+   specification for the RTL mixer.
+
+What the captures exercise and so what the RTL may assume until a capture says otherwise: at most
+one shadow on a pixel (frame 6000 has 12,302 shadowed pixels, none twice) and one alpha layer
+(layer A on frame 4800); `stage_mix_hw` raises on anything deeper. Shadows need their own line in
+the sprite buffer: MAME's shadow objects have their own z-buffer and priority (`SHAD1_PRI`…), so a
+shadow pen must not displace a solid sprite pixel. **Done:** `gx_obj_linebuf.v` has a shadow plane
+beside the solid one, and the sprite bench scores both on all five frames — 570 shadow pixels on
+frame 3600 and 12,302 on frame 6000, all matching (`rtl/video/k055673/PROVENANCE.md`).
+
+**The mixer RTL reproduces MAME's screenshots.** `rtl/video/gx_mixer.v`, written from
+`stage_mix_hw`: per pixel a sort key per source (layer `{pri, 0, layer}` — A in front at equal
+priority, which is what MAME's sort gives for every pair — sprite `{pri, 1, z, index, 0}`, shadow
+`{shadow pri, 1, z, index, 1}`), top and second picked, three palette reads (top, second,
+background), alpha blend and MAME's 15-bit shadow arithmetic. `scripts/check_gx_mixer.py` feeds it
+the per-pixel outputs of the tilemap and sprite stages (which the RTL of both reproduces exactly)
+and compares its RGB with **MAME's own `reference.png`**: frames 300, 1200, 2400, 3600, 4800 and
+6000, **64,512 of 64,512 each**, on Verilator and, for 4800 and 6000, on ModelSim. The check does
+catch errors: frame 6000's output scored against frame 4800's screenshot matches 1,426 pixels.
+
+Standalone Quartus of all three blocks together (`rtl/synth_check/gx_video/`): **67.65 MHz**,
+1,554 ALMs, 188 M10K holding exactly the arithmetic 1,524,224 bits. That came after pipelining the
+mixer's ranking: the first fit was 52.96 MHz, its worst path running from the tilemap's
+line-buffer RAM through the whole rank in one clock.
+
+**The whole video path in RTL reproduces MAME's screenshots.** `rtl/video/gx_video.sv` wires
+`gx_tilemap`, `gx_obj` and `gx_mixer` to one timing. `scripts/check_gx_video.py` loads a capture's
+VRAM, sprite RAM, registers and palette through its ports, lets two ROM models answer the fetches,
+runs a whole frame and compares the visible window with MAME's `reference.png`. Nothing from the
+software model is in that comparison. Frames 300, 1200, 2400, 3600, 4800 and 6000: **64,512 of
+64,512 each** on Verilator (about 7 s a frame), and on ModelSim for frame 6000. Frame 6000's
+output scored against frame 4800's screenshot: 1,426.
+
+**Now with the board's timing.** `gx_video.sv` contains the K053252 (jotego's `jtk053252`),
+programmed through its port with the registers `daiskiss` writes (`01 7f 00 10 00 30 00 00 01 07
+11 0e 73 00 00 00`, the same on every captured frame). `sim/k053252_gx_tb` measures what it
+generates with them: **384 × 264 total, 288 × 224 visible**, as MAME's `res_change` decodes the
+same registers. Sync sits one pixel and one line earlier than MAME's register names suggest
+(front porch / sync / back porch 15 / 32 / 49 and 16 / 9 / 15, against 16 / 32 / 48 and 17 / 8 /
+15). MAME never generates sync, so that is its naming, not a measurement. The dot clock is 6 MHz
+(`wrport2 & 3` = 0, `pixclock[0]`), not the 8 MHz of `konamigx()`'s `set_raw`. The line is 64 µs
+either way, and a pixel gets eight 48 MHz clocks. `hdump`/`vdump` are derived from the K053252's
+blanking so that MAME's visarea origin (24, 16) is the first visible pixel (`gx_video.sv` header).
+The bench records every pixel `gx_video`'s own blanking marks visible — exactly 64,512 — and
+compares that list with MAME's screenshot, with no window position assumed. Frames 300, 1200,
+2400, 3600, 4800 and 6000: **64,512 of 64,512 each** on Verilator, and on ModelSim for 3600.
+
+What that does not yet cover: the CPU is not writing the state, the capture is; one game; the
+interrupts the K053252 raises are generated but unchecked.
+
 One finding from the sprite stage: **`daiskiss` runs with K053246 OBJSET1 bit 1 (flip Y) set on every frame**,
 and its picture is the right way up, because MAME negates Y twice (`oy = -oy` for the flip, then
 `oy = (-oy - offy)`). On GX that bit set is the normal orientation, so the RTL must not read it as
@@ -971,5 +1032,9 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
 7. **Phase 1: the software model is pixel-identical to MAME on six `daiskiss` frames, and
    `gx_tilemap.sv` matches the model on all four layers of all six** (see "Progress"). Sprites and
    mixer follow the hardware's structure. `jt053246` with the GX changes matches
-   `stage_sprites_only` on all five sprite frames (see "Progress"). Next: sprite shadows through
-   the line buffer, then a per-pixel K055555 and K054338 against `stage_mix`.
+   `stage_sprites_only` on all five sprite frames, solid and shadow planes, and the per-pixel
+   mixer structure reproduces MAME in software (`stage_mix_hw`), and `gx_mixer.v` reproduces
+   MAME's screenshots from those inputs, and `gx_video.sv` — the three together — reproduces
+   MAME's screenshots from VRAM, sprite RAM, registers and palette, with the K053252 generating
+   the timing from the game's own registers (see "Progress"). Next: the CPU writing the state
+   instead of the capture -- TG68K.C, the memory map and the interrupts in one bench.

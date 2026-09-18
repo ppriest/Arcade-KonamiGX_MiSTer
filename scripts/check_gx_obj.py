@@ -41,7 +41,10 @@ def write_vectors(cap):
     sr = rm.SpriteRegs(cap)
     (OUT / "k47.hex").write_text("".join(f"{v:04x}\n" for v in sr.kx47))
     k5 = cap.k055555
-    misc = [k5[15], k5[19], k5[27], cap.wrport[0x2001], rm.SPRITE_CFG[cap.set]["primode"], 0, 0, 0]
+    shadowon, spri_min = rm.mixer_shadow_setup(cap, [k5[7], k5[10], k5[13], k5[14]])
+    misc = [k5[15], k5[19], k5[27], cap.wrport[0x2001], rm.SPRITE_CFG[cap.set]["primode"],
+            sum(1 << i for i in range(3) if shadowon[i]), k5[37], k5[38], k5[39], spri_min,
+            0, 0, 0, 0, 0, 0]
     (OUT / "misc.hex").write_text("".join(f"{v:02x}\n" for v in misc))
     # K055673_LAYOUT_GX, assembled exactly as render_model.k055673_sprites does,
     # then one 5-byte half-row per line: index = (tile * 16 + row) * 2 + half
@@ -64,15 +67,18 @@ def main():
     ap.add_argument("--voffset", type=int, default=281,
                     help="jt053246 voffset input; 281 puts bitmap row 16 at vdump 0x110")
     ap.add_argument("--rom-lat", type=int, default=6)
-    ap.add_argument("--keyw", type=int, default=16, help="0 = no key compare (A/B)")
+    ap.add_argument("--sim", choices=["verilator", "modelsim"], default="verilator",
+                    help="Verilator is ~10x faster; ModelSim is four-state (WORKFLOW 10)")
     ap.add_argument("--no-sim", action="store_true")
     a = ap.parse_args()
     cap = rm.Capture(REPO / "debug" / a.capture)
 
     if not a.no_sim:
         ntiles = write_vectors(cap)
-        r = subprocess.run([GIT_BASH, "scripts/run_sim.sh", "gx_obj_tb",
-                            f"-gHOFFSET={a.hoffset}", f"-gKEYW={a.keyw}", f"+NTILES={ntiles}",
+        g = "-G" if a.sim == "verilator" else "-g"
+        runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
+        r = subprocess.run([GIT_BASH, runner, "gx_obj_tb",
+                            f"{g}HOFFSET={a.hoffset}", f"+NTILES={ntiles}",
                             f"+ROM_LAT={a.rom_lat}", f"+VOFFSET={a.voffset}"],
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
@@ -90,16 +96,25 @@ def main():
     rows = [ln.split() for ln in (OUT / "out.hex").read_text().splitlines()]
     V, H = 264, 512
     valid = np.zeros((V, H), bool)
-    pen = np.zeros((V, H), np.int32)
-    pri = np.zeros((V, H), np.int32)
-    for v, h, d in rows:
+    pen, pri, idx = (np.zeros((V, H), np.int32) for _ in range(3))
+    hval = np.zeros((V, H), bool)
+    hfull, hcode, hidx = (np.zeros((V, H), np.int32) for _ in range(3))
+    for v, h, d, i, sh in rows:
         vi, hi, x = int(v, 16) - 0xF8, int(h, 16), int(d, 16)
         valid[vi, hi] = x >> 32 & 1
         pri[vi, hi] = x >> 16 & 0xff
         pen[vi, hi] = x & 0x1fff
+        idx[vi, hi] = int(i, 16)
+        y = int(sh, 16)                        # valid, full, code, idx, spri, z
+        hval[vi, hi] = y >> 32 & 1             # one hex digit each for valid, full, code
+        hfull[vi, hi] = y >> 28 & 1
+        hcode[vi, hi] = y >> 24 & 3
+        hidx[vi, hi] = y >> 16 & 0xff
 
     _, opq, info = rm.stage_sprites_only(cap)
-    mpen, mpri = info["pen"], info["pri"]
+    mpen, mpri, midx = info["pen"], info["pri"], info["offs"] // 8
+    _, (shrank, shcode, shcount), shoffs, shfull, _, _ = rm.mix_sources(cap, shadow_ids=True)
+    mh = shcount > 0
 
     # find the (row, column) offset of the model's window in the RTL frame
     best = None
@@ -111,12 +126,16 @@ def main():
                 best = (n, dv, dh)
     n, dv, dh = best
     w = np.s_[dv:dv + rm.VIS_H, dh:dh + rm.VIS_W]
-    same = (valid[w] == opq) & (~opq | ((pen[w] == mpen) & (pri[w] == mpri)))
+    same = (valid[w] == opq) & (~opq | ((pen[w] == mpen) & (pri[w] == mpri) & (idx[w] == midx)))
+    hsame = (hval[w] == mh) & (~mh | ((hidx[w] == shoffs // 8) & (hcode[w] == shcode)
+                                      & (hfull[w] == shfull)))
     print(f"{cap.set} frame {cap.manifest.get('frame')}: model window at vdump "
           f"{0xF8 + dv:#x}, hdump {dh:#x}")
-    print(f"  {int(same.sum())} of {same.size} pixels match (valid, pen, priority); "
-          f"model draws {int(opq.sum())}, RTL {int(valid[w].sum())} in the window")
-    return 0 if same.all() else 1
+    print(f"  solid  {int(same.sum())} of {same.size} pixels match (valid, pen, priority, "
+          f"sprite); model {int(opq.sum())}, RTL {int(valid[w].sum())}")
+    print(f"  shadow {int(hsame.sum())} of {hsame.size} pixels match (valid, sprite, code, "
+          f"mode); model {int(mh.sum())}, RTL {int(hval[w].sum())}")
+    return 0 if same.all() and hsame.all() else 1
 
 
 if __name__ == "__main__":

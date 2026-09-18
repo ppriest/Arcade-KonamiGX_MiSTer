@@ -35,6 +35,8 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_sdpram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_tilemap.sv
 set_global_assignment -name VERILOG_FILE rtl/video/gx_obj.v
 set_global_assignment -name VERILOG_FILE rtl/video/gx_obj_linebuf.v
+set_global_assignment -name VERILOG_FILE rtl/video/gx_mixer.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_video.sv
 
 # jtframe primitives the vendored chip modules instantiate -- see
 # rtl/jtframe/PROVENANCE.md. Bench-only jtframe files live in sim/jtframe_ver/

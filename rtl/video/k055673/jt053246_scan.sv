@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 23-9-2024 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * zcode and attr_full outputs; HADJ made a parameter.
+ * zcode, attr_full and obj_idx outputs; HADJ made a parameter.
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -26,6 +26,7 @@ module jt053246_scan (    // sprite logic
     output reg        hz_keep,
     output reg [ 7:0] zcode,    // [GX] word 0 bits 7:0, the z-code
     output     [15:0] attr_full,// [GX] word 6 as scanned: {mirror y, mirror x, reserved, shadow, attr}
+    output reg [ 7:0] obj_idx,  // [GX] table index of the object being drawn, latched with zcode
 
     // base video
     input      [ 8:0] hdump,    // Not inputs in the original, but
@@ -203,6 +204,7 @@ always @(posedge clk) begin : A
                     hhalf <= 0;
                     { sq, pre_vf, pre_hf, size } <= scan_even[14:8];
                     zcode   <= scan_even[7:0];
+                    obj_idx <= scan_obj;
                     code    <= scan_odd;
                     hstep   <= 0;
                     hz_keep <= 0;

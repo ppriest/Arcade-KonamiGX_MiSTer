@@ -591,10 +591,11 @@ class Canvas:
         self.opaque = np.zeros((VIS_H, VIS_W), dtype=bool)
         self.pen = np.zeros((VIS_H, VIS_W), dtype=np.int32)     # solid sprite pixels only
         self.pri = np.zeros((VIS_H, VIS_W), dtype=np.int32)
+        self.offs = np.full((VIS_H, VIS_W), -1, dtype=np.int32)  # which sprite (RAM offset)
 
 
 def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
-                     drawmode, z8, pri=0, shd_table=None):
+                     drawmode, z8, pri=0, shd_table=None, offs=-1, winner=None):
     """zdrawgfxzoom32GP with the z-buffer on (zcode >= 0), drawmodes 0, 1, 4, 5.
 
     dst size is zw x zh; the source is stepped in 13.19 fixed point at
@@ -633,11 +634,14 @@ def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
         if drawmode & 3:
             draw &= s < shdpen
         draw &= ~(zb < z8)
+        if winner is not None:              # stage_mix(one_sprite_pixel=True)
+            draw &= winner[win] == offs
         zb[draw] = z8
         rgb[draw] = cap.pal[(color % 256) * 32 + s[draw]]
         cv.opaque[win] |= draw
         cv.pen[win][draw] = (color % 256) * 32 + s[draw]
         cv.pri[win][draw] = pri
+        cv.offs[win][draw] = offs
     else:
         sz, sp = cv.shd_z[win], cv.shd_pri[win]
         draw = (s >= shdpen) & ~(sz < z8) & ~(sp <= pri)
@@ -675,8 +679,9 @@ def stage_sprites_only(cap):
     for order, offs, code, color in sort_pool(pool):
         for blit in sprite_blits(sr, cfg, spr, offs, code):
             draw_sprite_tile(cv, cap, gfx, blit[0], color, *blit[1:], order >> 4 & 0xf,
-                             order >> 16 & 0xff, order >> 24 & 0xff)
-    info = dict(objects=len(pool), **skipped, pen=cv.pen, pri=cv.pri)
+                             order >> 16 & 0xff, order >> 24 & 0xff, offs=offs)
+    info = dict(objects=len(pool), **skipped, pen=cv.pen, pri=cv.pri, offs=cv.offs,
+                z=np.where(cv.opaque, cv.zbuf, 0))
     return cv.rgb.astype(np.uint8), cv.opaque, info
 
 
@@ -700,7 +705,7 @@ def k054338_alpha_level(cap, pblend):
     return mixlv
 
 
-def stage_mix(cap):
+def stage_mix(cap, one_sprite_pixel=False):
     """konamigx_mixer and konamigx_mixer_draw: the whole frame.
 
     Tile layers and sprites go into one object pool -- a layer is an object
@@ -743,6 +748,11 @@ def stage_mix(cap):
     sr = SpriteRegs(cap)
     gfx = k055673_sprites(cap.set)
     spool, _, spr = sprite_objects(cap, sr, cfg["primode"], shadowon, spri_min)
+    # one_sprite_pixel: draw each solid sprite only where it is the line
+    # buffer's winner (stage_sprites_only), as the hardware hands the mixer one
+    # sprite pixel per position. Equal to MAME if its shared z-buffer never
+    # lets a losing sprite pixel reach the screen.
+    winner = stage_sprites_only(cap)[2]["offs"] if one_sprite_pixel else None
     layers = {}
     for order, offs, code, color in sort_pool(pool + spool):
         if offs >= 0:
@@ -752,7 +762,8 @@ def stage_mix(cap):
             tab = tables[order & 3] if drawmode >= 4 else None
             for blit in sprite_blits(sr, cfg, spr, offs, code):
                 draw_sprite_tile(cv, cap, gfx, blit[0], color, *blit[1:], drawmode,
-                                 order >> 16 & 0xff, order >> 24 & 0xff, tab)
+                                 order >> 16 & 0xff, order >> 24 & 0xff, tab,
+                                 offs=offs, winner=winner if drawmode < 4 else None)
             continue
         layer = code
         if not disp >> layer & 1:
@@ -776,6 +787,153 @@ def stage_mix(cap):
     return cv.rgb.astype(np.uint8)
 
 
+def mix_sources(cap, shadow_ids=False):
+    """What the K055555 receives per pixel, as the hardware delivers it.
+
+    Each source is a colour, whether it is opaque, and a RANK: its position in
+    konamigx_mixer's draw order (higher = drawn later = in front). The rank
+    reproduces MAME's comparison of K055555 priorities exactly -- a layer's
+    order is PRI << 24, a sprite's pri << 24 | z << 16 | offs << 5 | mode << 4,
+    so at equal priority a layer is in front of a sprite, and equal layers keep
+    the pool's stable-sort order -- which in RTL is a priority compare with
+    those tie-breaks.
+
+    Sources: the background (rank -1, always opaque), layers A-D, the one
+    winning solid sprite pixel from the line buffer, and at most one sprite
+    shadow per pixel (the captures never stack two; more is flagged).
+    """
+    cfg = SPRITE_CFG[cap.set]
+    k5, k3 = cap.k055555, cap.k054338
+    disp = k5[45]
+    layerpri = [k5[7], k5[10], k5[13], k5[14], k5[16], k5[17]]
+    shadowon, spri_min = mixer_shadow_setup(cap, layerpri[:4])
+    layerid = list(range(6))
+    lp = layerpri[:]
+    for j in range(5):
+        for i in range(j + 1, 6):
+            if lp[j] <= lp[i]:
+                lp[j], lp[i] = lp[i], lp[j]
+                layerid[j], layerid[i] = layerid[i], layerid[j]
+    pool = [(lp[i] << 24, -1, layerid[i], 0) for i in range(5, -1, -1) if layerid[i] < 4]
+    sr = SpriteRegs(cap)
+    spool, _, spr = sprite_objects(cap, sr, cfg["primode"], shadowon, spri_min)
+    seq = sort_pool(pool + spool)                 # MAME's draw order, back to front
+    rank_layer = {o[2]: i for i, o in enumerate(seq) if o[1] < 0}
+    rank_solid = {o[1]: i for i, o in enumerate(seq) if o[1] >= 0 and (o[0] >> 4 & 0xf) < 4}
+
+    src = {}
+    src["bg"] = (stage_bg(cap).astype(np.int32), np.ones((VIS_H, VIS_W), bool), -1)
+    for L in range(4):
+        rgb, opq = stage_layer(cap, L)
+        on = bool(disp >> L & 1)
+        src["ABCD"[L]] = (rgb.astype(np.int32), opq & on, rank_layer[L])
+
+    srgb, sopq, info = stage_sprites_only(cap)
+    srank = np.full((VIS_H, VIS_W), -2, np.int32)
+    for offs, r in rank_solid.items():
+        srank[info["offs"] == offs] = r
+    src["S"] = (srgb.astype(np.int32), sopq & bool(disp & 0x10), srank)
+
+    # the shadow line: MAME's shadow objects, in draw order, through the
+    # shadow z-buffer and priority byte, recording which one lands per pixel
+    gfx = k055673_sprites(cap.set)
+    cv = Canvas(np.zeros((VIS_H, VIS_W, 3), np.uint8))
+    shrank = np.full((VIS_H, VIS_W), -2, np.int32)
+    shcode = np.zeros((VIS_H, VIS_W), np.int32)
+    shcount = np.zeros((VIS_H, VIS_W), np.int32)
+    shoffs = np.full((VIS_H, VIS_W), -1, np.int32)
+    shfull = np.zeros((VIS_H, VIS_W), np.int32)
+    shpri = np.zeros((VIS_H, VIS_W), np.int32)
+    shz = np.zeros((VIS_H, VIS_W), np.int32)
+    for i, (order, offs, code, color) in enumerate(seq):
+        if offs < 0 or (order >> 4 & 0xf) < 4 or not disp & 0x10:
+            continue
+        for blit in sprite_blits(sr, cfg, spr, offs, code):
+            before_z, before_p = cv.shd_z.copy(), cv.shd_pri.copy()
+            draw_sprite_tile(cv, cap, gfx, blit[0], color, *blit[1:], order >> 4 & 0xf,
+                             order >> 16 & 0xff, order >> 24 & 0xff, lambda px: px)
+            hit = (cv.shd_z != before_z) | (cv.shd_pri != before_p)
+            shrank[hit] = i
+            shcode[hit] = order & 3
+            shcount[hit] += 1
+            shoffs[hit] = offs
+            shfull[hit] = (order >> 4 & 0xf) == 5
+            shpri[hit] = order >> 24 & 0xff
+            shz[hit] = order >> 16 & 0xff
+    if shadow_ids:                 # for scripts/check_gx_obj.py and check_gx_mixer.py
+        return src, (shrank, shcode, shcount), shoffs, shfull, shpri, shz
+    return src, (shrank, shcode, shcount)
+
+
+def stage_mix_hw(cap):
+    """The mixer as the hardware is structured: per pixel, the K055555 picks
+    the top source and the one behind it by rank; the K054338 blends the top
+    over the second when the top is an alpha layer, and applies the shadow
+    to whatever is behind the shadow's rank. Specification for the RTL mixer.
+
+    Exact to MAME's painter while at most one alpha layer and one shadow are
+    stacked on a pixel; anything deeper raises, rather than drawing wrong.
+    """
+    k5, k3 = cap.k055555, cap.k054338
+    out = stage_bg(cap).astype(np.int32)
+    if not k5[45] or not (k3[15] & 0x01):
+        return out.astype(np.uint8)
+    if k5[42]:
+        raise SystemExit("K055555 VBRI (layer brightness) not modelled")
+    src, (shrank, shcode, shcount) = mix_sources(cap)
+    if (shcount > 1).any():
+        raise SystemExit("more than one shadow on a pixel: not modelled")
+
+    alpha = {}
+    for L in range(4):
+        mix = (k5[33] >> 2 * L & 3) & (k5[34] >> 2 * L & 3)
+        a = k054338_alpha_level(cap, mix) & 0x1ff
+        if a & 0x100:
+            a &= 0xff
+            if a:
+                a = ~a & 0xff
+        alpha["ABCD"[L]] = a
+
+    names = list(src)
+    rank = np.stack([np.where(src[n][1], src[n][2], -3) for n in names])   # -3: absent
+    order = np.argsort(-rank, axis=0, kind="stable")
+    top, second = order[0], order[1]
+    rgb = np.stack([src[n][0] for n in names])
+    rtop = np.take_along_axis(rank, top[None], 0)[0]
+    rsec = np.take_along_axis(rank, second[None], 0)[0]
+    ctop = np.take_along_axis(rgb, top[None, ..., None], 0)[0]
+    csec = np.take_along_axis(rgb, second[None, ..., None], 0)[0]
+
+    noclip = bool(k3[15] & 0x20)
+    tables = [shadow_table(k054338_shadow_deltas(cap, i), noclip) for i in range(3)]
+    tables.append(shadow_table((-80, -80, -80), False))
+
+    def shade(c, mask):
+        c = c.copy()
+        for t in range(4):
+            m = mask & (shcode == t)
+            if m.any():
+                c[m] = tables[t](c[m])
+        return c
+
+    has_sh = shcount > 0
+    alpha_top = np.zeros((VIS_H, VIS_W), bool)
+    lvl = np.full((VIS_H, VIS_W), 255, np.int32)
+    for i, n in enumerate(names):
+        if n in alpha and alpha[n] < 255:
+            m = top == i
+            alpha_top |= m
+            lvl[m] = alpha[n]
+            if (m & np.isin(second, [j for j, q in enumerate(names)
+                                     if q in alpha and alpha[q] < 255])).any():
+                raise SystemExit("alpha layer over an alpha layer: not modelled")
+
+    csec = shade(csec, has_sh & alpha_top & (shrank > rsec) & (shrank < rtop))
+    out = np.where(alpha_top[..., None], alpha_blend(csec, ctop, lvl[..., None]), ctop)
+    out = shade(out, has_sh & (shrank > rtop))
+    return out.astype(np.uint8)
+
+
 def stage_sprites(cap):
     """The solid sprites over black. Illustrative, like stage_tiles: the
     mixer decides what covers them, so the score is score_sprites()."""
@@ -793,7 +951,8 @@ def score_sprites(cap, ref):
     return ok, int(opq.sum()), info
 
 
-STAGES = {"bg": stage_bg, "tiles": stage_tiles, "sprites": stage_sprites, "mix": stage_mix}
+STAGES = {"bg": stage_bg, "tiles": stage_tiles, "sprites": stage_sprites, "mix": stage_mix,
+          "mixhw": stage_mix_hw}
 
 
 def attribution(cap, ref):

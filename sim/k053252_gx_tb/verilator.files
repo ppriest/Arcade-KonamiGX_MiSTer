@@ -1,0 +1,6 @@
+rtl/jtframe/jtframe_edge.v
+rtl/jtframe/jtframe_count_ld.v
+rtl/jtframe/jtframe_ff_jk.v
+rtl/video/k053252/jtk053252_mmr.v
+rtl/video/k053252/jtk053252.v
+sim/k053252_gx_tb/tb_k053252_gx.sv
