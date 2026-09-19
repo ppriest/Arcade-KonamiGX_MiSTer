@@ -25,7 +25,9 @@ always @(posedge clk) begin
     pxl_cen <= cnt == 0 && !rst;
 end
 
-reg         k55_we = 0, k338_we = 0, pal_we = 0, bg_grad;
+reg         k55_we = 0, bg_grad;
+reg  [ 1:0] k338_we = 0;
+reg  [ 2:0] pal_we = 0;
 reg  [ 5:0] k55_addr;
 reg  [ 7:0] k55_din;
 reg  [ 3:0] k338_addr;
@@ -77,10 +79,10 @@ initial begin
         @(posedge clk) begin k55_we <= 1; k55_addr <= i[5:0]; k55_din <= k55_v[i]; end
     @(posedge clk) k55_we <= 0;
     for (int i = 0; i < 16; i++)
-        @(posedge clk) begin k338_we <= 1; k338_addr <= i[3:0]; k338_din <= k338_v[i]; end
+        @(posedge clk) begin k338_we <= 2'b11; k338_addr <= i[3:0]; k338_din <= k338_v[i]; end
     @(posedge clk) k338_we <= 0;
     for (int i = 0; i < 8192; i++)
-        @(posedge clk) begin pal_we <= 1; pal_addr <= i[12:0]; pal_din <= pal_v[i]; end
+        @(posedge clk) begin pal_we <= 3'b111; pal_addr <= i[12:0]; pal_din <= pal_v[i]; end
     @(posedge clk) begin pal_we <= 0; rst <= 0; end
 
     f = $fopen({DIR, "out.hex"}, "w");

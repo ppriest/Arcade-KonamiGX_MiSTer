@@ -31,6 +31,12 @@ the register-file bypass network, the same class of path `Arcade-Psikyo_MiSTer` 
 fifty of its worst paths at 48.74 MHz in its full design. Standalone and in-design agree to within
 half a percent, so the limit is the kernel's own and not an artefact of its surroundings.
 
+**After the `MOVEC Rn,ISP` change** (`../../cpu/tg68k/PROVENANCE.md`): 49.16 MHz, 2,926 ALMs,
+2 M10K, 6 DSP — level with the figures above. A first version that wrote `regfile(15)` in a second
+assignment lost the RAM inference (0 M10K, 45.69 MHz); one with a data mux after `regin` kept the
+RAM but put that mux on the worst path (47.77 MHz). The value now goes through `regin`'s existing
+mux, and only the write address is muxed.
+
 ## What it decides
 
 Under `clkena_in` the kernel is clocked at whatever clock drives it and merely *enabled* at the CPU

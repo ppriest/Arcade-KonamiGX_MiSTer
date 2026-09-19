@@ -44,13 +44,13 @@ module gx_mixer (
     input             k55_we,
     input      [ 5:0] k55_addr,
     input      [ 7:0] k55_din,
-    input             k338_we,
+    input      [ 1:0] k338_we,         // byte lanes { 15:8, 7:0 }: the game writes bytes alone
     input      [ 3:0] k338_addr,
     input      [15:0] k338_din,
     input             bg_grad,          // wrport1_0 bit 5: 1 = K055555 gradient
 
-    // palette RAM, xRGB_888 by pen
-    input             pal_we,
+    // palette RAM, xRGB_888 by pen, one write enable per colour byte
+    input      [ 2:0] pal_we,           // { R, G, B }
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
 
@@ -82,7 +82,8 @@ reg [15:0] k338 [0:15];
 
 always @(posedge clk) begin
     if( k55_we  ) k55[k55_addr]   <= k55_din;
-    if( k338_we ) k338[k338_addr] <= k338_din;
+    if( k338_we[1] ) k338[k338_addr][15:8] <= k338_din[15:8];
+    if( k338_we[0] ) k338[k338_addr][ 7:0] <= k338_din[ 7:0];
 end
 
 wire [7:0] disp   = k55[45];
@@ -191,9 +192,15 @@ reg  [ 1:0] code1;
 reg  [23:0] ct, cs, cb;
 reg         en;
 
-gx_sdpram #(.AW(13), .DW(24)) u_pal (
-    .clk ( clk ), .we ( pal_we ), .wa ( pal_addr ), .d ( pal_din ),
-    .ra  ( ra ), .q ( rq ) );
+gx_sdpram #(.AW(13), .DW(8)) u_pal_r (
+    .clk ( clk ), .we ( pal_we[2] ), .wa ( pal_addr ), .d ( pal_din[23:16] ),
+    .ra  ( ra ), .q ( rq[23:16] ) );
+gx_sdpram #(.AW(13), .DW(8)) u_pal_g (
+    .clk ( clk ), .we ( pal_we[1] ), .wa ( pal_addr ), .d ( pal_din[15:8] ),
+    .ra  ( ra ), .q ( rq[15:8] ) );
+gx_sdpram #(.AW(13), .DW(8)) u_pal_b (
+    .clk ( clk ), .we ( pal_we[0] ), .wa ( pal_addr ), .d ( pal_din[7:0] ),
+    .ra  ( ra ), .q ( rq[7:0] ) );
 
 // MAME's shadow table: the colour is cut to 5 bits a channel, re-expanded
 // with pal5bit, and offset by the K054338 delta, clipped unless CLIPSL.

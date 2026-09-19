@@ -303,6 +303,32 @@ compares that list with MAME's screenshot, with no window position assumed. Fram
 What that does not yet cover: the CPU is not writing the state, the capture is; one game; the
 interrupts the K053252 raises are generated but unchecked.
 
+**The main board runs `daiskiss` from reset to its title, and the title is MAME's.**
+`rtl/gx_main.sv` — TG68K.C, the Type 2 memory map, the interrupts, the 93C46, the ESC as a bus
+master, `gx_video` — against MAME's trace of every write (`scripts/mame_sys_trace.py`,
+`check_gx_main.py`). The K056800 is MAME's own replies, replayed. **RTL frames 1168-1170 are
+identical to MAME's frame 1200 screenshot, 64,512 of 64,512 pixels**, from state the CPU and the
+ESC wrote. The writes are compared per interrupt level (the RTL's interrupts land at other points
+in the main program, its CPU being faster): **all 1,589,531 writes at mask 7 — the BIOS, the
+memory tests, the setup — are identical, in order**; the ESC's level matches. The main program
+diverges at MAME frame 801 on a sound-status reply that the in-order replay cannot follow, and
+the vblank handler at frame 797 on work-RAM state set at a timing-dependent point; from there the
+picture at matching points is the test. After boot the RTL runs 31 frames ahead of MAME.
+
+Faults this found, each fixed (LESSONS_LEARNED has them): the bench's EEPROM image byte-swapped;
+TG68K.C ignoring `MOVEC` to ISP, which the BIOS uses to set the game's stack
+(`rtl/cpu/tg68k/PROVENANCE.md`); and the K055673 and K054338 register ports ignoring byte lanes,
+which fetched blank sprite ROM for every sprite. Run on Verilator through GHDL's conversion of
+TG68K.C, about 0.9 s a frame; a run can start from a saved snapshot (WORKFLOW).
+
+The CPU's speed against MAME's: decoding a request on the clock it is taken and passing the ack
+straight to the kernel gives a RAM access one wait state, Phase 0's budget. With the bench ROM
+answering the clock after `rom_cs` (a cache hit), RTL frame 100 does what MAME does by its frame
+112, 200 by 224, 300 by 333: **1.11× MAME** on this code. Before that change it was 0.58×. Phase 0
+measured 1.001× for one wait state on a window of game code; this span is BIOS and memory tests.
+MAME's 68EC020 timing is itself a model, so the figure to hold is the order of magnitude and the
+`+ROM_WAIT` knob, not the last per cent.
+
 One finding from the sprite stage: **`daiskiss` runs with K053246 OBJSET1 bit 1 (flip Y) set on every frame**,
 and its picture is the right way up, because MAME negates Y twice (`oy = -oy` for the flip, then
 `oy = (-oy - offy)`). On GX that bit set is the normal orientation, so the RTL must not read it as
@@ -340,6 +366,54 @@ identified from file listings, module headers, port lists and READMEs — not fr
 implementations end to end. So "jotego has a K053252" is evidence that a port is the right plan; it
 is not evidence that the port is small. Confirming that is Phase 0 work, and the first thing Phase 0
 does with each vendored module is run it, unchanged, against a MAME reference.
+
+
+**Phase 2 has started: the core builds.** `KonamiGX.sv` replaces the template: the PLL (96 MHz
+SDRAM, 48 MHz board, 24 MHz CPU, one PLL at phase 0, so the three are related clocks and the
+crossings are timed paths, no synchronisers), the SDRAM image (`rtl/memory/`: Sorgelig's
+controller with Seta's burst-4 reads, the arbiter and download from Seta; this project's layout,
+clock crossing and row spreading), a 16 KB ROM cache in front of the CPU (`rtl/cpu/gx_romcache.sv`,
+a hit one wait state as the bench's ROM model was), inputs from `konamigx.cpp`'s ports, and
+`arcade_video`. The K056800 is a mailbox echo until Phase 3.
+
+The image: `maincpu` packed (BIOS, then 0x200000.. moved down by 0x1e0000), then the two graphics
+regions with their 5-byte rows spread to 8 so a row is one granule -- 8/5 the space, 24 MB of the
+32 MB module for daiskiss; a set whose graphics do not fit needs packed rows fetched as two
+granules (`gx_sdram_top.sv` header). `scripts/build_mra.py` writes the `.mra` and proves it against
+the region images; `scripts/check_gx_sdram.py` downloads that stream into the RTL against the
+chip model and reads every region back: **900 samples of the three regions equal MAME's images**
+on Verilator and ModelSim. It found the download losing every second byte when pushed a byte a
+clock (fixed), and the vendored chip model modelling two banks: the sprite region is in bank 2,
+above anything a sibling core's image reached (LESSONS_LEARNED).
+
+**Ten sets have `.mra` files.** The image layout is per set (`rtl/gx_board_cfg.sv`, generated and
+checked by `scripts/build_mra.py`): every 5 bpp Type 2 set -- daiskiss, crzcross, puzldama,
+fantjour, fantjoura, gokuparo, mtwinbee, tbyahhoo, sexyparo, sexyparoa -- fits the 32 MB module
+with its sound ROM still to come (18 to 26 MB used). The DIP switches come from the driver through
+Seta's extractor and rules. The other Type 2 sets wait on their video paths: dragoonj's 4 bpp
+sprites (16 MB, which the 8/5 spread would not fit either), tokkae/tkmmpzdm/salmndr2's 6 bpp,
+le2/winspike's 8 bpp.
+
+Quartus (`build_staged.py`, `KonamiGX_stp`): **timing met on every clock** (worst setup slack
+1.06 ns), 14,748 ALMs (35%), 446 of 553 M10K (81%), 43 DSPs. The RAM figure is the one to watch
+before the sound side arrives (its 64 KB RAM alone is 52 M10K).
+
+**On the board.** The first build to run (`970423f`) took daiskiss through its RAM check to the
+title; the builds since fixed what the board showed and the simulation had not: the sound-board
+RAM tests (the K056800 stand-in, `rtl/gx_snd_stub.sv`, now answers the test the way the game's
+own routine checks it, and holds the result until the next command), the 93C46's power-up state
+(a sweep, then the set's default image from the `.mra`, LESSONS_LEARNED), and SYSTEM_DSW bit 15
+(the gokuparo port set declares it active-high). tbyahhoo passes every RAM and sound test on
+build 11 except the EEPROM's, which reads the part without writing it and needs the default
+image. daiskiss stopped on its title from build 4 to build 16: the CPU's ready after an ESC
+command was pulsed in a cycle the 24 MHz kernel does not sample, so the ESC ran the same command
+for ever (LESSONS_LEARNED, found with ISSP instances H and I); on build 17 the attract runs
+through its demo. tbyahhoo passes its checks with the default EEPROM image; it then waited
+for a vblank interrupt that only MAME's syncen latch gives (build 18), and lost its sprites at
+the first zoomed ones to a dropped sprite-ROM `ok` (build 20). On build 20 it runs its title and
+demo with sprites. Open for it: a 16-line band and one screen area where a full-screen shadow
+sprite is not drawn on a demo frame (the video bench, `tbyahhoo-f3200` with DMAEN set: 57,325 of
+64,512 pixels), consistent with the line buffer's per-line drawing time running out.
 
 ## Game scope
 
@@ -1037,4 +1111,19 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
    MAME's screenshots from those inputs, and `gx_video.sv` — the three together — reproduces
    MAME's screenshots from VRAM, sprite RAM, registers and palette, with the K053252 generating
    the timing from the game's own registers (see "Progress"). Next: the CPU writing the state
-   instead of the capture -- TG68K.C, the memory map and the interrupts in one bench.
+   instead of the capture. The main board reproduces MAME's title (frame 1200) from reset;
+   next, the later capture frames (2400-6000), with the sound replies keyed to time rather
+   than order.
+8. **Phase 2 on the board, in this order:**
+   - **Fast ROM loading through the HPS DDR3.** Done in `93f9f54`: the `.mra`'s index-0 ROM
+     loads into DDR3 at 0x30000000 and `rtl/memory/gx_rom_loader.sv` copies it through the byte
+     download path, as Seta, Psikyo and Fuuki do (their `rom_loader.sv`); the byte download
+     took about 25 s for daiskiss.
+   - **Sprite drawing time.** On the board the sprite scan does not finish up to 128 lines a
+     frame in daiskiss's attract (probe J); the bench, with a 6-clock ROM, shows none. Fetch a
+     sprite row's two halves in one SDRAM burst, fetch ahead of the drawer, and run the bench at
+     the board's latency (Seta's and MS32's lessons on per-line budgets).
+   - **Garbage sprites in Sexy Parodius gameplay.** The video path reproduces MAME's gameplay
+     frame exactly (`sexyparo-play3000`), so the fault is in what the ESC writes to sprite RAM or
+     when the DMA copies it; probe J counts DMAs that start while the ESC is busy.
+   - Stacked shadows (MAME_KLUDGES), the other `.mra` sets on the board, the `.nvm` EEPROM save.

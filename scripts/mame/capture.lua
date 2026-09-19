@@ -142,6 +142,31 @@ local function dump_sparse(name, tbl, size)
     wr(name, table.concat(t))
 end
 
+-- GX_PRESS="frame:field name:frames,...": hold an input (by its MAME field
+-- name, e.g. "Coin 1", "1 Player Start") from that frame for that many
+-- frames, to reach gameplay for a capture. The frame is the screen's.
+local presses = {}
+for item in (os.getenv("GX_PRESS") or ""):gmatch("[^,]+") do
+    local f, name, len = item:match("^(%d+):(.-):(%d+)$")
+    if f then presses[#presses + 1] = { at = tonumber(f), name = name, len = tonumber(len) } end
+end
+local function field(name)
+    for _, port in pairs(m.ioport.ports) do
+        local fl = port.fields[name]
+        if fl then return fl end
+    end
+    error("no input field named " .. name)
+end
+if #presses > 0 then
+    subs[#subs + 1] = emu.add_machine_frame_notifier(guard("press", function()
+        local n = m.screens[":screen"]:frame_number()
+        for _, p in ipairs(presses) do
+            if n == p.at then field(p.name):set_value(1) end
+            if n == p.at + p.len then field(p.name):set_value(0) end
+        end
+    end))
+end
+
 local done = false
 subs[#subs + 1] = emu.add_machine_frame_notifier(guard("frame", function()
     if done then return end

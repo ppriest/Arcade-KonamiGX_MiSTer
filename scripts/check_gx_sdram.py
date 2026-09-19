@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: GPL-3.0-or-later
+"""The SDRAM image path, composed: download the set's .mra stream and read
+every region back through the port the board reads it from.
+
+    python scripts/build_mra.py daiskiss          # the stream (releases/*.mra)
+    python scripts/check_gx_sdram.py daiskiss     # download it, read it back
+
+sim/gx_sdram_tb streams the .mra's image into gx_sdram_top through the ioctl
+port, byte by byte as the HPS does (skipping the zero fill: the transform is
+by address, not by count), against the command-decoding SDRAM chip model, and
+then reads:
+
+  the CPU port     granules of the packed maincpu image, against
+                   debug/<set>-rom/maincpu.bin
+  the tile port    rows, against debug/gx_tilemap_tb/rom.hex -- the 40-bit
+                   rows the video benches feed gx_tilemap, so what the
+                   download spread to 8 bytes must come back as
+  the sprite port  half-rows, against debug/gx_obj_tb/rom.hex
+
+The three expectations come from MAME's region images, not from the .mra, so
+a wrong spread or a wrong byte order in the stream cannot agree with itself.
+"""
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import build_mra                  # noqa: E402
+import build_rom_image as bri     # noqa: E402
+import check_gx_obj               # noqa: E402
+import mra as mra_lib             # noqa: E402
+import render_model as rm         # noqa: E402
+
+REPO = rm.REPO
+OUT = REPO / "debug" / "gx_sdram_tb"
+
+
+def sample(n, first=64, stride=4099):
+    """The first `first` indices, then every `stride`th (a prime)."""
+    return list(range(min(first, n))) + list(range(first, n, stride))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("set", choices=build_mra.SETS)
+    ap.add_argument("--sim", choices=("verilator", "modelsim"), default="verilator")
+    ap.add_argument("--limit", type=int, default=0,
+                    help="stream only the first N bytes of each run, and sample within them (a quick ModelSim run)")
+    a = ap.parse_args()
+    OUT.mkdir(parents=True, exist_ok=True)
+    games, blocks = bri.parse(bri.DRIVER)
+    gl = build_mra.game_lines()
+    mod = build_mra.SETS.index(a.set)
+    lo = build_mra.rtl_arm(mod)
+    parent = games.get(a.set)
+    folder = build_mra.OUT_DIR if parent in (None, "0", "konamigx") else \
+        build_mra.OUT_DIR / "_alternatives" / build_mra.mra_filename(gl[parent]["title"])[:-4]
+    mra = folder / build_mra.mra_filename(gl[a.set]["title"])
+    import xml.etree.ElementTree as ET
+    rom0 = next(r for r in ET.parse(mra).getroot().findall("rom") if r.get("index") == "0")
+    zips = [REPO / "roms" / z for z in rom0.get("zip").split("|")]
+    img = mra_lib.build_image(mra, zips)
+
+    # the stream as runs of data: a zero fill of 4096 bytes or more is skipped
+    N = len(img)
+    runs, bytes_out, cut = [], bytearray(), []     # cut: the tails --limit left out
+    i = 0
+    while i < N:
+        if img[i] == 0:
+            j = i
+            while j < N and img[j] == 0:
+                j += 1
+            if j - i >= 4096:
+                i = j
+                continue
+        j = i
+        while j < N:
+            if img[j] == 0:
+                k = j
+                while k < N and img[k] == 0:
+                    k += 1
+                if k - j >= 4096:
+                    break
+                j = k
+            else:
+                j += 1
+        n = min(j - i, a.limit) if a.limit else j - i
+        runs.append((i, n, len(bytes_out)))
+        bytes_out += img[i:i + n]
+        if n < j - i:
+            cut.append((i + n, j))
+        i = j
+
+    def streamed(lo, hi):
+        """No byte of [lo, hi) is in a tail --limit left out (a zero gap that
+        was skipped reads as the zero it is)."""
+        return not any(c0 < hi and lo < c1 for c0, c1 in cut)
+
+    def spread_ok(base, size4, r):
+        return streamed(base + 4 * r, base + 4 * r + 4) and streamed(base + size4 + r, base + size4 + r + 1)
+    (OUT / "stream.hex").write_text("".join(f"{b:02x}\n" for b in bytes_out))
+    (OUT / "runs.hex").write_text("".join(f"{s:07x} {n:07x} {o:07x}\n" for s, n, o in runs))
+
+    # expectations
+    main_img = bri.build(a.set, "maincpu")
+    packed = main_img[:0x20000] + main_img[0x200000:]
+    ng = min(len(packed), lo["tile_base"]) // 8      # the window past its loads is not in the image
+    tile_size4, obj_size4 = lo["tile_size4"], lo["obj_size4"]
+    with open(OUT / "cpu.hex", "w") as f:
+        for gi in sample(ng):
+            if not streamed(8 * gi, 8 * gi + 8):
+                continue
+            gran = packed[8 * gi:8 * gi + 8]
+            f.write(f"{gi:05x} {int.from_bytes(gran, 'little'):016x}\n")
+    # the rows as the video benches' ROM models hold them (check_gx_tilemap
+    # and check_gx_obj write_vectors do this for the captured set)
+    trom = bri.build(a.set, "k056832")
+    trows = [trom[5 * r:5 * r + 5].hex() for r in range(len(trom) // 5)]
+    # the k055673 region is its four-byte part then its fifth bytes, as MAME
+    # loads it (check_gx_obj.write_vectors builds the rows the same way)
+    orom = bri.build(a.set, "k055673")
+    o4 = lo["obj_size4"]
+    orows = [(orom[4 * r:4 * r + 4] + orom[o4 + r:o4 + r + 1]).hex() for r in range(o4 // 4)]
+    with open(OUT / "tile.hex", "w") as f:
+        for r in sample(len(trows)):
+            if spread_ok(lo["tile_base"], tile_size4, r):
+                f.write(f"{r:06x} {trows[r]}\n")
+    with open(OUT / "obj.hex", "w") as f:
+        for r in sample(len(orows)):
+            if spread_ok(lo["obj_base"], obj_size4, r):
+                f.write(f"{r:06x} {orows[r]}\n")
+    (OUT / "cfg.hex").write_text(f"{lo['tile_base']:07x}\n{lo['obj_base']:07x}\n{tile_size4:06x}\n{obj_size4:06x}\n")
+    print(f"stream: {len(bytes_out):#x} bytes in {len(runs)} runs of {len(img):#x}; "
+          f"{ng} CPU granules, {len(trows)} tile rows, {len(orows)} sprite half-rows")
+
+    runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
+    r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_sdram_tb"], cwd=REPO,
+                       capture_output=True, text=True)
+    log = r.stdout + r.stderr
+    (OUT / "sim.log").write_text(log)
+    lines = [ln[2:] if ln.startswith("# ") else ln for ln in log.splitlines()]   # ModelSim prefixes "# "
+    tail = [ln for ln in lines if ln.startswith("  ") or ln.startswith("FAIL") or ln.startswith("PASS")]
+    print("\n".join(tail[-14:]))
+    return 0 if "PASS" in log and "FAIL" not in log else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

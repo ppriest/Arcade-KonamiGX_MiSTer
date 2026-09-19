@@ -47,6 +47,8 @@ licence terms rather than comments to tidy away.
 | files | what |
 |---|---|
 | `TG68K_ALU.vhd`, `TG68KdotC_Kernel.vhd` | explicit zero initializers on signal declarations — see below |
+| `TG68KdotC_Kernel.vhd` | `MOVEC Rn,ISP` writes the supervisor A7 — see below |
+| `TG68KdotC_Kernel.vhd` | `FlagsSR_out`: the status register's high byte (T.S.0III) as an output, for the board's ISSP probe; no logic changes |
 | `TG68K_Pack.vhd`, `TG68K.vhd` | none; verbatim |
 
 ### Explicit zero initializers
@@ -76,6 +78,25 @@ blank.
 `.gitattributes` marks this directory `-text` so git stores and checks out these bytes unchanged.
 Without it `core.autocrlf` normalises on commit, and the two mixed-ending files silently become
 uniform — which would make "verbatim at `ade33e39`" unverifiable.
+
+### `MOVEC Rn,ISP`
+
+Upstream decodes `MOVEC` to and from MSP (`0x803`) and ISP (`0x804`) for the 68020 but stores
+neither: both are `NULL` in the control-register write. The GX BIOS ends with
+`move.l ($200000),d0; movec d0,ISP; jmp ([$4,a0])` — the game's stack pointer from the first long
+of its ROM (`daiskiss`: `$00C1F800`). MAME (`m68kops.cpp`, `x4e7b_movec_l_2f`) writes it to the
+active A7 when M = 0. Without it the RTL kept the reset SSP (`$00C20000`), and `daiskiss`'s write
+stream diverged from MAME's at the first stack push after the game's setup (MAME frame 780):
+same values, stack 0x800 higher.
+
+The kernel has no M bit, so it runs as a 68020 with M = 0 throughout; ISP is then the supervisor
+A7, which the kernel keeps in `regfile(15)` and swaps with `USP` on a mode change. The write is
+made in the cycle `VBR` is written, through the register file's single write port: the value goes
+through `regin`'s existing mux and only the address is muxed (`MOVEC` to a control register makes
+no other register write). Quartus still infers the register file as RAM, and Fmax and area are
+unchanged (`../../synth_check/tg68k/README.md`: 49.16 MHz, 2,926 ALMs, 2 M10K). `MOVEC` to MSP stays a no-op, which with M = 0 is what
+MAME does to the active stack. `MOVEC ISP,Rn` and `MSP,Rn` still read 0; no GX code found reads
+them (a search of `daiskiss`'s program ROM for `4E7A x803/x804`).
 
 ## Integration notes carried from `Arcade-Psikyo_MiSTer`
 

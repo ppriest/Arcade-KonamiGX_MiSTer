@@ -1,0 +1,3 @@
+rtl/memory/ddram_phy.sv
+rtl/memory/gx_rom_loader.sv
+sim/gx_rom_loader_tb/tb_gx_rom_loader.sv

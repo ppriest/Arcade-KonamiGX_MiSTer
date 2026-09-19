@@ -3,6 +3,8 @@
  * Date: 23-9-2024 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
  * zcode, attr_full and obj_idx outputs; HADJ made a parameter.
+ * Modified 2026-09-19: hoff_adj input (per-set sprite x offset); the vertical flip set in step 4, with the tile row,
+ * from the latched mirror bit (was step 3, from a stale ydiff).
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -12,6 +14,7 @@ module jt053246_scan (    // sprite logic
     input             rst,
     input             clk,
     input      [ 9:0] voffset,
+    input      [ 9:0] hoff_adj,     // [GX] added to HOFFSET: the set's K055673 dx less daiskiss's
 
     output reg        done,
     // ROM addressing 22 bits in total
@@ -67,6 +70,8 @@ reg  [ 8:0] vlatch, ymove, vscl, hscl;
 reg  [ 7:0] scan_obj/*, zcode*/; // max 256 objects
 reg  [ 3:0] size;
 reg  [ 2:0] hstep, hcode, hsum, vsum;
+reg  [ 2:0] vsum4;               // [GX]
+reg         vmir4, vflip4;       // [GX]
 reg  [ 1:0] scan_sub, reserved;
 reg         inzone, hs_l, hdone,
             vmir, hmir, sq, pre_vf, pre_hf, indr,
@@ -90,7 +95,7 @@ assign {vsz,hsz} = size;
 always @(negedge clk) cen2 <= ~cen2;
 
 always @(posedge clk) begin
-    xadj <= xoffset - HOFFSET;
+    xadj <= xoffset - HOFFSET - hoff_adj;   // [GX] was: xoffset - HOFFSET
     yadj <= yoffset + voffset;
     vscl <= rd_pzoffset(vzoom[9:0]);
     hscl <= rd_pzoffset(hzoom[9:0]);
@@ -158,6 +163,25 @@ always @* begin : B
         1: vsum = { 2'd0, ydiff[4]^vflip   };
         2: vsum = { 1'd0, ydiff[5:4]^{2{vflip}} };
         3: vsum = ydiff[6:4]^{3{vflip}};
+    endcase
+    // [GX] the vertical mirror, decided when ydiff is valid (step 4): vmir
+    // is the latched word-6 bit, not scan_even, which has moved on by then.
+    // MAME mirrors the half its flipy selects, counted in the sprite's own
+    // row order; with the global flip (gvf, always set on GX) ydiff counts
+    // those rows from the other end, so the half is the one with the top
+    // bit set.
+    case( vsz )
+        0: vmir4 = vmir && (ydiff[3] ^ ~gvf);
+        1: vmir4 = vmir && (ydiff[4] ^ ~gvf);
+        2: vmir4 = vmir && (ydiff[5] ^ ~gvf);
+        3: vmir4 = vmir && (ydiff[6] ^ ~gvf);
+    endcase
+    vflip4 = pre_vf ^ gvf ^ vmir4;
+    case( vsz )
+        0: vsum4 = 0;
+        1: vsum4 = { 2'd0, ydiff[4]^vflip4 };
+        2: vsum4 = { 1'd0, ydiff[5:4]^{2{vflip4}} };
+        3: vsum4 = ydiff[6:4]^{3{vflip4}};
     endcase
 end
 
@@ -229,7 +253,9 @@ always @(posedge clk) begin : A
                 3: begin
                     { vmir, hmir } <= nx_mir;
                     { reserved, shd, attr } <= scan_even[13:0];
-                    vflip <= pre_vf ^ gvf ^ vmir_eff;
+                    // [GX] was: vflip <= pre_vf ^ gvf ^ vmir_eff; -- ydiff is not
+                    // valid yet at this step (see step 4), so a mirrored sprite
+                    // flipped some lines early. Set in step 4.
                     if( hzoom < MAX_ZOOMIN ) begin
                         { indr, scan_sub } <= 0;
                         scan_obj <= scan_obj + 1'd1;
@@ -239,7 +265,8 @@ always @(posedge clk) begin : A
                 4: begin
                     // Add the vertical offset to the code, must wait for zoom
                     // calculations, so it cannot be done at step 3
-                    {code[5],code[3],code[1]} <= {code[5],code[3],code[1]} + vsum;
+                    {code[5],code[3],code[1]} <= {code[5],code[3],code[1]} + vsum4;   // [GX] was: + vsum
+                    vflip <= vflip4;                                                   // [GX]
                     xstart <= x2;
                     if( ~inzone ) begin
                         { indr, scan_sub } <= 0;

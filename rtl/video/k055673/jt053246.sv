@@ -52,6 +52,7 @@ module jt053246(    // sprite logic
                                 // Hdump goes from 20 to 19F, 384 pixels
                                 // Vdump goes from F8 to 1FF, 264 lines
     input      [ 9:0] voffset,
+    input      [ 9:0] hoff_adj,     // [GX] see jt053246_scan
     input             lvbl,
     input             hs,
 
@@ -112,6 +113,7 @@ jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
     .hdump     ( hdump      ),
     .vdump     ( vdump      ),
     .voffset   ( voffset    ),
+    .hoff_adj  ( hoff_adj   ),
     .hs        ( hs         ),
     .scan_even ( scan_even  ),
     .scan_odd  ( scan_odd   ),

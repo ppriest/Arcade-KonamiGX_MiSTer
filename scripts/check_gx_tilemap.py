@@ -34,7 +34,10 @@ GIT_BASH = next((p for p in (r"C:\Program Files\Git\bin\bash.exe",
 OUT = REPO / "debug" / "gx_tilemap_tb"
 
 # konamigx_v.cpp, konamigx_5bpp video start: set_layer_offs(layer, x, y)
-LAYER_OFFS = {"daiskiss": ((-2, 0), (0, 0), (2, 0), (3, 0))}
+# (common_init: the same for every set)
+LAYER_OFFS = {s: ((-2, 0), (0, 0), (2, 0), (3, 0)) for s in
+              ("daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
+               "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa")}
 
 
 def write_vectors(cap):

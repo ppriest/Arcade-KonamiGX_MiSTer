@@ -14,6 +14,9 @@
 `timescale 1ns/1ps
 
 module tb_gx_obj;
+// +OBJ_HADJ=n: the set's K055673 dx less daiskiss's -26 (gx_board_cfg obj_hadj)
+int obj_hadj = 0;
+initial void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
 
 parameter int HOFFSET = 62;
 
@@ -47,9 +50,10 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- DUT
-reg         ram_cs = 0, reg_cs = 0, mmr_we = 0, k47_we = 0;
+reg         ram_cs = 0, reg_cs = 0, mmr_we = 0;
+reg  [ 1:0] k47_we = 0;
 reg  [ 1:0] ram_we = 0, mmr_dsn = 2'b11;
-reg  [12:1] ram_addr;
+reg  [13:1] ram_addr;
 reg  [15:0] ram_din, mmr_din, k47_din;
 reg  [ 3:0] mmr_addr;
 reg  [ 2:0] k47_addr;
@@ -70,7 +74,7 @@ wire [ 1:0] shd_code;
 wire [ 7:0] shd_idx, shd_pri, shd_z;
 
 gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0)) dut (
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset, .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset, .hoff_adj(10'(obj_hadj)), .hs, .lvbl,
     .ram_cs, .ram_we, .ram_addr, .ram_din, .ram_dout(),
     .reg_cs, .mmr_we, .mmr_addr, .mmr_din, .mmr_dsn,
     .k47_we, .k47_addr, .k47_din,
@@ -78,7 +82,7 @@ gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0)) dut (
     .shadowon, .shdpri0, .shdpri1, .shdpri2, .spri_min,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .pxl_valid, .pxl_pen, .pxl_pri, .pxl_z, .pxl_idx,
-    .shd_valid, .shd_full, .shd_code, .shd_idx, .shd_pri, .shd_z
+    .shd_valid, .shd_full, .shd_code, .shd_idx, .shd_pri, .shd_z, .dma_busy()
 );
 
 // ----------------------------------------------------------- ROM
@@ -105,6 +109,23 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- probes
+// +ROM_DUMP=n: print the first n sprite ROM answers (address, data)
+int rom_dump = 0;
+always @(posedge clk) if (rom_ok && rom_dump > 0) begin
+    $display("DUMP rom  %06x -> %010x", last_addr, rom_data);
+    rom_dump--;
+end
+// +SCAN_TRACE=i+1: each tile the scan starts for table entry i -- line, code,
+// row within the tile, flips, x
+int scan_trace = 0;
+initial void'($value$plusargs("SCAN_TRACE=%d", scan_trace));
+always @(posedge clk) if (scan_trace != 0 && dut.u_scan.u_scan.dr_start && dut.u_scan.u_scan.cen2
+                          && dut.u_scan.u_scan.obj_idx == 8'(scan_trace - 1))
+    $display("SCAN v %03x code %04x ysub %x vflip %b hflip %b hpos %03x hstep %0d ydiff %03x ydiff_b %03x yz %05x vzoom %03x",
+             dut.u_scan.u_scan.vlatch, dut.u_scan.u_scan.code, dut.u_scan.u_scan.ysub,
+             dut.u_scan.u_scan.vflip, dut.u_scan.u_scan.hflip, dut.u_scan.u_scan.hpos,
+             dut.u_scan.u_scan.hstep, dut.u_scan.u_scan.ydiff, dut.u_scan.u_scan.ydiff_b,
+             dut.u_scan.u_scan.yz_add, dut.u_scan.u_scan.vzoom);
 int n_dma = 0, n_draw = 0, n_rom = 0, n_hreq = 0, n_shdraw = 0;
 reg dma_l = 0, cs_l = 0;
 always @(posedge clk) begin
@@ -124,6 +145,7 @@ int     cap_frame;
 initial begin
     if (!$value$plusargs("NTILES=%d", ntiles)) $fatal(1, "+NTILES= missing");
     void'($value$plusargs("ROM_LAT=%d", ROM_LAT));
+    void'($value$plusargs("ROM_DUMP=%d", rom_dump));
     void'($value$plusargs("VOFFSET=%d", voffset));
     if (ntiles * 32 > (1 << 20)) $fatal(1, "sprite ROM larger than rom_v");
     $readmemh({DIR, "spr.hex"},  spr_v);
@@ -147,7 +169,7 @@ initial begin
     end
     @(posedge clk) begin reg_cs <= 0; mmr_we <= 0; mmr_dsn <= 2'b11; end
     for (int i = 0; i < 8; i++) begin
-        @(posedge clk) begin k47_we <= 1; k47_addr <= i[2:0]; k47_din <= k47_v[i]; end
+        @(posedge clk) begin k47_we <= 2'b11; k47_addr <= i[2:0]; k47_din <= k47_v[i]; end
     end
     @(posedge clk) k47_we <= 0;
     for (int i = 0; i < 2048; i++) begin

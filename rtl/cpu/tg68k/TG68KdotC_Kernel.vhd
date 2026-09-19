@@ -104,14 +104,19 @@
 -- a licence term, not a comment to tidy away.                              --
 --                                                                          --
 -- Change: explicit zero initializers added to signal declarations in the   --
--- declarative region below. Nothing else. No algorithm, port, encoding     --
--- or timing behaviour is altered.                                          --
+-- declarative region below. No algorithm, port, encoding or timing         --
+-- behaviour is altered by them. A later change is noted below.             --
 --                                                                          --
 -- Why: a VHDL signal with no initial value starts as 'U' in a four-state   --
 -- simulator and as zero in real hardware. Left alone the 'U' propagates    --
 -- as a permanent 'X' from time zero and never clears, even after reset.    --
 -- See TobiFlex/TG68K.C issue 21, and PROVENANCE.md in this directory for   --
 -- the account and the upstream commit this file was taken from.            --
+--                                                                          --
+-- Modified 2026-09-18: MOVEC Rn,ISP writes the supervisor A7 (upstream: a  --
+-- no-op). Lines marked [GX]; PROVENANCE.md has the reason.                 --
+-- Modified 2026-09-19: FlagsSR_out, the status register's high byte, an   --
+-- output for the board's debug probe. Lines marked [GX].                   --
 ------------------------------------------------------------------------------
 
 library ieee;
@@ -153,7 +158,8 @@ entity TG68KdotC_Kernel is
 		skipFetch				: out std_logic;
 		regin_out				: out std_logic_vector(31 downto 0);
 		CACR_out					: out std_logic_vector( 3 downto 0);
-		VBR_out					: out std_logic_vector(31 downto 0)
+		VBR_out					: out std_logic_vector(31 downto 0);
+		FlagsSR_out			: out std_logic_vector( 7 downto 0)	-- [GX] T.S.0III, for the board's probe
 		);
 end TG68KdotC_Kernel;
 
@@ -200,6 +206,8 @@ architecture logic of TG68KdotC_Kernel is
 	type   regfile_t is array(0 to 15) of std_logic_vector(31 downto 0);
 	signal regfile				: regfile_t := (OTHERS => (OTHERS => '0')); -- mikej stops sim X issues;
 	signal RDindex_A			: integer range 0 to 15;
+	signal rf_isp_wr			: std_logic := '0';				-- [GX]
+	signal rf_waddr			: integer range 0 to 15 := 0;	-- [GX]
 	signal RDindex_B			: integer range 0 to 15;
 	signal WR_AReg				: std_logic := '0';
 
@@ -568,6 +576,14 @@ PROCESS (long_start, reg_QB, data_write_tmp, exec, data_read, data_write_mux, me
 -----------------------------------------------------------------------------
 -- Registerfile
 -----------------------------------------------------------------------------
+-- [GX] MOVEC Rn,ISP writes the supervisor A7. The kernel has no M bit, so
+-- ISP is the active supervisor stack (MAME with M=0), kept in regfile(15).
+-- Same cycle as the VBR write, through the one write port so Quartus still
+-- infers regfile as RAM (a second assignment statement does not); the value
+-- comes through regin's existing mux, not a second one after it.
+rf_isp_wr <= '1' WHEN exec(movec_wr)='1' AND brief(11 downto 0)=X"804" AND Wwrena='0' ELSE '0';
+rf_waddr  <= 15 WHEN rf_isp_wr='1' ELSE RDindex_A;
+
 PROCESS (clk, regfile, RDindex_A, RDindex_B, exec)
 	BEGIN
 		reg_QA <= regfile(RDindex_A);
@@ -578,8 +594,8 @@ PROCESS (clk, regfile, RDindex_A, RDindex_B, exec)
 				WR_AReg <= rf_dest_addr(3);
 				RDindex_A <= conv_integer(rf_dest_addr(3 downto 0));
 				RDindex_B <= conv_integer(rf_source_addr(3 downto 0));
-				IF Wwrena='1' THEN
-					regfile(RDindex_A) <= regin;
+				IF Wwrena='1' OR rf_isp_wr='1' THEN		-- [GX] was: Wwrena, regfile(RDindex_A) <= regin
+					regfile(rf_waddr) <= regin;
 				END IF;
 				
 				IF exec(to_USP)='1' THEN
@@ -592,7 +608,7 @@ PROCESS (clk, regfile, RDindex_A, RDindex_B, exec)
 -----------------------------------------------------------------------------
 -- Write Reg
 -----------------------------------------------------------------------------
-PROCESS (OP1in, reg_QA, Regwrena_now, Bwrena, Lwrena, exe_datatype, WR_AReg, movem_actiond, exec, ALUout, memaddr, memaddr_a, ea_only, USP, movec_data)
+PROCESS (OP1in, reg_QA, Regwrena_now, Bwrena, Lwrena, exe_datatype, WR_AReg, movem_actiond, exec, ALUout, memaddr, memaddr_a, ea_only, USP, movec_data, rf_isp_wr)	-- [GX] rf_isp_wr
 	BEGIN
 		regin <= ALUout;
 		IF exec(save_memaddr)='1' THEN
@@ -603,6 +619,8 @@ PROCESS (OP1in, reg_QA, Regwrena_now, Bwrena, Lwrena, exe_datatype, WR_AReg, mov
 			regin <= USP;	
 		ELSIF exec(movec_rd)='1' THEN
 			regin <= movec_data;
+		ELSIF rf_isp_wr='1' THEN		-- [GX] MOVEC Rn,ISP
+			regin <= reg_QA;
 		END IF;
 		
 		IF Bwrena='1' THEN
@@ -4056,6 +4074,7 @@ PROCESS (clk, cpu, OP1out, OP2out, opcode, exe_condition, nextpass, micro_state,
 
   CACR_out <= CACR;
   VBR_out <= VBR;
+  FlagsSR_out <= FlagsSR;	-- [GX]
 -----------------------------------------------------------------------------
 -- Conditions
 -----------------------------------------------------------------------------

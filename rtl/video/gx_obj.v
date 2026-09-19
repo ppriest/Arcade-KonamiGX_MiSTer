@@ -48,13 +48,14 @@ module gx_obj #(parameter
     input      [ 8:0] hdump,
     input      [ 8:0] vdump,
     input      [ 9:0] voffset,
+    input      [ 9:0] hoff_adj,     // the set's K055673 dx - (-26), signed
     input             hs,
     input             lvbl,
 
     // sprite RAM, CPU side (16-bit)
     input             ram_cs,
     input      [ 1:0] ram_we,
-    input      [12:1] ram_addr,
+    input      [13:1] ram_addr,        // 16 KB, 0xd20000-0xd23fff
     input      [15:0] ram_din,
     output     [15:0] ram_dout,
 
@@ -66,7 +67,7 @@ module gx_obj #(parameter
     input      [ 1:0] mmr_dsn,
 
     // K055673 registers, word n of 0xd4a010 (m_kx47_regs[n])
-    input             k47_we,
+    input      [ 1:0] k47_we,         // byte lanes { 15:8, 7:0 }: the game writes some bytes alone
     input      [ 2:0] k47_addr,
     input      [15:0] k47_din,
 
@@ -99,7 +100,9 @@ module gx_obj #(parameter
     output     [ 1:0] shd_code,
     output     [ 7:0] shd_idx,
     output     [ 7:0] shd_pri,
-    output     [ 7:0] shd_z
+    output     [ 7:0] shd_z,
+    output            dma_busy,      // the object DMA is copying (status bit, IRQ 3 at its end)
+    output reg        ln_short       // one clock: the scan had not finished the line when the next began
 );
 
 // ------------------------------------------------------------ registers
@@ -107,7 +110,8 @@ reg  [15:0] kx47 [0:7];
 reg  [ 7:0] objset1;        // K053246 register 5, as jt053246_mmr also holds it
 
 always @(posedge clk) begin
-    if( k47_we ) kx47[k47_addr] <= k47_din;
+    if( k47_we[1] ) kx47[k47_addr][15:8] <= k47_din[15:8];
+    if( k47_we[0] ) kx47[k47_addr][ 7:0] <= k47_din[ 7:0];
     if( reg_cs && mmr_we ) begin
         if( objset1[2] ) begin
             if( mmr_addr[2:0]==5 ) objset1 <= mmr_din[7:0];
@@ -136,6 +140,16 @@ wire [ 9:0] attr, hpos;
 wire [15:0] attr_full;
 wire [ 7:0] zcode, obj_idx;
 wire        hflip, vflip, hz_keep, dr_start, dr_busy, dma_bsy;
+assign dma_busy = dma_bsy;
+
+// jt053246_scan's own test ("Obj scan did not finish"), for the board's probe:
+// at a line start in its active range, the walk of the line before is not done
+wire ln_done;
+reg  hs_l2;
+always @(posedge clk) begin
+    hs_l2    <= hs;
+    ln_short <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7 && !ln_done;
+end
 wire [ 3:0] ysub;
 wire [11:0] hzoom;
 wire [ 1:0] pre_shd;
@@ -154,7 +168,7 @@ jt053246 #(
     .pxl2_cen   ( pxl2_cen  ),
     .pxl_cen    ( pxl_cen   ),
     .simson     ( 1'b0      ),
-    .ln_done    (           ),
+    .ln_done    ( ln_done        ),
     .cs         ( reg_cs    ),
     .cpu_we     ( mmr_we    ),
     .cpu_addr   ( mmr_addr  ),
@@ -178,6 +192,7 @@ jt053246 #(
     .hdump      ( hdump     ),
     .vdump      ( vdump     ),
     .voffset    ( voffset   ),
+    .hoff_adj   ( hoff_adj  ),
     .lvbl       ( lvbl      ),
     .hs         ( hs        ),
     .pxl        ( 9'd0      ),
@@ -189,7 +204,7 @@ jt053246 #(
     .st_dout    (           )
 );
 
-jtframe_dual_ram16 #(.AW(12)) u_ram(   // 8 KB; the DMA reads words 0-2047
+jtframe_dual_ram16 #(.AW(13)) u_ram(   // 16 KB; the DMA reads words 0-2047
     .clk0   ( clk              ),
     .data0  ( ram_din          ),
     .addr0  ( ram_addr         ),
@@ -197,7 +212,7 @@ jtframe_dual_ram16 #(.AW(12)) u_ram(   // 8 KB; the DMA reads words 0-2047
     .q0     ( ram_dout         ),
     .clk1   ( clk              ),
     .data1  ( 16'd0            ),
-    .addr1  ( dma_addr[12:1]   ),
+    .addr1  ( dma_addr[13:1]   ),
     .we1    ( 2'b0             ),
     .q1     ( dma_data         )
 );
@@ -250,12 +265,35 @@ wire [PW-1:0] buf_pred, buf_din, pre_pxl;
 wire [24:2]   draw_addr;
 wire [39:0]   sorted;
 
+// The ROM port answers a fetch with one clock of ok and does not fetch the
+// same address again while cs stays high. jtframe_draw keeps cs high across
+// a row's two halves, moves to the second half's address as it starts
+// drawing the first, and only looks at ok again after eight pixels -- so an
+// answer quicker than those pixels (zoomed sprites draw them slowly) was
+// never seen, and drawer and port waited on each other for ever. On the
+// board Twin Bee's sprites stopped at its first zoomed ones and never came
+// back; the benches' ROM models repeated ok every clock and hid it. The
+// answer is held here, with the address the port matched (the one the
+// drawer showed the clock before the pulse), until the drawer takes it or
+// moves on.
+reg  [22:0]   addr_d, ok_addr;
+reg  [39:0]   ok_data;
+reg           ok_held;
+always @(posedge clk) begin
+    addr_d <= rom_addr;
+    if( !rom_cs ) ok_held <= 0;
+    else if( rom_ok ) begin ok_held <= 1; ok_addr <= addr_d; ok_data <= rom_data; end
+end
+wire          held_hit = ok_held && rom_cs && rom_addr == ok_addr;
+wire          drw_ok   = rom_ok || held_hit;
+wire [39:0]   drw_data = rom_ok ? rom_data : ok_data;
+
 // K055673_LAYOUT_GX half-row -> jtframe_draw's format (one plane per byte,
 // leftmost pixel in the LSB)
 genvar gk, gi;
 generate for( gk=0; gk<5; gk=gk+1 ) begin : g_plane
     for( gi=0; gi<8; gi=gi+1 ) begin : g_bit
-        assign sorted[8*gk+gi] = rom_data[39-8*gk-gi];   // byte k, bit 7-i
+        assign sorted[8*gk+gi] = drw_data[39-8*gk-gi];   // byte k, bit 7-i
     end
 end endgenerate
 
@@ -287,7 +325,7 @@ jtframe_objdraw_gate #(
     .pal        ( { 21'd0, zcode, pri, spri, obj_idx, color, solid, mode1, shmode, shset } ),
     .rom_addr   ( draw_addr      ),
     .rom_cs     ( rom_cs         ),
-    .rom_ok     ( rom_ok         ),
+    .rom_ok     ( drw_ok         ),
     .rom_data   ( sorted         ),
     .buf_pred   ( buf_pred       ),
     .buf_din    ( buf_din        ),

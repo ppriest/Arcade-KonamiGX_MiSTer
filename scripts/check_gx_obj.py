@@ -70,6 +70,7 @@ def main():
     ap.add_argument("--sim", choices=["verilator", "modelsim"], default="verilator",
                     help="Verilator is ~10x faster; ModelSim is four-state (WORKFLOW 10)")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--plus", action="append", default=[], help="extra +PLUSARG=value for the bench")
     a = ap.parse_args()
     cap = rm.Capture(REPO / "debug" / a.capture)
 
@@ -79,7 +80,8 @@ def main():
         runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
         r = subprocess.run([GIT_BASH, runner, "gx_obj_tb",
                             f"{g}HOFFSET={a.hoffset}", f"+NTILES={ntiles}",
-                            f"+ROM_LAT={a.rom_lat}", f"+VOFFSET={a.voffset}"],
+                            f"+ROM_LAT={a.rom_lat}", f"+VOFFSET={a.voffset}",
+                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}"] + a.plus,
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "sim.log").write_text(log)

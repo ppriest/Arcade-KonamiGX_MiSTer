@@ -58,16 +58,16 @@ module gx_video_synth_top (
     gx_obj u_obj (
         .rst, .clk, .pxl_cen(r[200]), .pxl2_cen(r[201]),
         .hdump(r[210:202]), .vdump(r[219:211]), .voffset(r[229:220]), .hs(r[230]), .lvbl(r[231]),
-        .ram_cs(r[232]), .ram_we(r[234:233]), .ram_addr(r[246:235]), .ram_din(r[262:247]), .ram_dout,
+        .ram_cs(r[232]), .ram_we(r[234:233]), .ram_addr({r[499], r[246:235]}), .ram_din(r[262:247]), .ram_dout,
         .reg_cs(r[263]), .mmr_we(r[264]), .mmr_addr(r[268:265]), .mmr_din(r[284:269]), .mmr_dsn(r[286:285]),
-        .k47_we(r[287]), .k47_addr(r[290:288]), .k47_din(r[306:291]),
+        .k47_we({2{r[287]}}), .k47_addr(r[290:288]), .k47_din(r[306:291]),
         .opri(r[314:307]), .oinprion(r[322:315]), .ocblk(r[330:323]), .wrport2(r[338:331]),
         .primode(r[342:339]), .shadowon(r[345:343]), .shdpri0(r[353:346]), .shdpri1(r[361:354]),
         .shdpri2(r[369:362]), .spri_min(r[377:370]),
         .rom_addr(ob_rom_addr), .rom_cs(ob_rom_cs), .rom_ok(r[378]), .rom_data(r[418:379]),
         .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
         .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
-        .shd_pri(h_pri), .shd_z(h_z)
+        .shd_pri(h_pri), .shd_z(h_z), .dma_busy()
     );
 
     // ---- mixer
@@ -77,8 +77,8 @@ module gx_video_synth_top (
     gx_mixer u_mix (
         .rst, .clk, .pxl_cen(r[200]),
         .k55_we(r[420]), .k55_addr(r[426:421]), .k55_din(r[434:427]),
-        .k338_we(r[435]), .k338_addr(r[439:436]), .k338_din(r[455:440]), .bg_grad(r[456]),
-        .pal_we(r[457]), .pal_addr(r[470:458]), .pal_din(r[494:471]),
+        .k338_we({2{r[435]}}), .k338_addr(r[439:436]), .k338_din(r[455:440]), .bg_grad(r[456]),
+        .pal_we({r[457], r[497], r[498]}), .pal_addr(r[470:458]), .pal_din(r[494:471]),
         .bx({1'b0, r[210:202]}), .by({1'b0, r[219:211]}),
         .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]),
         .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx),

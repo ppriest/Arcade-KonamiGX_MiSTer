@@ -16,6 +16,9 @@
 `timescale 1ns/1ps
 
 module tb_gx_video;
+// +OBJ_HADJ=n: the set's K055673 dx less daiskiss's -26 (gx_board_cfg obj_hadj)
+int obj_hadj = 0;
+initial void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
 
 localparam string TD = "debug/gx_tilemap_tb/";
 localparam string OD = "debug/gx_obj_tb/";
@@ -50,9 +53,10 @@ wire        tile_rom_cs;
 reg         tile_rom_ok = 0;
 reg  [39:0] tile_rom_data;
 
-reg         spr_ram_cs = 0, k46_cs = 0, k46_we = 0, k47_we = 0;
+reg         spr_ram_cs = 0, k46_cs = 0, k46_we = 0;
+reg  [ 1:0] k47_we = 0;
 reg  [ 1:0] spr_ram_we = 0, k46_dsn = 2'b11;
-reg  [12:1] spr_ram_addr;
+reg  [13:1] spr_ram_addr;
 reg  [15:0] spr_ram_din, k46_din, k47_din;
 reg  [ 3:0] k46_addr;
 reg  [ 2:0] k47_addr;
@@ -63,7 +67,9 @@ wire        obj_rom_cs;
 reg         obj_rom_ok = 0;
 reg  [39:0] obj_rom_data;
 
-reg         k55_we = 0, k338_we = 0, pal_we = 0, bg_grad;
+reg         k55_we = 0, bg_grad;
+reg  [ 1:0] k338_we = 0;
+reg  [ 2:0] pal_we = 0;
 reg  [ 5:0] k55_addr;
 reg  [ 7:0] k55_din;
 reg  [ 3:0] k338_addr;
@@ -83,11 +89,11 @@ gx_video dut (
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din, .spr_ram_dout(),
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,
-    .k47_we, .k47_addr, .k47_din, .wrport2, .primode,
+    .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .obj_hadj(10'(obj_hadj)),
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pal_we, .pal_addr, .pal_din,
-    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported
+    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy()
 );
 
 // ----------------------------------------------------------- vectors, ROMs
@@ -120,13 +126,19 @@ always @(posedge clk) begin
     end
 end
 
-reg [22:0] olast; int olat;
+// One ok per fetch, as gx_rom_port gives it: a fetch is a new address or cs
+// raised again. The model used to repeat ok on every clock once the latency
+// had passed, which hid a lost-ok deadlock in the sprite drawer that the
+// board showed (gx_obj.v). +OBJ_OK_LEVEL=1 restores the repeat.
+reg [22:0] olast; int olat; reg odone = 0; int obj_ok_level = 0;
+initial void'($value$plusargs("OBJ_OK_LEVEL=%d", obj_ok_level));
 always @(posedge clk) begin
     obj_rom_ok <= 1'b0;
-    if (!obj_rom_cs) olat <= 0;
-    else if (olat == 0 || obj_rom_addr != olast) begin olast <= obj_rom_addr; olat <= 1; end
+    if (!obj_rom_cs) begin olat <= 0; odone <= 0; end
+    else if (olat == 0 || obj_rom_addr != olast) begin olast <= obj_rom_addr; olat <= 1; odone <= 0; end
     else if (olat < ROM_LAT) olat <= olat + 1;
-    else begin
+    else if (!odone || obj_ok_level != 0) begin
+        odone <= 1;
         obj_rom_ok   <= 1'b1;
         obj_rom_data <= orom_v[(((obj_rom_addr >> 5) % ontiles) << 5) | obj_rom_addr[4:0]];
     end
@@ -181,7 +193,7 @@ initial begin
         end
     @(posedge clk) begin k46_cs <= 0; k46_we <= 0; k46_dsn <= 2'b11; end
     for (int i = 0; i < 8; i++)
-        @(posedge clk) begin k47_we <= 1; k47_addr <= i[2:0]; k47_din <= k47_v[i]; end
+        @(posedge clk) begin k47_we <= 2'b11; k47_addr <= i[2:0]; k47_din <= k47_v[i]; end
     @(posedge clk) k47_we <= 0;
     for (int i = 0; i < 2048; i++)
         @(posedge clk) begin spr_ram_cs <= 1; spr_ram_we <= 2'b11; spr_ram_addr <= i[11:0]; spr_ram_din <= spr_v[i]; end
@@ -190,10 +202,10 @@ initial begin
         @(posedge clk) begin k55_we <= 1; k55_addr <= i[5:0]; k55_din <= k55_v[i]; end
     @(posedge clk) k55_we <= 0;
     for (int i = 0; i < 16; i++)
-        @(posedge clk) begin k338_we <= 1; k338_addr <= i[3:0]; k338_din <= k338_v[i]; end
+        @(posedge clk) begin k338_we <= 2'b11; k338_addr <= i[3:0]; k338_din <= k338_v[i]; end
     @(posedge clk) k338_we <= 0;
     for (int i = 0; i < 8192; i++)
-        @(posedge clk) begin pal_we <= 1; pal_addr <= i[12:0]; pal_din <= pal_v[i]; end
+        @(posedge clk) begin pal_we <= 3'b111; pal_addr <= i[12:0]; pal_din <= pal_v[i]; end
     @(posedge clk) pal_we <= 0;
 
     // frames counted at the rise of the delayed vertical blank; two for the

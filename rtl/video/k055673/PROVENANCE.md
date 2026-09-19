@@ -103,3 +103,16 @@ scan fails to finish. Frames 3600 and 6000 were also run on ModelSim with the sa
 **A timing constraint for that setup:** `jtframe_objdraw_gate` reads the line buffer through a
 counter (`HFIX`) that re-synchronises to `hdump` only while `hs` is high, so `hs` must span
 `hdump`'s wrap. With `hs` placed before the wrap, the bench drew every sprite and displayed none.
+
+### `jt053246_scan.sv`: the vertical mirror decided in step 4
+
+A sprite with the vertical-mirror bit (word 6 bit 15) draws its second half flipped. Upstream sets
+`vflip` in step 3 from `ydiff`, but `ydiff` comes through a two-register pipeline (`ydiff_b`,
+`yz_add`) that is only valid by step 4, where the tile row is added to the code; so the flip
+switched some lines away from the sprite's midpoint. On Twin Bee's full-screen shadow sprite
+(zoomed 3.2x vertically) that was a 16-line band of the wrong tile row. The flip is now set in
+step 4, from the latched mirror bit, with the row taken from the same flip. With the global Y
+flip (`gvf`, always set on GX) `ydiff` counts rows from the other end, so the mirrored half is the
+one with the row's top bit set; the upstream polarity is kept for `gvf` clear. Checked on the
+sprite bench (tbyahhoo-f3200 with DMAEN set: solid pixels 64,229 to 64,512 of 64,512) and on
+the video bench (Daisu-Kiss frames 300-6000 unchanged, 64,512 of 64,512 each).

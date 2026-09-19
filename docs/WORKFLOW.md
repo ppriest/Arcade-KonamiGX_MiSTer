@@ -318,9 +318,26 @@ Get-Process vsim,vsimk | Select-Object Id,ProcessName,CPU,WorkingSet64,StartTime
 (`pacman -S mingw-w64-x86_64-verilator`), driven through the msys bash so its `make` and `g++`
 resolve. It turns a 15–20 minute ModelSim iteration into a build of ~10 s plus a run measured in
 tens of seconds. Two things it is not: it is two-state, so anything that turns on X-propagation stays
-on ModelSim; and VHDL is outside it, which matters here because TG68K.C is VHDL — the CPU benches
-stay on ModelSim. A disagreement between the two simulators is a finding, not a nuisance. Verilator
-does not need the section 2 lock.
+on ModelSim; and VHDL is outside it. TG68K.C is VHDL, so the CPU benches take it as GHDL's
+Verilog conversion (`scripts/tg68k_verilog.sh`, GHDL 6 from `mingw-w64-x86_64-ghdl-mcode`;
+`run_verilator.sh` regenerates it when the VHDL is newer). `gx_main_tb`: 20 frames in 36 s against
+about 12 minutes on ModelSim, the same 211 writes. The conversion fixes the generics at gx_main's
+values and stops the simulation if an instance asks for others. A disagreement between the two
+simulators is a finding, not a nuisance. Verilator does not need the section 2 lock.
+
+**Long main-board runs start from a snapshot.** `gx_main_tb` has its own `main.cpp`, which drives
+the clock (Verilator cannot save a `--timing` model) and saves or restores the whole simulation:
+`check_gx_main.py daiskiss 741 --save-at 740` once, then `check_gx_main.py daiskiss 1185 --from 740
+--shot 1200`. A restored run's trace is byte-identical to an uninterrupted one's (checked at frame
+30 of 60). A snapshot holds the ROM images and MAME's sound replies: remake it after either
+changes. Two runs at once need `--out` directories of their own -- they otherwise share the trace
+file, and the second truncates the first's.
+
+**Build at `-O2`, one thread.** `verilated.mk` compiles the model at `OPT_FAST=-Os`; Verilator's
+own `-O3` is not the C++ build. `-O2` took `gx_main_tb` from ~1.45 s to ~0.9 s a frame. `--threads=4`
+made it ~7 s a frame, with an identical trace: each clock edge is one eval with little work in it,
+and the threads spend it synchronising. `run_verilator.sh --threads=N` stays for benches where that
+changes.
 
 The rest of testbench discipline is in LESSONS_LEARNED's "Testbench discipline" section — read it
 before writing a new bench rather than after one gives a confident wrong answer.
@@ -430,6 +447,9 @@ repository already.
 | **done** `deploy.py` | slack-gated deploy, incrementing `.rbf` numbering, fallbacks on device. MS32's capture-blob path deliberately not carried over |
 | **done** `run_sim.sh` | one testbench, fresh `work` library every run, and it takes the lock |
 | **done** `run_verilator.sh` | the fast second simulator; outside the lock. Ported from Seta; `-G` parameter overrides go to the build. `scripts/check_gx_obj.py` uses it by default: ~3 s a frame against ~15 s in ModelSim, same result on all five sprite frames |
+| **done** `tg68k_verilog.sh` | TG68KdotC_Kernel through `ghdl --synth --latches` to Verilog for the Verilator CPU benches. Verilator builds at `-O2` (`OPT_FAST`, `OPT_GLOBAL`): MSYS2's GCC 16.2.0 fails to link `-Os` code that moves a `std::string`, and `-O2` is faster |
+| **done** `build_mra.py` | a set's `.mra` from the driver's `ROM_START`, each interleave map chosen by trial against the proven region image and the result re-read with `mra.py` (mra-tools-c's semantics) and compared with the expected stream; the layout is read from `gx_sdram_top.sv`'s localparams and the graphics part sizes checked against `gx_board_cfg.sv` |
+| **done** `check_gx_sdram.py` | the memory path composed: the `.mra` stream downloaded into `gx_sdram_top` against the command-decoding chip model, every region read back through the port the board uses and compared with MAME's images. `--limit N` for a quick ModelSim run |
 | `cfg.py` | read-modify-write of the per-core `.CFG` status word |
 | `read_issp.tcl`, `read_issp.py` | read the probe / write the source bus over JTAG |
 | `report_worst_paths.tcl` | worst setup paths from the compiled database |

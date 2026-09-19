@@ -511,6 +511,17 @@ N-entry ring buffer (interface unchanged) absorbed them. That is a fix for the t
 pattern, not a guarantee; an independent fetch-ahead domain or pipelined controller remains the
 complete answer.
 
+### [GX] A 16-bit register port without byte enables passes every capture-driven bench
+
+`gx_obj`'s K055673 port and the K054338 port took a whole word on each write. Benches that load
+registers from a MAME capture write whole words, so they passed. `daiskiss` writes `0xD4A018`-`D`
+and most K054338 registers a byte at a time; the 68000 bus carries the byte on both halves, so a
+byte write of `0x01` stored `0x0101`. The sprite code bank became 1, every sprite fetched a blank
+ROM region, and the title showed its background with no sprites -- while the DMA, the scan and the
+line-buffer writes all ran at full count. Probes found it in two runs: 190,176 buffer writes a
+frame, every one with pen 0; then the first ROM address differing from `gx_obj_tb`'s in one bank bit.
+Before wiring a register port to a CPU, list the game's write masks for it from MAME's trace.
+
 ## When simulation passes and hardware fails
 
 ### Re-run the failing case with the production transport in place of behavioural models
@@ -1241,6 +1252,19 @@ same-cycle edge-detector design cannot assume. The fix was a level-tracked `rom_
 glitch-free combinational `is_rom_read` level, confirmed by re-running the failing scenario with
 hierarchical access to the core's own `MCycle`/`TState`, not by "the test passes now".
 
+### [GX] TG68K.C ignores `MOVEC` to ISP and MSP, and the GX BIOS uses it to set the game's stack
+
+The kernel decodes `MOVEC` for the 68020's ISP (`0x804`) and MSP (`0x803`) and then stores
+nothing. The GX BIOS hands over to the game with `move.l ($200000),d0; movec d0,ISP`, so the game
+ran on the reset SSP instead of its own (`daiskiss`: `$C20000` for `$C1F800`). Everything matched
+MAME until the first stack push after the game's own setup, where the same values landed 0x800
+higher. Search the program ROM for `4E7B x804`/`x803` before trusting a stack address.
+
+Fixing it in the kernel has a trap: a second assignment statement to `regfile` makes Quartus build
+the register file from logic (0 M10K, Fmax 48.97 -> 45.69 MHz), and a data mux after `regin` puts
+itself on the worst path (47.77 MHz). One write port, the address muxed, the value through `regin`'s
+existing mux: 49.16 MHz, 2 M10K. Rerun `rtl/synth_check/tg68k` after any kernel change.
+
 ## Quartus synthesis gotchas (not visible in ModelSim)
 
 - **Non-blocking assignments to block-local (`automatic`) variables are rejected**, even with the
@@ -1349,6 +1373,88 @@ Corollary worth stating separately: a **synthesis harness is how you find
 this**. The functional simulation passed before and after the fix — nothing
 about the behaviour changed. Only a real fit on the real device says whether
 what you wrote can exist.
+
+
+### [GX] An `initial` value on a register array is not a power-up value under Power-Up Don't Care
+
+The 93C46 model blanked its 64-word array with an `initial` loop. Quartus built the array as
+1,084 registers (the map report says so; no `.mif` was generated), and this project's `.qsf` has
+`Power-Up Don't Care` on, which lets the fitter choose each register's power-up state. Verilator
+honours `initial`, so every simulation read FFFF; on the board two games whose EEPROM check only
+reads (Twin Bee Yahhoo!, Fantastic Journey) reported the part BAD, while the one that writes first
+(Daisu-Kiss) passed. A state that must be known at reset is written at reset -- here a sweep that
+free-runs while `rst` is high, itself needing no power-up value. When a simulation passes and the
+board does not, list what the simulator initialises that the fitter was told it need not.
+
+### [GX] A game that reads its EEPROM without writing it needs the driver's default image
+
+Most `konamigx.cpp` sets carry a `ROM_REGION16_BE( 0x80, "eeprom" )` with a `.nv` file, "to
+prevent game booting with error"; `eeprom_base_device::nvram_default` copies it when no
+`nvram/<set>/eeprom` exists. Twin Bee Yahhoo! reads all 64 words at its RAM check and never
+writes them: on the board, with a blank part, 22D/M BAD; in MAME with a blank `nvram` file, the
+same screen (`debug/mame_tby_blank_f450.png`), and with the file absent, OK. The RTL's transaction
+stream matched MAME's blank run word for word, so the model was right and the part's contents
+were wrong. Daisu-Kiss writes its EEPROM first and has no default image. The `.mra` now carries
+the region as `<rom index="2">` and the core loads it into the part during the download. Before
+reading a board failure as a model fault, run the reference with the board's starting state.
+
+### [GX] A one-cycle handshake into a slower clock domain must land on that domain's edge
+
+The kernel runs at 24 MHz and samples its clock enable only at its own edges, every other
+48 MHz cycle. The access unit's `ready` was set in the cycle after an ack, which is always a kernel
+edge, and cleared the cycle after -- except after an ESC command, where it was set in whichever
+cycle the ESC's `busy` dropped. Half of those are not kernel edges: the ack was lost, the kernel
+repeated its write to the ESC's port, the unit decoded a new command, and the ESC ran the same
+command again, for ever. The bench never showed it because its ROM answered every fetch in the
+same even number of clocks, so the ESC's completions all fell on the right parity; on the board
+the SDRAM's latency is odd as often as even, and Daisu-Kiss's title stalled at the first ESC
+command long enough to include a refresh (a 12,812-piece list the game itself leaves in an
+uninitialised entry). It was found by ISSP probes, each build adding what the last one left
+open: interrupt acknowledges (frozen with IRQs pending), the ESC's busy and the CPU held on
+its write (both permanent), the ESC's state and set pointer (walking one list over and over),
+then completions, the piece count and the status register (hundreds of completions a second,
+the count restarting, the IRQ mask zero) -- which left only the release of the CPU. `ready` is
+now held until a kernel edge, and the bench's ROM adds a clock to every other fetch
+(`+ROM_JITTER`). When a simulation with fixed latencies passes and the board does not, vary the
+latencies' parity before anything else.
+
+### [GX] A bench ROM that repeats `ok` hides every lost-`ok` bug
+
+The graphics ROM models in the benches raised `ok` on every clock once their latency had passed.
+`gx_rom_port` on the board raises it for one clock and does not fetch the same address again while
+`cs` stays high. `jtframe_draw` keeps `cs` high across a sprite row's two halves and only looks at
+`ok` once it has drawn eight pixels, so an answer that came back sooner -- zoomed sprites draw
+slowly -- was lost, and the drawer and the port waited on each other for ever. Twin Bee's
+sprites stopped at the first zoomed ones and never came back; Daisu-Kiss never hit it. Found with
+probe counters (sprite DMA starts per vblank: every one; sprite ROM answers: none from that
+moment on). The models now answer once per fetch, which reproduced the fault on the video
+bench before the fix (`gx_obj.v` holds an early answer). A bench model should give no more than
+the real interface guarantees: here, one `ok`.
+
+### [GX] MAME's `syncen` is behaviour a game depends on
+
+`konamigx.cpp` passes one vblank (and hblank) interrupt after any IRQ-enable write with bit 7,
+even if the enable has been cleared since. Twin Bee writes 91, d1, then 90 and waits for its
+vblank handler, which writes 91 back; with only the enable modelled it waited on a black
+screen. Modelled for IRQ 3 at first and not for 1 and 2, because Daisu-Kiss never cleared its
+enable. A latch the emulator documents as "ensure each IRQ is triggered at least once after
+being enabled" is part of the specification until a board says otherwise.
+
+### [GX] `.mra` `default=` maps pad buttons to the NAMED buttons only
+
+`<buttons names="B1,B2,B3,-,-,-,Start,Coin,Pause,Service">` keeps the bit positions, but
+Main_MiSTer applies `default=` to the named entries in order, skipping `-`. A ten-entry default put
+the pad's Start on Service. The Seta files had it right; this project's generator did not copy it.
+
+### [GX] A game's sound driver watches the sound CPU's status for change, not for a value
+
+Daisu-Kiss keeps sixteen frames of the K056800's status nibble and, if all sixteen are equal,
+pulses the sound CPU's reset and stops feeding its command queue -- which the attract sequence
+waits on. A stand-in that echoed the last command was constant, and the game sat on its title on
+the board while MAME (with a blank EEPROM, to rule that out) left it by frame 2700. The routine
+was found by disassembling every reader of the status register, not by guessing at the value
+MAME's sound program produces; the stand-in now moves the nibble every frame, which is all the
+driver checks.
 
 ## Debug instrumentation: how not to fool yourself
 
@@ -1599,6 +1705,25 @@ wrong. Prefer stimulus the design already accepts.
   the other side ("Reduce by the driver's screen height, not the RTL's"): where
   a value is compared against a raster position, the height that matters is the
   one the driver declares.
+
+### [GX] Compare a CPU's writes per interrupt level, not as one stream
+
+A merged, ordered write trace from MAME and from the RTL cannot match once interrupts run: where a
+handler's writes fall among the main program's depends on each CPU's speed (the RTL runs at 1.11x
+MAME here). `scripts/check_gx_main.py` splits the writes by the interrupt mask the CPU had
+(SR bits 8-10, logged by `systrace.lua` and read from `flagssr` in the Verilator bench) and
+compares each level in its own order. Two more differences are not faults and are normalised:
+the supervisor stack is left out (interrupt frames and saved registers hold wherever the
+interrupted code was), and each stretch of work-RAM writes is compared sorted by address, because
+MAME's 68020 writes a long to `-(An)` low word first and TG68K high word first. Registers and I/O
+stay in strict order.
+
+### [GX] MAME's `nvram/<set>/eeprom` for a 16-bit serial EEPROM is little-endian words
+
+The image is MAME's own memory dumped as it is on x86. A bench that loads it as big-endian words
+reads byte-swapped data, and `daiskiss` ran identically to MAME for 700 frames -- the BIOS does not
+read the EEPROM -- until the game's settings read returned `0x3595` where MAME returned `0x9535`.
+The trace of the serial bits (DI clocked in, DO read back) found it in one step.
 
 ## ROM formats
 
@@ -2197,3 +2322,43 @@ real tile codes there and still loses some of that stale strip.
 oisipuzl was a wiring gap: `tilemaps_flip` was decoded but never reached the
 layers, and the game runs with the sprite flip bit set, so its layers were
 flipped.
+
+### [GX] MSYS2's GCC 16.2.0 cannot link `-Os` C++ that moves a `std::string`
+
+Installing GHDL through pacman upgraded GCC, and every Verilator bench then failed to link:
+undefined `basic_string(basic_string&&)` from `verilated.o`. A five-line program shows it: `-O2`
+links, `-Os` does not. Verilator builds its runtime with `OPT_GLOBAL=-Os`; `run_verilator.sh` now
+passes `-MAKEFLAGS OPT_GLOBAL=-O2`. After any MSYS2 upgrade, rebuild one bench from a clean
+`obj_verilator/` before trusting the others.
+
+### [GX] A comment line beginning "Verilator" is a Verilator pragma
+
+`// Verilator reaches it ...` at the start of a line is read as `/*verilator ...*/` and fails the
+build with `BADVLTPRAGMA`. It happened three times in one bench before this entry. Do not begin a
+comment line with the word.
+
+### [GX] A Verilator snapshot written on Windows needs binary mode
+
+`VerilatedSave` opens its file with `open()`, which on Windows is text mode unless told otherwise:
+every `0x0A` byte of the model state became `0D 0A`, and the restore failed with "wrong end-of-file
+signature". `_fmode = _O_BINARY` at the top of `main()` fixes it; `$fopen`'d text files then get LF.
+
+### [GX] An out-of-range array index is a simulator-dependent value, and only the disagreement shows it
+
+The SDRAM chip model kept the open row for two banks (`open_row [0:1]`) and indexed it by the
+two-bit bank. Every sibling core's image stayed below 16 MB, so bank 2 was never selected. GX's
+sprite region is at 16 MB: Verilator wrapped the index and the model agreed with itself, 900 of 900;
+ModelSim read the entry as X, the row became 0 through an `int` conversion, and every sprite row
+read back as some other row's data. The two-simulator rule paid for itself here: neither result
+alone said "the model". When a vendored bench model comes from a project with smaller images,
+check its address ranges against this one's before trusting a pass.
+
+### [GX] The K055673's fifth-byte part starts at (MB / 5) * 4 MB, not at rows * 4
+
+`k055673.cpp` splits a sprite region as `size4 = (bytes >> 20) / 5 << 22`: four-byte planes
+from 0 and the fifth byte from `size4`. A region that is not a multiple of 5 MB is therefore
+partly unread -- sexyparo's 6 MB is 4 MB + 1 MB, and the last MB of its fifth-byte ROM is never
+decoded. The first layout took rows = bytes / 5 (right for the K056832, whose region really is
+5-byte rows) and put the fifth bytes 0xcccc rows off; every sampled sprite row disagreed. The
+`.mra` clips the file to what the chip reads. The check that found it was the composed memory
+bench run on a second set: one set cannot show a formula that happens to agree on its own sizes.

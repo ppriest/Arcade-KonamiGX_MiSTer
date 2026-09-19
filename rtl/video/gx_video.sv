@@ -74,7 +74,7 @@ module gx_video #(
     // ---- sprites (sprite RAM, K053246, K055673)
     input             spr_ram_cs,
     input      [ 1:0] spr_ram_we,
-    input      [12:1] spr_ram_addr,
+    input      [13:1] spr_ram_addr,
     input      [15:0] spr_ram_din,
     output     [15:0] spr_ram_dout,
     input             k46_cs,
@@ -82,11 +82,12 @@ module gx_video #(
     input      [ 3:0] k46_addr,
     input      [15:0] k46_din,
     input      [ 1:0] k46_dsn,
-    input             k47_we,
+    input      [ 1:0] k47_we,          // byte lanes { 15:8, 7:0 }
     input      [ 2:0] k47_addr,
     input      [15:0] k47_din,
     input      [ 7:0] wrport2,
     input      [ 3:0] primode,
+    input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
     output     [22:0] obj_rom_addr,
     output            obj_rom_cs,
     input             obj_rom_ok,
@@ -96,11 +97,11 @@ module gx_video #(
     input             k55_we,
     input      [ 5:0] k55_addr,
     input      [ 7:0] k55_din,
-    input             k338_we,
+    input      [ 1:0] k338_we,         // byte lanes { 15:8, 7:0 }: the game writes bytes alone
     input      [ 3:0] k338_addr,
     input      [15:0] k338_din,
     input             bg_grad,
-    input             pal_we,
+    input      [ 2:0] pal_we,          // { R, G, B }
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
 
@@ -110,7 +111,9 @@ module gx_video #(
     output reg        vid_lvbl,
     output reg        vid_hs,
     output reg        vid_vs,
-    output            unsupported
+    output            unsupported,
+    output            obj_dma_busy,
+    output            obj_ln_short        // the sprite scan did not finish a line (probe)
 );
 
 // ------------------------------------------------------------ K053252
@@ -158,7 +161,8 @@ reg  [7:0] k55 [0:63];
 reg  [15:0] k338 [0:15];
 always @(posedge clk) begin
     if( k55_we  ) k55[k55_addr]   <= k55_din;
-    if( k338_we ) k338[k338_addr] <= k338_din;
+    if( k338_we[1] ) k338[k338_addr][15:8] <= k338_din[15:8];
+    if( k338_we[0] ) k338[k338_addr][ 7:0] <= k338_din[ 7:0];
 end
 
 // konamigx_mixer: shadow set i is on if a K054338 delta is outside +/-7;
@@ -212,7 +216,7 @@ wire [ 7:0] s_pri, s_z, s_idx, h_idx, h_pri, h_z;
 wire [ 1:0] h_code;
 
 gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset(VOFFSET), .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .hs, .lvbl,
     .ram_cs(spr_ram_cs), .ram_we(spr_ram_we), .ram_addr(spr_ram_addr), .ram_din(spr_ram_din),
     .ram_dout(spr_ram_dout),
     .reg_cs(k46_cs), .mmr_we(k46_we), .mmr_addr(k46_addr), .mmr_din(k46_din), .mmr_dsn(k46_dsn),
@@ -222,7 +226,7 @@ gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .rom_addr(obj_rom_addr), .rom_cs(obj_rom_cs), .rom_ok(obj_rom_ok), .rom_data(obj_rom_data),
     .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
     .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
-    .shd_pri(h_pri), .shd_z(h_z)
+    .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short)
 );
 
 // ------------------------------------------------------------ mixer

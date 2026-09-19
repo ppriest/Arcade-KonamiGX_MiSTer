@@ -49,7 +49,8 @@ def main():
         (OUT / "crtc.hex").write_text("".join(f"{crtc[2 * n]:02x}\n" for n in range(16)))
         runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
         r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_video_tb",
-                            f"+TNTILES={tn}", f"+ONTILES={on}"],
+                            f"+TNTILES={tn}", f"+ONTILES={on}",
+                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}"],
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "video_sim.log").write_text(log)

@@ -3,10 +3,10 @@
 #
 # Build and run one testbench with Verilator. RUN FROM THE REPOSITORY ROOT.
 #
-#     scripts/run_verilator.sh gx_obj_tb [-GNAME=value ...] [+plusargs ...]
+#     scripts/run_verilator.sh gx_obj_tb [-GNAME=value ...] [--threads=N] [+plusargs ...]
 #
 # Ported from Arcade-Seta_MiSTer. The fast second simulator (WORKFLOW
-# section 10): two-state, no VHDL -- the TG68K.C benches stay on ModelSim --
+# section 10): two-state, no VHDL -- TG68K.C comes in as GHDL's Verilog conversion --
 # and a disagreement with ModelSim is a finding, not a nuisance.
 #
 # The bench's sources are listed in sim/<tb>/verilator.files: unlike
@@ -35,15 +35,41 @@ fi
 [ -d sys ] || { echo "run me from the repository root"; exit 1; }
 [ -f "sim/$TB/verilator.files" ] || { echo "no sim/$TB/verilator.files"; exit 1; }
 
-GEN=(); RUN=()
+GEN=(); RUN=(); THREADS=1
 for a in "$@"; do
-	case "$a" in -G*) GEN+=("$a") ;; *) RUN+=("$a") ;; esac
+	case "$a" in
+		-G*)         GEN+=("$a") ;;
+		--threads=*) THREADS="${a#--threads=}" ;;
+		*)           RUN+=("$a") ;;
+	esac
 done
 
-# A parameter override changes the model, so it gets its own build directory
+# TG68K.C is VHDL: a bench that lists its GHDL conversion gets it (re)made
+TGV=obj_verilator/tg68k_ghdl/TG68KdotC_Kernel.v
+if grep -q "$TGV" "sim/$TB/verilator.files" && { [ ! -f "$TGV" ] || [ -n "$(find rtl/cpu/tg68k scripts/tg68k_verilog.sh -newer "$TGV")" ]; }; then
+	scripts/tg68k_verilog.sh
+fi
+
+# A parameter override or a thread count changes the model, so it gets its
+# own build directory
 OUT="obj_verilator/$TB$(printf '%s' "${GEN[@]+"${GEN[@]}"}" | tr -c 'A-Za-z0-9_' '_')"
+[ "$THREADS" = 1 ] || OUT="${OUT}_t$THREADS"
 mkdir -p "$OUT"
-verilator --binary --timing -j 0 -O3 -DSIMULATION \
+
+# A bench with its own sim/<tb>/main.cpp drives its clock from C++ and can
+# be saved and restored (main.cpp says how). Verilator cannot save a
+# --timing model, so that build is --cc --exe --savable, not --binary.
+if [ -f "sim/$TB/main.cpp" ]; then
+	MODE=(--cc --exe --build --savable -DGX_CPP_CLOCK "$(pwd)/sim/$TB/main.cpp")
+else
+	MODE=(--binary --timing)
+fi
+# OPT_FAST, OPT_GLOBAL: verilated.mk compiles the model, the runtime and a
+# bench's main.cpp at -Os (Verilator's own -O3 is not the C++ build), and
+# MSYS2's GCC 16.2.0 cannot link -Os code that moves a std::string
+# (undefined basic_string(&&)). -O2 links, and is the speed setting.
+verilator "${MODE[@]}" --threads "$THREADS" -j 0 -O3 -DSIMULATION \
+	-MAKEFLAGS OPT_FAST=-O2 -MAKEFLAGS OPT_GLOBAL=-O2 \
 	-Wno-fatal -Wno-lint -Wno-style -Wno-TIMESCALEMOD \
 	"${GEN[@]+"${GEN[@]}"}" \
 	--top-module "tb_${TB%_tb}" --Mdir "$OUT" -f "sim/$TB/verilator.files" \

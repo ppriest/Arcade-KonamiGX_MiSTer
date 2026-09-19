@@ -310,6 +310,10 @@ SPRITE_CFG = {
     "fantjoura": dict(dx=-46, dy=-23, primode=0),
     "crzcross": dict(dx=-46, dy=-23, primode=5),
     "puzldama": dict(dx=-46, dy=-23, primode=5),
+    "tbyahhoo": dict(dx=-26, dy=-23, primode=0),   # konamigx() base config; tilemode 1
+    "mtwinbee": dict(dx=-26, dy=-23, primode=0),
+    "sexyparo": dict(dx=-42, dy=-23, primode=0),   # sexyparo(): -42
+    "sexyparoa": dict(dx=-42, dy=-23, primode=0),
 }
 
 
