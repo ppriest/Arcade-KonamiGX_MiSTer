@@ -195,8 +195,9 @@ def layer_fields(cap, layer):
     r = k056832_regs(cap)
     if r[0] & 0x30:
         raise SystemExit("K056832 screen flip not modelled yet")
-    if (r[5] >> (2 * layer) & 3) != 3:
-        raise SystemExit(f"layer {layer}: line/row scroll not modelled yet")
+    ls_mode = r[5] >> (2 * layer) & 3
+    if ls_mode == 1:
+        raise SystemExit(f"layer {layer}: scroll mode 1 is unused in the chip's documentation")
 
     rowstart, rowspan = r[8 + layer] >> 3 & 3, (r[8 + layer] & 3) + 1
     colstart, colspan = r[12 + layer] >> 3 & 3, (r[12 + layer] & 3) + 1
@@ -212,6 +213,19 @@ def layer_fields(cap, layer):
     sx = (dx - offs_x) & (width - 1)
 
     pages = k056832_pages(cap)
+    # line scroll (register 0x0a, mode 0 per line and 2 per eight lines): the
+    # page register 0x30 selects holds two words a map row, 0x400 words a
+    # layer, the scroll in the second. Source-oriented -- indexed by the map
+    # row -- and it replaces the layer's X scroll.
+    if ls_mode != 3:
+        ls_page = ((r[24] >> 3) & 3) << 2 | (r[24] & 3)
+        rows = (np.arange(VIS_H) + VIS_Y0 + ay) % height
+        if ls_mode == 2:
+            rows = rows & ~7
+        words = pages[ls_page, (layer * 0x400 + 2 * (rows % 512) + 1) % 4096].astype(np.int64)
+        sx_line = (np.vectorize(s16)(words) - offs_x) & (width - 1)
+    else:
+        sx_line = None
     tiles = k056832_tiles(cap.set, 5)
     fbits = r[3] >> 6 & 3
     flips, palm1, pals2, palm2 = [(6, 0x3f, 0, 0x00), (4, 0x0f, 2, 0x30),
@@ -223,7 +237,7 @@ def layer_fields(cap, layer):
     by = VIS_Y0 + np.arange(VIS_H)[:, None]
     bx = VIS_X0 + np.arange(VIS_W)[None, :]
     my = (by + ay) % height
-    mx = (bx + sx) % width
+    mx = (bx + (sx if sx_line is None else sx_line[:, None])) % width
     page = (((rowstart + my // K056832_PAGE_H) & 3) << 2) + ((colstart + mx // K056832_PAGE_W) & 3)
     tidx = ((my % K056832_PAGE_H) >> 3) * 64 + ((mx % K056832_PAGE_W) >> 3)
     attr = pages[page, tidx * 2].astype(np.int32)

@@ -196,18 +196,20 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
 
 
 # ---------------------------------------------------------------------------
-# Remote naming: Arcade-KonamiGX_NNNNNNNN.rbf, the number incrementing per deploy.
+# Remote naming: KonamiGX_NNNNNNNN.rbf, the number incrementing per deploy. The
+# .mra's <rbf> tag carries no "Arcade-" prefix (the contribution guidelines), so
+# neither does the file on the device; a release keeps it (Arcade-KonamiGX_<date>.rbf).
 #
-# MiSTer resolves the .mra's <rbf>Arcade-KonamiGX</rbf> to the highest-sorting
-# Arcade-KonamiGX_*.rbf in the cores folder, so every deploy leaves the previous
+# MiSTer resolves the .mra's <rbf>KonamiGX</rbf> to the highest-sorting
+# KonamiGX_*.rbf in the cores folder, so every deploy leaves the previous
 # builds in place as fallbacks: rename the newest to .held (any name that no
 # longer ends in .rbf) and the one before it is what the .mra launches. The
 # counter starts at 10000001 and is read back from the device, .held files
-# included, so a held build's number is never reused. A plain Arcade-KonamiGX.rbf
+# included, so a held build's number is never reused. A plain KonamiGX.rbf
 # from before this convention is moved aside to .held rather than left to
 # compete with the numbered ones.
 # ---------------------------------------------------------------------------
-RBF_STEM = "Arcade-KonamiGX"
+RBF_STEM = "KonamiGX"
 RBF_FIRST = 10000001
 
 

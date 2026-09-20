@@ -116,7 +116,9 @@ CPU did not exist to test them:
 There is no release yet. To run a development build:
 
 * `python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
-  `scripts/deploy.py`): the core goes to `_Arcade/cores` as `Arcade-KonamiGX_NNNNNNNN.rbf` and the
+  `scripts/deploy.py`): the core goes to `_Arcade/cores` as `KonamiGX_NNNNNNNN.rbf` (the name the
+  `.mra`'s `<rbf>` tag asks for -- a release is `Arcade-KonamiGX_<date>.rbf` and is renamed to
+  `KonamiGX.rbf` when copied there) and the
   `.mra` files to `_Arcade/_Konami System GX`
 * Put the MAME merged ROM sets in `games/mame`, plus `konamigx.zip` (the BIOS, which every set
   needs)
@@ -126,8 +128,9 @@ There is no release yet. To run a development build:
 Known issues:
 * **No sound.** The K056800 stand-in answers the power-on test and gives a heartbeat; the games'
   sound drivers get nothing else.
-* Twin Bee Yahhoo! runs its attract with sprites; on busy lines part of a full-screen shadow is
-  not drawn.
+* **Sprites drop out on busy lines**: the sprite engine runs out of line time (20 to 118 lines a
+  frame in Daisu-Kiss's attract), because a sprite row costs two SDRAM fetches.
+* Two shadows on one pixel keep one, where MAME applies both (`docs/MAME_KLUDGES.md`).
 * **The EEPROM starts from the driver's default image** (or blank, for daiskiss and sexyparo)
   on every boot and is not saved.
 * Daisu-Kiss and Twin Bee Yahhoo! have been launched on the board; the other eight have not.

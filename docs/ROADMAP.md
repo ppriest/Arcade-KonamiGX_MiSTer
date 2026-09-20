@@ -1115,15 +1115,30 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
    next, the later capture frames (2400-6000), with the sound replies keyed to time rather
    than order.
 8. **Phase 2 on the board, in this order:**
-   - **Fast ROM loading through the HPS DDR3.** Done in `93f9f54`: the `.mra`'s index-0 ROM
-     loads into DDR3 at 0x30000000 and `rtl/memory/gx_rom_loader.sv` copies it through the byte
-     download path, as Seta, Psikyo and Fuuki do (their `rom_loader.sv`); the byte download
-     took about 25 s for daiskiss.
-   - **Sprite drawing time.** On the board the sprite scan does not finish up to 128 lines a
-     frame in daiskiss's attract (probe J); the bench, with a 6-clock ROM, shows none. Fetch a
-     sprite row's two halves in one SDRAM burst, fetch ahead of the drawer, and run the bench at
-     the board's latency (Seta's and MS32's lessons on per-line budgets).
-   - **Garbage sprites in Sexy Parodius gameplay.** The video path reproduces MAME's gameplay
-     frame exactly (`sexyparo-play3000`), so the fault is in what the ESC writes to sprite RAM or
-     when the DMA copies it; probe J counts DMAs that start while the ESC is busy.
+   - ~~**Fast ROM loading through the HPS DDR3.**~~ Done: the `.mra`'s index-0 ROM loads into
+     DDR3 at 0x30000000 and `rtl/memory/gx_rom_loader.sv` copies it through the byte download
+     path, as Seta, Psikyo and Fuuki do. Measured on the board (probe K): daiskiss loaded and
+     running **7.8 s** after the launch command against about 27 s on the byte path, the copy
+     itself 191 ms. `sim/gx_rom_loader_tb` covers the loader against a DDR3 model with random
+     busy and latency.
+   - ~~**Garbage sprites (Sexy Parodius, and the top-left in others).**~~ The sprite DMA started
+     while the ESC was still writing the list, hundreds of times a second (probe J,
+     `dma_during_esc`): a frame could get half of one list and half of the next. MAME's ESC runs
+     instantly and never sees it. `jt053246_dma` now takes a `dma_hold` and `gx_main` starts the
+     copy when the ESC finishes; on the board the counter is 0 and the attract and gameplay
+     frames look coherent.
+   - **Sprite drawing time: open.** The sprite scan does not finish 20 to 118 lines a frame in
+     daiskiss's attract (probe J, `short_last_frm`); Sexy Parodius mostly 0 with bursts. The
+     sprite bench puts numbers on the cost of ROM latency (daiskiss frame 4800, lines of 234 that
+     run out of time): 6 clocks 0, 12 clocks 94, 24 clocks 180, 36 clocks 228. `gx_rom_port`
+     now fetches a sprite row's other half while the drawer works on the first, which did not
+     measurably change the board's count. Next: a row in one SDRAM burst, fetching ahead of the
+     drawer, and running the bench at the board's measured latency (Seta's and MS32's lessons on
+     per-line budgets, and on dropping the sprites the chip draws last).
+   - ~~**Alpha and line scroll (Sexy Parodius's ink stage).**~~ Done: the mixer takes each pixel's
+     mix code from the tile's colour bits as `K055555GX_decode_vmixcolor` does, and adds an
+     additive layer instead of MAME's inverted-alpha fade, so the ink's black is transparent;
+     `gx_tilemap` does line scroll per line and per eight lines. The board's own registers in that
+     scene (probe L) match MAME's capture of it: layer B VMIXON 0, K054338 alpha 2 = 0x2000,
+     scroll modes 0xc3.
    - Stacked shadows (MAME_KLUDGES), the other `.mra` sets on the board, the `.nvm` EEPROM save.

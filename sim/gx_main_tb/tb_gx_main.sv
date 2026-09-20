@@ -194,7 +194,9 @@ gx_main dut (
     .inputs(32'hFFFF_FFFF), .coins(8'h7F), .dsw(16'hFEFF), .service(8'hFF),
     .ee_blank(rst), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
     .offs_x, .offs_y, .primode(4'd4),
-    .obj_hadj(10'd0), .esc_gen(1'b1), .esc_src(24'hc00000), .esc_count(9'h100),   // daiskiss, tbyahhoo
+    // per set, as gx_board_cfg gives them: +ESC_GEN, +ESC_SRC, +ESC_COUNT,
+    // +OBJ_HADJ (sexyparo: 0, c00604, fc, -16)
+    .obj_hadj(10'(obj_hadj)), .esc_gen(esc_gen[0]), .esc_src(24'(esc_src)), .esc_count(9'(esc_count)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj()
 );
@@ -209,6 +211,14 @@ wire [2:0] ipl_mask = dut.u_cpu.flagssr[2:0];
 `else
 wire [2:0] ipl_mask = 3'd0;
 `endif
+int obj_hadj = 0, esc_gen = 1, esc_src = 24'hc00000, esc_count = 'h100;
+initial begin
+    void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
+    void'($value$plusargs("ESC_GEN=%d", esc_gen));
+    void'($value$plusargs("ESC_SRC=%h", esc_src));
+    void'($value$plusargs("ESC_COUNT=%h", esc_count));
+end
+
 integer ft, seq = 0, frame = 0, frames = 60;
 reg     lvbl_l = 1;
 `ifdef GX_CPP_CLOCK

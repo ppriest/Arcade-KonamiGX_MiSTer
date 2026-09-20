@@ -89,7 +89,7 @@ gx_video dut (
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din, .spr_ram_dout(),
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,
-    .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .obj_hadj(10'(obj_hadj)),
+    .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .obj_hadj(10'(obj_hadj)), .obj_dma_trig(1'b0), .obj_dma_hold(1'b0),
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pal_we, .pal_addr, .pal_din,

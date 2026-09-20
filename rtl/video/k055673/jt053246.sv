@@ -54,6 +54,8 @@ module jt053246(    // sprite logic
     input      [ 9:0] voffset,
     input      [ 9:0] hoff_adj,     // [GX] see jt053246_scan
     input             lvbl,
+    input             dma_trig,    // [GX] start the copy now (gx_main: the ESC has finished)
+    input             dma_hold,    // [GX] the ESC is writing the list
     input             hs,
 
     // shadow
@@ -141,7 +143,8 @@ jt053246_dma #(
 
     .mode8      ( mode8     ),
     .dma_en     ( dma_en    ),
-    .dma_trig   ( 1'b0      ),
+    .dma_trig   ( dma_trig  ),
+    .dma_hold   ( dma_hold  ),
     .k44_en     ( 1'b0      ),   // enable k053244/5 mode (default k053246/7)
     .simson     ( simson    ),
 

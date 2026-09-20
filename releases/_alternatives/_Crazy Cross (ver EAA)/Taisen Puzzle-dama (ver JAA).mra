@@ -1,43 +1,47 @@
 <misterromdescription>
-    <name>Sexy Parodius (ver AAA)</name>
-    <setname>sexyparoa</setname>
-    <rbf>Arcade-KonamiGX</rbf>
-    <year>1996</year>
+    <name>Taisen Puzzle-dama (ver JAA)</name>
+    <setname>puzldama</setname>
+    <rbf>KonamiGX</rbf>
+    <year>1994</year>
     <manufacturer>Konami</manufacturer>
     <category>Arcade</category>
     <rotation>horizontal</rotation>
 
-    <rom index="1"><part>09</part></rom>
+    <rom index="1"><part>02</part></rom>
 
     <!-- the SDRAM image rtl/memory/gx_sdram_top.sv expects for this set
-         (rtl/gx_board_cfg.sv arm 9); written and proven by
+         (rtl/gx_board_cfg.sv arm 2); written and proven by
          scripts/build_mra.py, not by hand -->
-    <rom index="0" zip="sexyparo.zip|konamigx.zip" md5="none" address="0x30000000">
+    <rom index="0" zip="crzcross.zip|konamigx.zip" md5="none" address="0x30000000">
         <!-- maincpu, the CPU's window packed: BIOS, then 0x200000.. moved down by 0x1e0000 -->
         <part name="300a01.34k"/>
         <interleave output="32">
-            <part name="533aaa03.27b" map="0012"/>
-            <part name="533aaa02.31b" map="1200"/>
+            <part name="315jaa04.27b" map="0012"/>
+            <part name="315jaa02.31b" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
         <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
-        <part name="533a19.17h"/>  <!-- four-byte part -->
-        <part repeat="2097152">00</part>
-        <part name="533a18.13g"/>  <!-- fifth bytes -->
-        <part repeat="524288">00</part>
+        <part name="315a14.17h"/>  <!-- four-byte part -->
+        <part repeat="7864320">00</part>
+        <part name="315a12.13g"/>  <!-- fifth bytes -->
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
-        <part repeat="3145728">00</part>
+        <part repeat="6291456">00</part>
         <interleave output="32">
-            <part name="533a17.25g" map="0021"/>
-            <part name="533a13.28g" map="2100"/>
+            <part name="315a11.25g" map="0021"/>
+            <part name="315a10.28g" map="2100"/>
         </interleave>
-        <part name="533a11.30g" length="0x100000"/>  <!-- the chip reads this much -->
+        <part name="315a09.30g"/>
+    </rom>
+
+    <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
+    <rom index="2" zip="crzcross.zip|konamigx.zip" md5="none">
+        <part name="puzldama.nv"/>
     </rom>
 
     <switches default="FE,FF">
         <dip name="Sound Output" bits="0" ids="Stereo,Mono"/>
-        <dip name="Flip Screen" bits="1" ids="On,Off"/>
+        <dip name="Flip Screen" bits="2" ids="On,Off"/>
     </switches>
 
     <buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>

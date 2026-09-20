@@ -49,6 +49,8 @@ module gx_obj #(parameter
     input      [ 8:0] vdump,
     input      [ 9:0] voffset,
     input      [ 9:0] hoff_adj,     // the set's K055673 dx - (-26), signed
+    input             dma_trig,     // start the sprite DMA now (gx_main)
+    input             dma_hold,     // the ESC is writing the list: hold it off
     input             hs,
     input             lvbl,
 
@@ -193,6 +195,8 @@ jt053246 #(
     .vdump      ( vdump     ),
     .voffset    ( voffset   ),
     .hoff_adj   ( hoff_adj  ),
+    .dma_trig   ( dma_trig  ),
+    .dma_hold   ( dma_hold  ),
     .lvbl       ( lvbl      ),
     .hs         ( hs        ),
     .pxl        ( 9'd0      ),

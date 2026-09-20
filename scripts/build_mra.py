@@ -376,7 +376,10 @@ def build(set_name, mod, gl, games, blocks, check_only):
         '<misterromdescription>',
         f'    <name>{esc(title)}</name>',
         f'    <setname>{set_name}</setname>',
-        '    <rbf>Arcade-KonamiGX</rbf>',
+        # the core without the "Arcade-" prefix, as the contribution guidelines
+        # and the sibling cores have it: the released bitstream keeps the prefix
+        # and is renamed when it is copied to the device
+        '    <rbf>KonamiGX</rbf>',
         f'    <year>{g["year"]}</year>',
         f'    <manufacturer>{esc(g["manufacturer"])}</manufacturer>',
         '    <category>Arcade</category>',
@@ -403,7 +406,8 @@ def build(set_name, mod, gl, games, blocks, check_only):
         '',
     ])
     parent = games.get(set_name)
-    folder = OUT_DIR if parent in (None, "0", "konamigx") else OUT_DIR / "_alternatives" / mra_filename(gl[parent]["title"])[:-4]
+    folder = (OUT_DIR if parent in (None, "0", "konamigx")
+              else OUT_DIR / "_alternatives" / ("_" + mra_filename(gl[parent]["title"])[:-4]))
     out = folder / mra_filename(title)
     folder.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(".mra.tmp")

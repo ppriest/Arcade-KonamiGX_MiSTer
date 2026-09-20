@@ -116,3 +116,11 @@ flip (`gvf`, always set on GX) `ydiff` counts rows from the other end, so the mi
 one with the row's top bit set; the upstream polarity is kept for `gvf` clear. Checked on the
 sprite bench (tbyahhoo-f3200 with DMAEN set: solid pixels 64,229 to 64,512 of 64,512) and on
 the video bench (Daisu-Kiss frames 300-6000 unchanged, 64,512 of 64,512 each).
+
+### `jt053246_dma.v`: `dma_hold`
+
+The sprite DMA waits while this core's ESC is still writing the sprite list. MAME's ESC runs in no
+time, so its copy never sees a half-built list; this one takes SDRAM time, and on the board the
+copy began during it hundreds of times a second (probe J, `dma_during_esc`). `gx_main.sv` holds
+the copy off while `esc_busy` and pulses `dma_trig` when the ESC finishes, so a frame gets a whole
+list a little late rather than half of the last one and half of this one.

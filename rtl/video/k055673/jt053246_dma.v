@@ -1,6 +1,11 @@
 /* SPDX-FileCopyrightText: 2026 Jose Tejada Gomez
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 4-2-2024 */
+/* [GX] dma_hold: the copy waits while the ESC is still writing the sprite
+ * list. MAME's ESC runs instantly, so its copy never sees a half-built list;
+ * this one takes SDRAM time, and on the board the copy began during it
+ * hundreds of times a second (probe J, dma_during_esc). gx_main.sv pulses
+ * dma_trig when the ESC finishes if the hold stopped the copy. */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
  * GX_ORDER parameter: copy the first 256 sprites in RAM order instead of sorting them into one slot per priority byte.
  * Lines changed are marked [GX]; the unmodified file is kept beside this
@@ -14,6 +19,7 @@ module jt053246_dma(
     input             mode8,
     input             dma_en,
     input             dma_trig,
+    input             dma_hold,    // [GX] the ESC is writing the list: do not start yet
     input             k44_en,   // enable k053244/5 mode (default k053246/7)
     input             simson,
 
@@ -71,7 +77,7 @@ end
 reg trigger_two_lines_after_lvbl, trigger_at_dmaen, trigger, dmaen_l;
 
 always @* begin
-    trigger_two_lines_after_lvbl = dma_en && (lvbl_sh==2'b10 && hs_pos);
+    trigger_two_lines_after_lvbl = dma_en && !dma_hold && (lvbl_sh==2'b10 && hs_pos);   // [GX] dma_hold
     trigger_at_dmaen = ~dma_en & dmaen_l;
     trigger = EDGE_TRIGGER==1 ? trigger_at_dmaen : trigger_two_lines_after_lvbl;
 end

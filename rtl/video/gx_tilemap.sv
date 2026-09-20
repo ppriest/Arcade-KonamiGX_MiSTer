@@ -22,8 +22,9 @@
 // row line_y, for bitmap columns 24..311 (set_visarea(24, 24+288-1, ...)).
 // Mapping the K053252's counters onto those is the video top level's job.
 //
-// NOT HANDLED, and flagged on `unsupported` rather than drawn wrong: line and
-// row scroll (m_regs[5] mode != 3), screen flip (m_regs[0] bits 4-5), colour
+// NOT HANDLED, and flagged on `unsupported` rather than drawn wrong: screen
+// flip (m_regs[0] bits 4-5), scroll mode 1 (the chip's own documentation calls
+// it unused), colour
 // depths other than 5 bpp.
 //
 // ONE LINE BUFFER PAIR: line_start renders into one half and flips which half
@@ -63,6 +64,7 @@ module gx_tilemap (
     input        [9:0]  line_y,
     output              busy,
     output reg          unsupported,
+    output      [15:0]  dbg_regs5,   // register 0x0a (line-scroll modes), for the probe
 
     // tile ROM, one 5-byte pixel row per address: row = code * 8 + y
     output reg  [23:0]  rom_addr,
@@ -98,7 +100,7 @@ end
 // the fetcher about 5 cycles plus the ROM latency, so with a ROM answering in
 // 3 cycles or fewer the emitter never waits after the first tile; beyond
 // that the line time is set by the ROM.
-typedef enum logic [2:0] { IDLE, SETUP, MOD_Y, FIX_Y, PREP, RUN } state_t;
+typedef enum logic [3:0] { IDLE, SETUP, MOD_Y, FIX_Y, LS_RD, LS_Q, PREP, RUN } state_t;
 typedef enum logic [2:0] { F_IDLE, F_VWAIT, F_VDATA, F_RWAIT, F_HOLD } fstate_t;
 state_t  st;
 fstate_t fst;
@@ -106,12 +108,31 @@ fstate_t fst;
 wire [15:0] r_ctrl   = regs[0];
 wire [15:0] r_flipen = regs[1];
 wire [15:0] r_attr   = regs[3];
-wire [15:0] r_scroll = regs[5];
+wire [15:0] r_scroll = regs[5];           // 0x0a: two bits a layer
+assign dbg_regs5 = r_scroll;
+wire [15:0] r_lsbank = regs[24];          // 0x30: the line-scroll VRAM page
+
 
 reg  [ 1:0] layer;
 reg  [ 9:0] y;
 reg  [11:0] height;          // rowspan * 256
+reg  [11:0] ly;              // the map row this line draws (my, before PREP)
 reg  [11:0] width;           // colspan * 512
+
+// Line scroll (k054156_k054157_k056832.cpp): register 0x0a gives each layer a
+// mode -- 0 per line, 2 per eight lines, 3 none -- and the words live in the
+// page register 0x30 selects, 0x400 words per layer, two words a line with
+// the scroll in the second. It is source-oriented: the word belongs to the
+// line of the MAP, whatever the Y scroll is, and it replaces the layer's X
+// scroll register (the global one is ignored).
+//
+// One VRAM entry is those two words (attribute half, code half), so a line's
+// pair is one read at tile index layer * 0x200 + row, and the scroll is the
+// code half.
+wire [ 1:0] ls_mode  = r_scroll[{layer, 1'b0} +: 2];
+wire        ls_on    = ls_mode == 2'd0 || ls_mode == 2'd2;
+wire [ 3:0] ls_page  = { r_lsbank[4:3], r_lsbank[1:0] };
+reg  [15:0] ls_x;                         // this line's scroll, when ls_on
 reg  [ 1:0] rowstart, colstart;
 reg  [19:0] modv;            // |dy - offs_y|, reduced in place
 reg         modneg;
@@ -149,7 +170,7 @@ wire [ 2:0] t_y     = t_flip[1] ? ~my[2:0] : my[2:0];
 // MAME: ay = (dy - offs_y) % height with dy = (int16_t)m_regs[0x10+layer],
 // and sx = (dx - offs_x) & (width - 1)
 wire signed [16:0] ydiff = $signed({l_ysc[15], l_ysc}) - $signed({{9{offs_y[layer][7]}}, offs_y[layer]});
-wire        [15:0] xdiff = l_xsc - {{8{offs_x[layer][7]}}, offs_x[layer]};
+wire        [15:0] xdiff = (ls_on ? ls_x : l_xsc) - {{8{offs_x[layer][7]}}, offs_x[layer]};
 wire        [11:0] sx    = xdiff[11:0] & (width - 12'd1);
 wire        [11:0] ysum  = {2'd0, y} + ay;
 wire        [11:0] xsum  = {2'd0, VIS_X0} + sx;
@@ -205,7 +226,13 @@ wire nb_free  = !nb_valid || nb_take;
 //                                   + ((colstart + mx / 512) & 3)
 wire [14:0] tile_addr = { 2'(rowstart + my[9:8]), 2'(colstart + fmx[10:9]), my[7:3], fmx[8:3] };
 wire        scan_rd   = st == RUN && fst == F_IDLE && fleft != 6'd0 && !vram_rd;
-wire [14:0] rd_addr   = vram_rd ? vram_addr[15:1] : tile_addr;
+// the line's scroll pair: page, then layer * 0x200 + the map row (mode 2
+// takes the row's group of eight), wrapping at 512 rows as MAME's mask does
+wire [11:0] ls_row    = ysum >= height ? ysum - height : ysum;   // this line's map row
+wire [14:0] ls_addr   = { ls_page, layer, ls_mode == 2'd2 ? { ls_row[8:3], 3'd0 } : ls_row[8:0] };
+wire        ls_rd     = st == LS_RD && !vram_rd;
+wire [14:0] rd_addr   = vram_rd    ? vram_addr[15:1] :
+                        ls_rd      ? ls_addr         : tile_addr;
 wire [ 3:0] vram_be4  = vram_addr[0] ? {2'b00, vram_be} : {vram_be, 2'b00};
 wire [31:0] ram_q;
 reg         cpu_rd_l, cpu_half;
@@ -266,7 +293,9 @@ always @(posedge clk) begin
             y       <= line_y;
             layer   <= 2'd0;
             st      <= SETUP;
-            if (r_scroll[7:0] != 8'hff || r_ctrl[5:4] != 2'd0) unsupported <= 1'b1;
+            // mode 1 is "unused/unknown" in the chip's own documentation
+            if (r_scroll[1:0] == 2'd1 || r_scroll[3:2] == 2'd1 || r_scroll[5:4] == 2'd1
+                || r_scroll[7:6] == 2'd1 || r_ctrl[5:4] != 2'd0) unsupported <= 1'b1;
         end
         SETUP: begin
             rowstart <= l_rows[4:3];
@@ -287,10 +316,20 @@ always @(posedge clk) begin
         end
         FIX_Y: begin
             ay <= (modneg && modv != 0) ? height - modv[11:0] : modv[11:0];
-            st <= PREP;
+            st <= LS_RD;
+        end
+        // the line's scroll word, for a layer that has one
+        LS_RD: begin
+            ly <= ls_row;
+            if (!ls_on) st <= PREP;
+            else if (ls_rd) st <= LS_Q;
+        end
+        LS_Q: begin
+            ls_x <= ram_q[15:0];
+            st   <= PREP;
         end
         PREP: begin
-            my    <= ysum >= height ? ysum - height : ysum;
+            my    <= ly;
             fmx   <= mx0;
             fleft <= 6'((10'(mx0[2:0]) + 10'd295) >> 3);     // tiles the 288 pixels touch
             px    <= 9'd0;

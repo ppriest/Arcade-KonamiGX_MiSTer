@@ -93,21 +93,28 @@ wire       kill   = k338[15][0];
 wire       mixpri = k338[15][1];
 wire       noclip = k338[15][5];
 
-// K054338 set_alpha_level with invert_alpha(1), and gx_draw_basic_tilemaps'
-// additive hack: an additive level l is drawn as alpha ~l.
-function [8:0] alpha_of( input [1:0] mix, input [15:0] r13, input [15:0] r14 );
+// K054338 set_alpha_level with invert_alpha(1): the level is 0x1f less the
+// register's five bits, expanded to eight, and bit 5 says the layer is added
+// rather than blended. MAME turns an additive level into alpha ~level (its
+// own "hack: ... invert alpha", gx_draw_basic_tilemaps) and so fades the
+// layer in and out instead; this adds it, which is what leaves black
+// transparent -- Sexy Parodius's ink.
+//
+// Returns { add, on, level }: `on` is 0 where nothing is blended (mix code 0,
+// or a plain level of 255).
+function [9:0] alpha_of( input [1:0] mix, input [15:0] r13, input [15:0] r14 );
     reg [15:0] r;
     reg [ 7:0] mixset;
     reg [ 4:0] lv;
     reg [ 7:0] a;
+    reg        add;
     begin
         r      = mix[1] ? r14 : r13;
         mixset = mix[0] ? r[7:0] : r[15:8];
         lv     = 5'h1f - mixset[4:0];
         a      = { lv, lv[4:2] };
-        if( mixset[5] && a != 8'd0 ) a = ~a;
-        // 256 = opaque: MAME blends only when the level is below 255
-        alpha_of = ( mix==2'd0 || a==8'd255 ) ? 9'd256 : { 1'b0, a };
+        add    = mixset[5];
+        alpha_of = { add, mix != 2'd0 && (add || a != 8'd255), a };
     end
 endfunction
 
@@ -137,7 +144,7 @@ reg  [KW-1:0] key [0:4];
 reg  [   4:0] cand;
 reg  [  12:0] pen [0:4];
 reg  [   8:0] lpal [0:3];
-reg  [   8:0] alpha [0:3];
+reg  [   9:0] alpha [0:3];      // { add, on, level }
 reg  [KW-1:0] shkey;
 reg  [   2:0] t, s;          // top and second source
 reg  [KW-1:0] tk, sk;
@@ -151,7 +158,15 @@ always @* begin
         // pen = pal * 16 + pixel (K056832 colour granularity 16)
         lpal[i]  = { k55[23+i][2:0], 6'd0 } | { 3'd0, lyr[i][10:9] & vmixon[2*i +: 2], lyr[i][8:5] };
         pen[i]   = { lpal[i], 4'd0 } + { 8'd0, lyr[i][4:0] };
-        alpha[i] = alpha_of( vinmix[2*i +: 2] & vmixon[2*i +: 2], k338[13], k338[14] );
+        // K055555GX_decode_vmixcolor (p.62 7.2.6): the mix code is the
+        // tile's colour bits 5:4 that VMIXON does NOT pass to the palette,
+        // or VINMIX's where it does -- per tile, from the same bits the
+        // palette index drops. MAME computes it and throws it away (the
+        // callbacks ignore the return value), drawing every mix-coded tile of
+        // a layer with the last one's code instead.
+        alpha[i] = alpha_of( (lyr[i][10:9] & ~vmixon[2*i +: 2])
+                             | (vinmix[2*i +: 2] & vmixon[2*i +: 2]),
+                             k338[13], k338[14] );
     end
     key[4]  = { spr_pri_r, 1'b1, spr_z_r, spr_idx_r, 1'b0 };
     cand[4] = disp[4] && spr_valid_r;
@@ -186,8 +201,8 @@ reg  [12:0] ra;
 wire [23:0] rq;
 reg  [ 2:0] t1, s1;
 reg  [12:0] pen_s1, bgpen1;
-reg  [ 8:0] a1;
-reg         alpha_top, shd_under, shd_over;
+reg  [ 7:0] a1;
+reg         alpha_top, add1, shd_under, shd_over;
 reg  [ 1:0] code1;
 reg  [23:0] ct, cs, cb;
 reg         en;
@@ -226,18 +241,26 @@ function [23:0] shade( input [23:0] c, input [1:0] code );
     end
 endfunction
 
-function [7:0] blendch( input [7:0] d, input [7:0] s, input [8:0] a );
-    reg [16:0] v;
+// One multiplier for both modes: each is d + (x * a) >> 8, blending with
+// x = s - d (the same value as s*a + d*(256-a) >> 8) and adding with x = s,
+// where the extra + s makes a level of 255 a full add. Two multipliers a
+// channel missed timing by 0.2 ns (build 31).
+function [7:0] blendch( input [7:0] d, input [7:0] s, input [7:0] a, input add );
+    reg signed [9:0]  x;
+    reg signed [18:0] p;
+    reg signed [10:0] v;
     begin
-        v = s * a + d * (9'd256 - a);
-        blendch = v[15:8];
+        x = add ? $signed({ 2'b00, s }) : $signed({ 2'b00, s }) - $signed({ 2'b00, d });
+        p = x * $signed({ 2'b00, a }) + (add ? $signed({ 2'b00, s }) : 19'sd0);
+        v = $signed({ 3'b000, d }) + p[18:8];
+        blendch = v[10] ? 8'h00 : v[9] || v[8] ? 8'hff : v[7:0];
     end
 endfunction
 
 wire [23:0] cs_eff  = shd_under ? shade(cs, code1) : cs;
-wire [23:0] blended = { blendch(cs_eff[23:16], ct[23:16], a1),
-                        blendch(cs_eff[15: 8], ct[15: 8], a1),
-                        blendch(cs_eff[ 7: 0], ct[ 7: 0], a1) };
+wire [23:0] blended = { blendch(cs_eff[23:16], ct[23:16], a1, add1),
+                        blendch(cs_eff[15: 8], ct[15: 8], a1, add1),
+                        blendch(cs_eff[ 7: 0], ct[ 7: 0], a1, add1) };
 wire [23:0] mixed   = alpha_top ? blended : ct;
 wire [23:0] final_c = shd_over ? shade(mixed, code1) : mixed;
 
@@ -263,19 +286,19 @@ always @(posedge clk) begin
                 en   <= disp != 8'd0 && kill;
                 t1   <= t;
                 s1   <= s;
-                a1   <= t < 3'd4 ? alpha[t] : 9'd256;
-                alpha_top <= t < 3'd4 && alpha[t] != 9'd256;
+                a1   <= t < 3'd4 ? alpha[t][7:0] : 8'd255;
+                add1 <= t < 3'd4 && alpha[t][9];
+                alpha_top <= t < 3'd4 && alpha[t][8];
                 code1     <= shd_code_r;
                 shd_over  <= shd_valid_r && disp[4] && shkey < tk;
-                shd_under <= shd_valid_r && disp[4] && t < 3'd4 && alpha[t] != 9'd256
+                shd_under <= shd_valid_r && disp[4] && t < 3'd4 && alpha[t][8]
                              && shkey > tk && shkey < sk;
                 ra     <= pen_of(t);
                 pen_s1 <= pen_of(s);
                 bgpen1 <= bgpen;
-                if( k55[42]!=0 || mixpri || (t < 3'd4 && alpha[t] != 9'd256 && s < 3'd4 && alpha[s] != 9'd256) )
+                if( k55[42]!=0 || mixpri || (t < 3'd4 && alpha[t][8] && s < 3'd4 && alpha[s][8]) )
                     unsupported <= 1;
-                for( i=0; i<4; i=i+1 )
-                    if( disp[i] && vmixon[2*i +: 2] != 2'd3 ) unsupported <= 1;
+                // (a layer with VMIXON not 3 takes the per-tile mix path above)
             end
             3'd1: ra <= pen_s1;
             3'd2: begin ra <= bgpen1; ct <= rq; end  // top

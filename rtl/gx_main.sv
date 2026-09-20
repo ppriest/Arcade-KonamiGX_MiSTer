@@ -122,7 +122,8 @@ module gx_main (
     output     [63:0] dbg_irq,               // interrupt acks per level, the enable byte, the lines
     output     [ 1:0] dbg_esc,               // { the CPU is held on its ESC write, the ESC is busy }
     output     [95:0] dbg_esc_st,            // { count2, SR high byte, ESC completions, gx_esc dbg[63:0] }
-    output     [95:0] dbg_obj                // sprite DMA starts, vblanks, OBJSET1, short lines (probe J)
+    output     [95:0] dbg_obj,               // sprite DMA starts, vblanks, OBJSET1, short lines (probe J)
+    output    [111:0] dbg_mix                // the mixer's registers (probe L)
 );
 
 // ------------------------------------------------------------ clocks
@@ -218,6 +219,8 @@ reg  [ 5:0] k55_addr;
 reg  [ 2:0] pal_fwd_we;
 wire [15:0] vram_dout, spr_ram_dout;
 wire        int1, int2, obj_dma_busy, obj_ln_short;
+reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
+wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
 
 gx_video u_video (
     .rst, .clk, .pxl_cen, .pxl2_cen,
@@ -230,6 +233,7 @@ gx_video u_video (
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .obj_hadj,
+    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
@@ -247,7 +251,6 @@ gx_eeprom93c46 u_ee (
 // ------------------------------------------------------------ ESC
 reg         esc_start;
 reg  [23:0] esc_data;
-wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
 wire [79:0] esc_dbg;
 reg  [ 7:0] esc_done = 0;                    // completions (free-running)
 always @(posedge clk) if( esc_irq ) esc_done <= esc_done + 1'd1;
@@ -467,6 +470,28 @@ always @(posedge clk) begin
         // ESC ran the same command again, for ever (LESSONS_LEARNED).
         C_READY: if( cpu_cen ) begin ready <= 0; cst <= C_IDLE; end
     endcase
+end
+
+// The sprite DMA against the ESC: the K053246 starts its copy two lines after
+// vblank, and this ESC -- unlike MAME's, which runs in no time -- may still be
+// writing the list then. jt053246_dma holds off while esc_busy; this starts it
+// as soon as the ESC finishes, so the frame gets a whole list a little late
+// rather than half of the last one and half of this.
+reg        dma_pend, lvbl_dt, hs_dt;
+reg  [1:0] hs_cnt;
+always @(posedge clk) begin
+    obj_dma_trig <= 0;
+    lvbl_dt <= vid_lvbl;
+    hs_dt   <= vid_hs;
+    if( rst ) begin dma_pend <= 0; hs_cnt <= 0; end
+    else begin
+        if( !vid_lvbl && lvbl_dt ) hs_cnt <= 0;                       // vblank began
+        else if( vid_hs && !hs_dt && hs_cnt != 2'd3 ) begin
+            hs_cnt <= hs_cnt + 1'd1;
+            if( hs_cnt == 2'd1 && esc_busy ) dma_pend <= 1;           // the copy's moment, held off
+        end
+        if( dma_pend && !esc_busy ) begin dma_pend <= 0; obj_dma_trig <= 1; end
+    end
 end
 
 // ------------------------------------------------------------ interrupts

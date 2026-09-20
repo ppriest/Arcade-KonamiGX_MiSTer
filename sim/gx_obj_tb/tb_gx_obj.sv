@@ -74,7 +74,7 @@ wire [ 1:0] shd_code;
 wire [ 7:0] shd_idx, shd_pri, shd_z;
 
 gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0)) dut (
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset, .hoff_adj(10'(obj_hadj)), .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset, .hoff_adj(10'(obj_hadj)), .dma_trig(1'b0), .dma_hold(1'b0), .hs, .lvbl,
     .ram_cs, .ram_we, .ram_addr, .ram_din, .ram_dout(),
     .reg_cs, .mmr_we, .mmr_addr, .mmr_din, .mmr_dsn,
     .k47_we, .k47_addr, .k47_din,

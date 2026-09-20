@@ -84,6 +84,26 @@ set fields_J {
     {dma_during_esc  88  95 dec}
 }
 
+# INSTANCE K, 64 bits: the ROM load (KonamiGX.sv). The cycle counts are
+# clk_sys (96 MHz): divide by 96,000 for milliseconds.
+set fields_K {
+    {copy_cycles      0  25 dec}
+    {download_cycles 26  51 dec}
+    {byte_path       52  52 bit}
+    {ddr3_copy       53  53 bit}
+}
+
+# INSTANCE L, 96 bits: the mixer's registers (gx_video.sv dbg_mix).
+set fields_L {
+    {vinmix           0  15 hex}
+    {vmixon          16  31 hex}
+    {input_enables   32  47 hex}
+    {k338_alpha1     48  63 hex}
+    {k338_alpha2     64  79 hex}
+    {k338_control    80  95 hex}
+    {scroll_modes    96 111 hex}
+}
+
 proc bits_to_int {s lo hi} {
     # read_probe_data returns the bus MSB-first, so index from the right.
     set n [string length $s]
@@ -137,6 +157,8 @@ switch -- $inst_id {
     H       { set fields $fields_H }
     I       { set fields $fields_I }
     J       { set fields $fields_J }
+    K       { set fields $fields_K }
+    L       { set fields $fields_L }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1

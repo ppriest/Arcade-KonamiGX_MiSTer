@@ -88,6 +88,9 @@ module gx_video #(
     input      [ 7:0] wrport2,
     input      [ 3:0] primode,
     input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
+    input             obj_dma_trig, // start the sprite DMA now (gx_main)
+    input             obj_dma_hold, // the ESC is writing the sprite list
+    output    [111:0] dbg_mix,     // the mixer's registers, for the board's probe
     output     [22:0] obj_rom_addr,
     output            obj_rom_cs,
     input             obj_rom_ok,
@@ -173,6 +176,14 @@ function shd_set_on( input [8:0] r, input [8:0] g, input [8:0] b );
                    $signed(b) < -7 || $signed(b) > 7 );
 endfunction
 
+wire [15:0] tm_regs5;   // gx_tilemap's register 0x0a, for the probe
+
+// K055555 VINMIX/VMIXON/INPUT_ENABLES, K054338 alpha levels and control, and
+// the K056832 line-scroll mode register: what the game asks the mixer for
+// the K055555's registers are bytes: pad them, or every field shifts
+assign dbg_mix = { tm_regs5, k338[15], k338[14], k338[13],
+                   8'd0, k55[45], 8'd0, k55[34], 8'd0, k55[33] };
+
 wire [2:0] shadowon = { shd_set_on(k338[8][8:0], k338[9][8:0], k338[10][8:0]),
                         shd_set_on(k338[5][8:0], k338[6][8:0], k338[7][8:0]),
                         shd_set_on(k338[2][8:0], k338[3][8:0], k338[4][8:0]) };
@@ -203,7 +214,7 @@ gx_tilemap u_tm (
     .reg_we(tm_reg_we), .reg_addr(tm_reg_addr), .reg_din(tm_reg_din), .reg_be(tm_reg_be),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be, .vram_dout,
-    .offs_x, .offs_y,
+    .offs_x, .offs_y, .dbg_regs5(tm_regs5),
     .line_start, .line_y, .busy(), .unsupported(),
     .rom_addr(tile_rom_addr), .rom_cs(tile_rom_cs), .rom_ok(tile_rom_ok), .rom_data(tile_rom_data),
     .rd_x( bx[8:0] - 9'd24 ), .rd_pix(tm_pix)
@@ -216,7 +227,7 @@ wire [ 7:0] s_pri, s_z, s_idx, h_idx, h_pri, h_z;
 wire [ 1:0] h_code;
 
 gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .dma_trig(obj_dma_trig), .dma_hold(obj_dma_hold), .hs, .lvbl,
     .ram_cs(spr_ram_cs), .ram_we(spr_ram_we), .ram_addr(spr_ram_addr), .ram_din(spr_ram_din),
     .ram_dout(spr_ram_dout),
     .reg_cs(k46_cs), .mmr_we(k46_we), .mmr_addr(k46_addr), .mmr_din(k46_din), .mmr_dsn(k46_dsn),

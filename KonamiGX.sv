@@ -171,6 +171,16 @@ reg [3:0] rst_sr = 4'hf;
 always @(posedge clk_vid) rst_sr <= { rst_sr[2:0], core_reset };
 wire rst_vid = |rst_sr;
 
+// which ROM-load path ran, and how long the DDR3 copy took (probe K)
+reg [25:0] ldr_cycles = 0;       // clk_sys cycles while copying
+reg [25:0] dl_cycles  = 0;       // clk_sys cycles of the index-0 download
+always @(posedge clk_sys) begin
+	if (ldr_start) ldr_cycles <= 0;
+	else if (ldr_busy) ldr_cycles <= ldr_cycles + 1'd1;
+	if (dl_index0 && !dl_active_d) dl_cycles <= 0;
+	else if (dl_index0) dl_cycles <= dl_cycles + 1'd1;
+end
+
 ///////////////////////   MEMORY   ///////////////////////////////
 
 wire [25:0] tile_base, obj_base;
@@ -297,6 +307,7 @@ wire [15:0] dbg_rom_hits, dbg_rom_misses;
 wire [63:0] dbg_ee, dbg_irq;
 wire [95:0] dbg_esc_st;
 wire [95:0] dbg_obj;
+wire [111:0] dbg_mix;
 wire [ 1:0] dbg_esc;
 
 gx_main u_board (
@@ -310,7 +321,7 @@ gx_main u_board (
 	.offs_x, .offs_y, .primode, .obj_hadj, .esc_gen, .esc_src, .esc_count,
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
-	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj)
+	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_mix(dbg_mix)
 );
 
 ///////////////////////   PROBES   ///////////////////////////////
@@ -361,6 +372,18 @@ issp_probe #(.INSTANCE_ID("H"), .PROBE_W(64), .SOURCE_W(8)) u_issp_irq (
 // [75:64] short lines (the sprite scan had not finished when the next
 // line began), [87:76] short lines in the last whole frame, [95:88] sprite
 // DMA starts while the ESC was busy
+// Instance K, 64 bits: the ROM load -- [25:0] clk_sys cycles of the DDR3
+// copy, [51:26] cycles of the index-0 download, [52] the download streamed
+// bytes (the byte path ran), [53] the copy ran (fields_K)
+// Instance L, 96 bits: what the game programs into the mixer -- [15:0]
+// K055555 VINMIX, [31:16] VMIXON, [47:32] INPUT_ENABLES, [63:48] K054338
+// alpha 1, [79:64] alpha 2, [95:80] control, [111:96] K056832 0x0a (fields_L)
+issp_probe #(.INSTANCE_ID("L"), .PROBE_W(112), .SOURCE_W(8)) u_issp_mix (
+	.clk(clk_vid), .probe(dbg_mix), .source()
+);
+issp_probe #(.INSTANCE_ID("K"), .PROBE_W(64), .SOURCE_W(8)) u_issp_ldr (
+	.clk(clk_sys), .probe({ 10'd0, ldr_done, dl_seen_wr, dl_cycles, ldr_cycles }), .source()
+);
 issp_probe #(.INSTANCE_ID("J"), .PROBE_W(96), .SOURCE_W(8)) u_issp_obj (
 	.clk(clk_vid), .probe(dbg_obj), .source()
 );

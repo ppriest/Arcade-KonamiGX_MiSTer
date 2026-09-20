@@ -17,7 +17,13 @@
 // pulsed across, because a one-clk_mem pulse is missed by clk half the time.
 
 module gx_rom_port #(
-    parameter AW = 21               // granule (8-byte) address bits from the client
+    parameter AW = 21,              // granule (8-byte) address bits from the client
+    // 1: after serving a granule, fetch the other one of its pair while the
+    // client is busy with this one. A sprite row is two granules (two halves
+    // of 16 pixels) and jtframe_draw asks for them one after the other, so
+    // the second one's latency was exposed on every row; the SDRAM's latency
+    // is what runs the sprite scan out of line time on the board.
+    parameter PAIR = 0
 ) (
     input             clk,          // the client's, 48 MHz
     input             clk_mem,      // the arbiter's, 96 MHz
@@ -37,27 +43,47 @@ module gx_rom_port #(
 
 // ------------------------------------------------------------ clk
 reg          req_t = 0, done_t = 0, done_s = 0, busy = 0, have = 0;
-reg [AW-1:0] a_l;
+reg [AW-1:0] a_l;                   // the fetch in flight
+reg [AW-1:0] h_addr;                // what `data` holds
 reg [63:0]   data_m;
 wire         done = done_t != done_s;
+
+// the other granule of the pair, fetched ahead and kept until it is asked for
+reg          pf_have = 0, pf_seen = 0;
+reg [AW-1:0] pf_addr;
+reg [63:0]   pf_data;
+reg [AW-1:1] pf_pair;
+
+wire hit_have = have    && cs && addr == h_addr;
+wire hit_pf   = pf_have && cs && addr == pf_addr;
+wire pf_want  = PAIR == 1 && hit_have && !pf_have
+                && !(pf_seen && pf_pair == h_addr[AW-1:1]);
 
 always @(posedge clk) begin
     ok     <= 0;
     done_s <= done_t;
     if( rst ) begin
-        busy <= 0; have <= 0;
+        busy <= 0; have <= 0; pf_have <= 0; pf_seen <= 0;
     end else begin
-        if( !cs ) have <= 0;
+        if( !cs ) begin have <= 0; pf_have <= 0; pf_seen <= 0; end
         if( busy ) begin
             if( done ) begin
+                busy <= 0;
                 if( cs && addr == a_l ) begin
-                    ok <= 1; data <= data_m; have <= 1; busy <= 0;
-                end else if( cs ) begin           // changed while fetching: again
-                    a_l <= addr; req_t <= ~req_t;
-                end else busy <= 0;
+                    ok <= 1; data <= data_m; have <= 1; h_addr <= a_l;
+                end else if( cs ) begin           // asked for ahead, or changed: keep it
+                    pf_have <= 1; pf_addr <= a_l; pf_data <= data_m;
+                end
             end
-        end else if( cs && !(have && addr == a_l) ) begin
-            busy <= 1; a_l <= addr; req_t <= ~req_t;
+        end else if( cs && !hit_have ) begin
+            if( hit_pf ) begin
+                ok <= 1; data <= pf_data; have <= 1; h_addr <= pf_addr; pf_have <= 0;
+            end else begin
+                busy <= 1; a_l <= addr; req_t <= ~req_t; pf_have <= 0;
+            end
+        end else if( pf_want ) begin
+            busy   <= 1; a_l <= { h_addr[AW-1:1], ~h_addr[0] }; req_t <= ~req_t;
+            pf_seen <= 1; pf_pair <= h_addr[AW-1:1];
         end
     end
 end

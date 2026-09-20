@@ -195,7 +195,7 @@ gx_rom_port #(.AW(21)) u_tile (
     .base(tile_base),
     .c_req(arb0_req[0]), .c_addr(arb0_addr[25:0]), .c_valid(arb0_valid[0]), .c_rdata(arb0_rdata)
 );
-gx_rom_port #(.AW(20)) u_obj (
+gx_rom_port #(.AW(20), .PAIR(1)) u_obj (
     .clk, .clk_mem, .rst(reset),
     .cs(obj_cs), .addr(obj_addr), .ok(obj_ok), .data(obj_g),
     .base(obj_base),
