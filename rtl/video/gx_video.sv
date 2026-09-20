@@ -95,6 +95,8 @@ module gx_video #(
     output            obj_rom_cs,
     input             obj_rom_ok,
     input      [39:0] obj_rom_data,
+    output     [22:0] obj_pf_addr,   // the row the sprite scan will draw next
+    output            obj_pf_cs,
 
     // ---- mixer (K055555, K054338, palette)
     input             k55_we,
@@ -235,6 +237,7 @@ gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .opri(k55[15]), .oinprion(k55[19]), .ocblk(k55[27]), .wrport2, .primode,
     .shadowon, .shdpri0(k55[37]), .shdpri1(k55[38]), .shdpri2(k55[39]), .spri_min,
     .rom_addr(obj_rom_addr), .rom_cs(obj_rom_cs), .rom_ok(obj_rom_ok), .rom_data(obj_rom_data),
+    .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs),
     .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
     .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
     .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short)

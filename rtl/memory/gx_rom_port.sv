@@ -6,9 +6,25 @@
 // (sim/gx_tilemap_tb, sim/gx_obj_tb): cs is a level and addr is held; ok
 // pulses for one clk with data; while cs stays high a new addr starts a new
 // fetch, and an addr that changes during a fetch is fetched again with no ok
-// for the old one; cs dropped and raised fetches again even at the same
-// addr. jtframe_draw keeps cs high across the two halves of a sprite row and
+// for the old one; cs dropped and raised asks again at the same addr.
+// jtframe_draw keeps cs high across the two halves of a sprite row and
 // gx_tilemap drops it after each row, and both are served by this.
+//
+// NS granules are kept here, so an address asked for again is answered in a
+// clock: the regions are read-only once downloaded, so a held granule can
+// never be stale. Two of them are filled ahead of the client:
+//
+//   the pair      the other granule of the row just served (PAIR=1): the
+//                 drawer asks for a row's second half eight pixels after the
+//                 first, which is less than one SDRAM fetch.
+//   the hint      an address the client says it will ask for soon
+//                 (hint_cs/hint_addr). The sprite scan knows the next tile
+//                 of a sprite while the drawer is still on this one, and
+//                 without it every row pays a whole fetch before its first
+//                 pixel -- what runs the scan out of line time on the board.
+//
+// Speculation only uses the port while the client is not waiting, so it
+// cannot delay a fetch the client is asking for.
 //
 // clk is 48 MHz and clk_mem 96 MHz from the same PLL at phase 0, so every
 // clk edge is a clk_mem edge and the crossings are ordinary timed paths: a
@@ -18,12 +34,8 @@
 
 module gx_rom_port #(
     parameter AW = 21,              // granule (8-byte) address bits from the client
-    // 1: after serving a granule, fetch the other one of its pair while the
-    // client is busy with this one. A sprite row is two granules (two halves
-    // of 16 pixels) and jtframe_draw asks for them one after the other, so
-    // the second one's latency was exposed on every row; the SDRAM's latency
-    // is what runs the sprite scan out of line time on the board.
-    parameter PAIR = 0
+    parameter PAIR = 0,             // 1: fetch a row's other half, and take hints
+    parameter NS = 4                // granules held
 ) (
     input             clk,          // the client's, 48 MHz
     input             clk_mem,      // the arbiter's, 96 MHz
@@ -34,6 +46,9 @@ module gx_rom_port #(
     output reg        ok,
     output reg [63:0] data,
 
+    input             hint_cs,      // PAIR=1: a granule the client will want
+    input  [AW-1:0]   hint_addr,
+
     input  [25:0]     base,         // the region's byte address in SDRAM
     output reg        c_req,        // arbiter client (clk_mem)
     output reg [25:0] c_addr,
@@ -41,49 +56,74 @@ module gx_rom_port #(
     input  [63:0]     c_rdata
 );
 
+localparam VW = NS == 1 ? 1 : $clog2(NS);
+
 // ------------------------------------------------------------ clk
-reg          req_t = 0, done_t = 0, done_s = 0, busy = 0, have = 0;
-reg [AW-1:0] a_l;                   // the fetch in flight
-reg [AW-1:0] h_addr;                // what `data` holds
-reg [63:0]   data_m;
-wire         done = done_t != done_s;
+reg  [AW-1:0] s_addr [0:NS-1];
+reg  [63:0]   s_data [0:NS-1];
+reg  [NS-1:0] s_val;
+reg  [VW-1:0] vic;              // round-robin replacement
 
-// the other granule of the pair, fetched ahead and kept until it is asked for
-reg          pf_have = 0, pf_seen = 0;
-reg [AW-1:0] pf_addr;
-reg [63:0]   pf_data;
-reg [AW-1:1] pf_pair;
+integer i;
+reg           hit_v;
+reg  [VW-1:0] hit_i;
+always @* begin
+    hit_v = 1'b0;
+    hit_i = {VW{1'b0}};
+    for( i=0; i<NS; i=i+1 )
+        if( !hit_v && s_val[i] && s_addr[i]==addr ) begin
+            hit_v = 1'b1;
+            hit_i = VW'(i);
+        end
+end
 
-wire hit_have = have    && cs && addr == h_addr;
-wire hit_pf   = pf_have && cs && addr == pf_addr;
-wire pf_want  = PAIR == 1 && hit_have && !pf_have
-                && !(pf_seen && pf_pair == h_addr[AW-1:1]);
+function automatic held( input [AW-1:0] a );
+    integer j;
+    begin
+        held = 1'b0;
+        for( j=0; j<NS; j=j+1 ) if( s_val[j] && s_addr[j]==a ) held = 1'b1;
+    end
+endfunction
+
+reg           busy;
+reg  [AW-1:0] a_l;              // the fetch in flight
+reg           ansd;             // ok was pulsed for ans_addr, cs still high
+reg  [AW-1:0] ans_addr;
+reg  [63:0]   data_m;
+reg           req_t = 0, done_t = 0, done_s = 0;
+wire          done   = done_t != done_s;
+
+wire [AW-1:0] pair_a = { ans_addr[AW-1:1], ~ans_addr[0] };
+wire          want   = cs && !(ansd && addr==ans_addr);
+wire          pf_pair = PAIR==1 && ansd    && !held(pair_a)   && !(busy && a_l==pair_a);
+wire          pf_hint = PAIR==1 && hint_cs && !held(hint_addr) && !(busy && a_l==hint_addr);
 
 always @(posedge clk) begin
     ok     <= 0;
     done_s <= done_t;
     if( rst ) begin
-        busy <= 0; have <= 0; pf_have <= 0; pf_seen <= 0;
+        busy <= 0; s_val <= {NS{1'b0}}; vic <= 0; ansd <= 0;
     end else begin
-        if( !cs ) begin have <= 0; pf_have <= 0; pf_seen <= 0; end
+        if( !cs ) ansd <= 0;
         if( busy ) begin
             if( done ) begin
-                busy <= 0;
-                if( cs && addr == a_l ) begin
-                    ok <= 1; data <= data_m; have <= 1; h_addr <= a_l;
-                end else if( cs ) begin           // asked for ahead, or changed: keep it
-                    pf_have <= 1; pf_addr <= a_l; pf_data <= data_m;
+                busy         <= 0;
+                s_addr[vic]  <= a_l;
+                s_data[vic]  <= data_m;
+                s_val[vic]   <= 1'b1;
+                vic          <= vic==VW'(NS-1) ? {VW{1'b0}} : vic + 1'd1;
+                if( want && addr==a_l ) begin
+                    ok <= 1; data <= data_m; ansd <= 1; ans_addr <= addr;
                 end
             end
-        end else if( cs && !hit_have ) begin
-            if( hit_pf ) begin
-                ok <= 1; data <= pf_data; have <= 1; h_addr <= pf_addr; pf_have <= 0;
-            end else begin
-                busy <= 1; a_l <= addr; req_t <= ~req_t; pf_have <= 0;
-            end
-        end else if( pf_want ) begin
-            busy   <= 1; a_l <= { h_addr[AW-1:1], ~h_addr[0] }; req_t <= ~req_t;
-            pf_seen <= 1; pf_pair <= h_addr[AW-1:1];
+        end else if( want && hit_v ) begin
+            ok <= 1; data <= s_data[hit_i]; ansd <= 1; ans_addr <= addr;
+        end else if( want ) begin
+            busy <= 1; a_l <= addr;      req_t <= ~req_t;
+        end else if( pf_pair ) begin
+            busy <= 1; a_l <= pair_a;    req_t <= ~req_t;
+        end else if( pf_hint ) begin
+            busy <= 1; a_l <= hint_addr; req_t <= ~req_t;
         end
     end
 end

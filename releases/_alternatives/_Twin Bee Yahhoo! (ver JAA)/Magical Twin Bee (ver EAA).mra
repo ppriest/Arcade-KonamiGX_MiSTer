@@ -12,31 +12,31 @@
     <!-- the SDRAM image rtl/memory/gx_sdram_top.sv expects for this set
          (rtl/gx_board_cfg.sv arm 6); written and proven by
          scripts/build_mra.py, not by hand -->
-    <rom index="0" zip="tbyahhoo.zip|konamigx.zip" md5="none" address="0x30000000">
+    <rom index="0" zip="mtwinbee.zip|tbyahhoo.zip|konamigx.zip" md5="none" address="0x30000000">
         <!-- maincpu, the CPU's window packed: BIOS, then 0x200000.. moved down by 0x1e0000 -->
-        <part name="300a01.34k"/>
+        <part name="300a01.34k" crc="d5fa95f5"/>
         <interleave output="32">
-            <part name="424eaa04.27b" map="0012"/>
-            <part name="424eaa02.31b" map="1200"/>
+            <part name="424eaa04.27b" crc="f42d3139" map="0012"/>
+            <part name="424eaa02.31b" crc="34659905" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
         <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
-        <part name="424a14.17h"/>  <!-- four-byte part -->
+        <part name="424a14.17h" crc="b1d9fce8"/>  <!-- four-byte part -->
         <part repeat="2097152">00</part>
-        <part name="424a12.13g"/>  <!-- fifth bytes -->
+        <part name="424a12.13g" crc="7f9cb8b1"/>  <!-- fifth bytes -->
         <part repeat="524288">00</part>
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="3145728">00</part>
         <interleave output="32">
-            <part name="424a11.25g" map="0021"/>
-            <part name="424a10.28g" map="2100"/>
+            <part name="424a11.25g" crc="29592688" map="0021"/>
+            <part name="424a10.28g" crc="cf24e5e3" map="2100"/>
         </interleave>
-        <part name="424a09.30g"/>
+        <part name="424a09.30g" crc="daa07224"/>
     </rom>
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
-    <rom index="2" zip="tbyahhoo.zip|konamigx.zip" md5="none">
+    <rom index="2" zip="mtwinbee.zip|tbyahhoo.zip" md5="none">
         <part name="mtwinbee.nv"/>
     </rom>
 

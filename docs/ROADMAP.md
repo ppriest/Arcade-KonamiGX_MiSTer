@@ -1127,18 +1127,64 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
      instantly and never sees it. `jt053246_dma` now takes a `dma_hold` and `gx_main` starts the
      copy when the ESC finishes; on the board the counter is 0 and the attract and gameplay
      frames look coherent.
-   - **Sprite drawing time: open.** The sprite scan does not finish 20 to 118 lines a frame in
-     daiskiss's attract (probe J, `short_last_frm`); Sexy Parodius mostly 0 with bursts. The
-     sprite bench puts numbers on the cost of ROM latency (daiskiss frame 4800, lines of 234 that
-     run out of time): 6 clocks 0, 12 clocks 94, 24 clocks 180, 36 clocks 228. `gx_rom_port`
-     now fetches a sprite row's other half while the drawer works on the first, which did not
-     measurably change the board's count. Next: a row in one SDRAM burst, fetching ahead of the
-     drawer, and running the bench at the board's measured latency (Seta's and MS32's lessons on
-     per-line budgets, and on dropping the sprites the chip draws last).
+   - **Sprite drawing time: fixed in simulation, to be confirmed on the board.** The sprite
+     scan did not finish 20 to 118 lines a frame in daiskiss's attract (probe J,
+     `short_last_frm`); Sexy Parodius mostly 0 with bursts.
+
+     What it costs, measured rather than guessed. `gx_sdram_tb +LATENCY=1` reads the sprite
+     port the way `jtframe_draw` does and reports the clocks: **a fetch answers in 11**,
+     contention or not, and a 16-pixel row is two of them. The drawer asks for a row's second
+     half as it starts drawing the first, so it has eight clocks of slack and no more: a row
+     cost `11 + 8 + 3 + 8 = 28` clocks of which 16 are pixels. At that latency the sprite bench
+     runs out of line on 64 of 234 lines (`check_gx_obj daiskiss-f4800 --rom-lat 11`); at 6
+     clocks, none. The pair prefetch added earlier could not help, because it starts only after
+     the first half is served -- the same eight-clock window -- which is why the board's count
+     did not move.
+
+     Two changes, together worth the difference:
+
+     * **The scan hints the next row.** `jt053246_scan` already computes the next tile of a
+       sprite (`hcode + hsum`) while the drawer is on the current one, so it now carries that
+       out as `pf_on`/`pf_code`; `gx_obj` turns it into the address `jtframe_draw` will ask
+       for, and `gx_rom_port` fetches it in the idle time it already has. The port also keeps
+       the last four granules, which are read-only and so can never be stale.
+     * **The arbiter drives the SDRAM port directly**, instead of through `sdram_phy`, which
+       cost a cycle each way, and picks a client the cycle its request arrives. `c_req` to
+       `c_valid` went from 17 to 14 `clk_mem` cycles, and a fetch from 11 clocks to 10.
+
+     `sim/gx_obj_tb +PORT=1` runs the bench against the real `gx_rom_port` and a memory that
+     answers in `+ROM_LAT_M` `clk_mem` cycles, so the board's own number drives it. At the
+     measured 14: **32 lines short without the hint, none with it**, and all four daiskiss
+     sprite frames stay pixel-identical to the model. The cliff is between 16 and 18, so the
+     three cycles the arbiter gave back are part of the margin, not spare.
+
+     **Confirmed on the board** (probe J): `short_lines` stayed at 2,056 while `vblanks` went
+     from 2,366 to 3,738 -- 1,372 consecutive frames of attract with none -- and
+     `short_last_frm` was 0 on every sample. It was 20 to 118 a frame. The 2,056 predate the
+     window and are not yet accounted for; the ESC's runaway held the CPU port and starved the
+     sprite fetches at launch, which would do it.
+
+     Left if it comes back: a row in one SDRAM burst (the chip is idle half the time even now),
+     and Seta's and MS32's lesson about dropping the sprites the chip draws last.
    - ~~**Alpha and line scroll (Sexy Parodius's ink stage).**~~ Done: the mixer takes each pixel's
      mix code from the tile's colour bits as `K055555GX_decode_vmixcolor` does, and adds an
      additive layer instead of MAME's inverted-alpha fade, so the ink's black is transparent;
      `gx_tilemap` does line scroll per line and per eight lines. The board's own registers in that
      scene (probe L) match MAME's capture of it: layer B VMIXON 0, K054338 alpha 2 = 0x2000,
      scroll modes 0xc3.
+   - ~~**Stray graphics in Daisu-Kiss's top-left corner.**~~ Found and fixed: CPU reads above the
+     packed image's length returned the tile graphics that follow it in SDRAM, where MAME's map
+     reads zero. The ESC takes five of that scene's sprite piece lists from such addresses, so it
+     read a piece count of 65,278 instead of 0 and walked them, holding the bus for frames and
+     leaving the sprite list half written -- the strays are its tail, still carrying the previous
+     frame's entries with their active bit set. Evidence: the board's own list
+     (`scripts/memdump.py d20000 1000`, decoded by `scripts/spritelist.py`), probe I mid-run
+     (`esc_busy` yes, `count2` 0x7ef1), and `scripts/esc_model.py daiskiss-f2400 [--board]`, which
+     is konamigx.cpp's `generate_sprites` in Python: 19 pieces walked with MAME's map, 220,659
+     with the board's. `gx_main` now answers those reads with zero.
+
+     **Confirmed on the board.** CPU 0x4f0080 reads zero where it held `fe fe ff 00`; the ESC's
+     piece counts are 0 to 4, the scale MAME shows; and the sprite list's tail slots read
+     `00f0 00f1 ... 00ff` -- the slot numbers MAME's fill writes, bit 15 clear -- where they held
+     0x9052 with four still active. 35 active entries, contiguous, no strays.
    - Stacked shadows (MAME_KLUDGES), the other `.mra` sets on the board, the `.nvm` EEPROM save.

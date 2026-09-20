@@ -71,7 +71,6 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/debug/issp_probe.sv
 # download from Arcade-Seta_MiSTer (rtl/memory/sdram/PROVENANCE.md); the
 # image, the clock crossing and the ROM-row spreading are this project's.
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram/sdram.sv
-set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_phy.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_arbiter.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/sdram_download.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/memory/ddram_phy.sv

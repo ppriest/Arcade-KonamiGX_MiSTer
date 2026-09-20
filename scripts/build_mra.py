@@ -45,6 +45,7 @@ import itertools
 import re
 import sys
 import zipfile
+import zlib
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -162,17 +163,25 @@ class Stream:
             self.data += bytes(n)
             self.pos = at
 
+    @staticmethod
+    def crc(data):
+        return f"{zlib.crc32(data) & 0xffffffff:08x}"
+
     def part(self, at, fname, data, comment=None):
+        # fname is the name INSIDE the zip: a clone's own files live under
+        # '<set>/' in a merged set, and Main_MiSTer looks for exactly this
         self.fill_to(at)
-        self.lines.append(f'        <part name="{fname}"/>' + (f"  <!-- {comment} -->" if comment else ""))
+        self.lines.append(f'        <part name="{fname}" crc="{self.crc(data)}"/>'
+                          + (f"  <!-- {comment} -->" if comment else ""))
         self.data += data
         self.pos += len(data)
 
     def interleave(self, at, bits, parts, data):
+        """parts: (name, map, the part's own bytes) -- the bytes are for the crc"""
         self.fill_to(at)
         self.lines.append(f'        <interleave output="{bits}">')
-        for fname, m in parts:
-            self.lines.append(f'            <part name="{fname}" map="{m}"/>')
+        for fname, m, d in parts:
+            self.lines.append(f'            <part name="{fname}" crc="{self.crc(d)}" map="{m}"/>')
         self.lines.append('        </interleave>')
         self.data += data
         self.pos += len(data)
@@ -234,7 +243,7 @@ def emit_loads(st, zips, set_name, loads, truth, region_off, stream_base, region
             st.part(at, names[0], datas[0])
         else:
             maps = pick_maps(datas, word * 8, want)
-            st.interleave(at, word * 8, list(zip(names, maps)), want)
+            st.interleave(at, word * 8, list(zip(names, maps, datas)), want)
     st.fill_to(stream_base + (region_end - region_off))
 
 
@@ -301,8 +310,16 @@ def build(set_name, mod, gl, games, blocks, check_only):
     if arm != {k: lo[k] for k in arm or {}} or arm is None:
         raise SystemExit(f"{set_name}: rtl/gx_board_cfg.sv's arm 8'd{mod} is {arm}, the ROM_START "
                          f"gives {cfg_arm(mod, set_name, lo).strip()} -- paste --cfg's table in")
-    zip_names = f"{bri.zip_for(games, set_name)}.zip|{bri.BIOS[0]}.zip"
-    zips = [zipfile.ZipFile(REPO / "roms" / z) for z in zip_names.split("|")]
+    # the set's own zip, then the parent's, then the BIOS's: Main_MiSTer
+    # searches them in turn and matches a part by its crc, so a split set, a
+    # merged one (where a clone's files live under "<set>/") and a renamed
+    # file all resolve.
+    parent = bri.zip_for(games, set_name)
+    # the game's zips; the BIOS's is added only where a BIOS file is used
+    game_zips = "|".join(dict.fromkeys([f"{set_name}.zip", f"{parent}.zip"]))
+    zip_names = f"{game_zips}|{bri.BIOS[0]}.zip"
+    zips = [zipfile.ZipFile(REPO / "roms" / z)
+            for z in zip_names.split("|") if (REPO / "roms" / z).exists()]
     st = Stream()
 
     size, loads = bri.region_loads(blocks[set_name], "maincpu")
@@ -356,7 +373,8 @@ def build(set_name, mod, gl, games, blocks, check_only):
         if bytes(truth[off:off + length]) != data:
             raise SystemExit(f"{fname}: not verbatim in the region?")
         st.fill_to(lo["obj_base"] + off)
-        st.lines.append(f'        <part name="{fname}" length="{length:#x}"/>  <!-- the chip reads this much -->')
+        st.lines.append(f'        <part name="{fname}" '
+                        f'length="{length:#x}"/>  <!-- the chip reads this much -->')
         st.data += data
         st.pos += length
     st.fill_to(lo["obj_base"] + used)
@@ -368,7 +386,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
     if m:
         bri.read_file(zips, m.group(1), 0x80, set_name)          # it must exist in the zip
         ee_lines = ['', '    <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->',
-                    '    <rom index="2" zip="' + zip_names + '" md5="none">',
+                    '    <rom index="2" zip="' + game_zips + '" md5="none">',
                     f'        <part name="{m.group(1)}"/>', '    </rom>']
     dip_lines, dflt = dips_of(g["inputs"])
     title = g["title"]
@@ -413,7 +431,8 @@ def build(set_name, mod, gl, games, blocks, check_only):
     tmp = out.with_suffix(".mra.tmp")
     tmp.write_text(text, encoding="utf8")
     try:
-        got = mra_lib.build_image(tmp, [REPO / "roms" / z for z in zip_names.split("|")])
+        got = mra_lib.build_image(tmp, [REPO / "roms" / z for z in zip_names.split("|")
+                                        if (REPO / "roms" / z).exists()])
         if got != bytes(st.data):
             n = next((i for i in range(min(len(got), len(st.data))) if got[i] != st.data[i]),
                      min(len(got), len(st.data)))

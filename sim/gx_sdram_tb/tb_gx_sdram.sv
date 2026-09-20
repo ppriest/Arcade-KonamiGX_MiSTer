@@ -40,6 +40,7 @@ wire        ioctl_wait;
 reg  [25:0] tile_base, obj_base;
 reg  [23:0] tile_size4, obj_size4;
 reg         cpu_cs = 0, tile_cs = 0, obj_cs = 0;
+reg         go_hammer = 0;
 reg  [19:0] cpu_addr = 0, obj_addr = 0;
 reg  [20:0] tile_addr = 0;
 wire        cpu_ok, tile_ok, obj_ok;
@@ -98,6 +99,94 @@ task automatic push(input [26:0] a, input [7:0] d);
     @(posedge clk_mem);
 endtask
 
+// +HAMMER=1: keep the tile and sprite clients asking while the CPU reads,
+// as they do on the board (every line, all frame). The chip serves one
+// transaction at a time and a port's 64 bits arrive as four 16-bit words, so
+// a port that loses the later words under contention shows up here.
+int  hammer = 0;
+reg  [20:0] ham_t = 0;
+reg  [19:0] ham_o = 0;
+reg         ham_obj = 1;   // cleared while the latency measurement drives the sprite port
+reg         ham_tile = 1;  // and the same for the tile port
+initial void'($value$plusargs("HAMMER=%d", hammer));
+always @(posedge clk) if (hammer != 0 && go_hammer) begin
+    if (ham_tile && (tile_ok || !tile_cs)) begin tile_cs <= 1; ham_t <= ham_t + 21'd1; tile_addr <= ham_t; end
+    if (ham_obj && (obj_ok || !obj_cs)) begin obj_cs <= 1; ham_o <= ham_o + 20'd3; obj_addr <= ham_o; end
+end
+
+// +LATENCY=1: what a sprite row costs on this memory path. The drawer's
+// pattern (jtframe_draw): ask for the row's first half, draw eight pixels in
+// eight clocks while the second half is asked for, draw eight more. A half
+// that answers within eight clocks is free; anything longer is the stall the
+// sprite scan pays on every row, and 234 lines of a frame have about 100
+// rows between them.
+// c_req to c_valid on the sprite client, in clk_mem cycles: what
+// sim/gx_obj_tb's +ROM_LAT_M stands for
+int cm_n = 0, cm_sum = 0, cm_max = 0, cm_cnt = 0;
+reg cm_run = 0;
+always @(posedge clk_mem) begin
+    if (dut.u_obj.c_req) begin
+        cm_cnt <= cm_cnt + 1;
+        if (dut.arb0_valid[1]) begin
+            cm_n++; cm_sum += cm_cnt + 1;
+            if (cm_cnt + 1 > cm_max) cm_max = cm_cnt + 1;
+            cm_cnt <= 0;
+        end
+    end else cm_cnt <= 0;
+end
+
+int  latency = 0;
+int  lat_rows = 200;
+initial void'($value$plusargs("LATENCY=%d", latency));
+
+int l0_min, l0_max, l0_sum, l1_min, l1_max, l1_sum, stall_sum, row_max;
+
+// the tilemap's own pattern: a row, cs dropped, the next row. It has about
+// twenty clocks a row to play with (four layers, eight pixels a fetch), so
+// what the sprite port's prefetching does to it matters.
+task automatic measure_tile(input string what);
+    int k, l, mn, mx, sum;
+    mn = 9999; mx = 0; sum = 0;
+    for (k = 0; k < lat_rows; k++) begin
+        @(posedge clk) begin tile_cs <= 1; tile_addr <= 21'(k * 1031); end
+        l = 0;
+        do begin @(posedge clk); l++; end while (!tile_ok);
+        @(posedge clk) tile_cs <= 0;
+        if (l < mn) mn = l;  if (l > mx) mx = l;  sum += l;
+    end
+    $display("  LATENCY %-20s tile row %0d/%0d/%0d min/avg/max", what, mn, sum / lat_rows, mx);
+endtask
+
+task automatic measure_rows(input string what);
+    int k, t, l0, l1, row;
+    l0_min = 9999; l0_max = 0; l0_sum = 0;
+    l1_min = 9999; l1_max = 0; l1_sum = 0;
+    stall_sum = 0; row_max = 0;
+    for (k = 0; k < lat_rows; k++) begin
+        // a row of a tile the scan picked: spread far apart, as consecutive
+        // sprites in the list are
+        @(posedge clk) begin obj_cs <= 1; obj_addr <= 20'(k * 1031 * 2); end
+        l0 = 0;
+        do begin @(posedge clk); l0++; end while (!obj_ok);
+        @(posedge clk) obj_addr <= 20'(k * 1031 * 2 + 1);
+        l1 = 0;
+        do begin @(posedge clk); l1++; end while (!obj_ok);
+        // the eight clocks of the first half's pixels overlap the second fetch
+        row = l0 + 8 + (l1 > 8 ? l1 - 8 : 0) + 8;
+        if (l0 < l0_min) l0_min = l0;  if (l0 > l0_max) l0_max = l0;  l0_sum += l0;
+        if (l1 < l1_min) l1_min = l1;  if (l1 > l1_max) l1_max = l1;  l1_sum += l1;
+        if (row > row_max) row_max = row;
+        stall_sum += row;
+        @(posedge clk) obj_cs <= 0;
+    end
+    if (cm_n != 0) $display("  LATENCY %-20s c_req to c_valid %0d clk_mem avg, %0d max, over %0d fetches",
+                            what, cm_sum / cm_n, cm_max, cm_n);
+    cm_n = 0; cm_sum = 0; cm_max = 0;
+    $display("  LATENCY %-20s first half %0d/%0d/%0d min/avg/max, second %0d/%0d/%0d, row avg %0d clk max %0d",
+             what, l0_min, l0_sum / lat_rows, l0_max, l1_min, l1_sum / lat_rows, l1_max,
+             stall_sum / lat_rows, row_max);
+endtask
+
 task automatic read_cpu(input [19:0] a, output [63:0] d);
     @(posedge clk); cpu_addr <= a; cpu_cs <= 1;
     do @(posedge clk); while (!cpu_ok);
@@ -154,7 +243,9 @@ initial begin
     repeat (64) @(posedge clk_mem);
     $display("  downloaded");
 
-    // the CPU's granules of the packed image
+    // the CPU's granules of the packed image, with the other two clients
+    // asking as well when +HAMMER=1
+    go_hammer <= 1;
     for (k = 0; k < ncpu; k++) begin
         read_cpu(cpu_a[k], got);
         checked++;
@@ -163,7 +254,10 @@ initial begin
             bad++; badc++;
         end
     end
-    $display("  cpu     %0d granules checked", ncpu);
+    go_hammer <= 0;
+    tile_cs <= 0; obj_cs <= 0;
+    repeat (16) @(posedge clk);
+    $display("  cpu     %0d granules checked%s", ncpu, hammer != 0 ? " (with tile/sprite traffic)" : "");
 
     // tile rows, cs dropped between reads
     for (k = 0; k < ntile; k++) begin
@@ -187,6 +281,25 @@ initial begin
     end
     @(posedge clk); obj_cs <= 0;
     $display("  sprites %0d half-rows checked", nobj);
+
+    if (latency != 0) begin
+        measure_rows("sprite port alone");
+        measure_tile("tile port alone");
+        ham_obj <= 0;
+        go_hammer <= 1;
+        // the tile port only: the CPU reads through its cache, the tilemap
+        // reads every line of every frame
+        repeat (64) @(posedge clk);
+        measure_rows("with tile traffic");
+        // now the other way round: the sprite port asking without pause,
+        // as it does while a line of sprites is drawn
+        ham_obj <= 1; ham_tile <= 0;
+        repeat (64) @(posedge clk);
+        measure_tile("with sprite traffic");
+        go_hammer <= 0; ham_tile <= 1;
+        tile_cs <= 0; obj_cs <= 0;
+        repeat (16) @(posedge clk);
+    end
 
     $display("  total checked %0d, mismatches %0d (cpu %0d, tiles %0d, sprites %0d)", checked, bad, badc, badt, bado);
     if (checked == 0 || bad != 0) $display("FAIL: %0d readbacks disagree with MAME's images", bad);

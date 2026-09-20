@@ -91,13 +91,24 @@ def zip_for(games, s):
     return s
 
 
-def read_file(zips, fname, want_len, set_name):
-    """A file from the merged zip: a clone's own files live under '<set>/'."""
+def stored_name(zips, fname, set_name):
+    """The name a file has inside the merged zip: a clone's own files live
+    under '<set>/', and an .mra part has to ask for it by that path."""
     for z in zips:
         names = {n.lower(): n for n in z.namelist()}
         for key in (f"{set_name}/{fname}".lower(), fname.lower()):
             if key in names:
-                data = z.read(names[key])
+                return names[key]
+    return None
+
+
+def read_file(zips, fname, want_len, set_name):
+    """A file from the merged zip: a clone's own files live under '<set>/'."""
+    name = stored_name(zips, fname, set_name)
+    if name is not None:
+        for z in zips:
+            if name in z.namelist():
+                data = z.read(name)
                 if len(data) != want_len:
                     raise SystemExit(f"{fname}: {len(data)} bytes, ROM_START says {want_len}")
                 return data

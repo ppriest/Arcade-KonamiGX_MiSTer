@@ -36,13 +36,26 @@ import zlib
 import xml.etree.ElementTree as ET
 
 
-def _zip_read(zs, name):
+def _zip_read(zs, name, crc=None):
     """The file from the first of the zips that has it: an .mra names several
     with zip="a.zip|b.zip" (the GX sets and the konamigx.zip BIOS)."""
-    for z in (zs if isinstance(zs, (list, tuple)) else [zs]):
-        names = {n.split('/')[-1]: n for n in z.namelist()}
-        if name in names:
-            return z.read(names[name])
+    zl = zs if isinstance(zs, (list, tuple)) else [zs]
+    # by crc first, as Main_MiSTer does: the file is found whatever it is
+    # called and wherever it sits, including a clone's own files under
+    # "<set>/" in a merged set
+    if crc is not None:
+        want = int(crc, 16)
+        for z in zl:
+            for info in z.infolist():
+                if info.CRC == want:
+                    return z.read(info.filename)
+    for z in zl:
+        entries = set(z.namelist())
+        if name in entries:
+            return z.read(name)
+        bare = {n.split('/')[-1]: n for n in entries}
+        if name in bare:
+            return z.read(bare[name])
     raise KeyError(f"{name} not in the zips")
 
 
@@ -54,7 +67,7 @@ def _part_data(z, el):
     MRA-Alternatives, e.g. the 720 Degrees and APB sets, which slice a 0x10000
     dump into two 0x8000 halves -- one of them inside an <interleave>).
     """
-    d = _zip_read(z, el.get("name"))
+    d = _zip_read(z, el.get("name"), el.get("crc"))
     # crc is the WHOLE file's CRC32, checked before any slice -- so a sliced
     # part still names the dump it was cut from.
     if el.get("crc") is not None:

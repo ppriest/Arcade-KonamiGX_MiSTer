@@ -10,4 +10,5 @@ rtl/jtframe/jtframe_draw.v
 rtl/jtframe/jtframe_obj_buffer.v
 rtl/jtframe/jtframe_dual_ram.v
 rtl/jtframe/jtframe_dual_ram16.v
+rtl/memory/gx_rom_port.sv
 sim/gx_obj_tb/tb_gx_obj.sv

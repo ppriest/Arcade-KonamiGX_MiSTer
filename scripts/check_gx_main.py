@@ -104,7 +104,9 @@ def compare_shots(game, n, near, out):
         return
     ref = rm.Capture(caps[0]).reference()
     best = None
-    for f in sorted(out.glob("shot_*.hex"), key=lambda p: abs(int(p.stem[5:]) - near)):
+    # shot_<frame>.hex; shot_frames.hex is the bench's input, not a picture
+    pics = [f for f in out.glob("shot_*.hex") if f.stem[5:].isdigit()]
+    for f in sorted(pics, key=lambda p: abs(int(p.stem[5:]) - near)):
         px = np.array([int(v, 16) for v in f.read_text().split()], dtype=np.int64)
         if len(px) != rm.VIS_W * rm.VIS_H:
             continue
@@ -121,6 +123,21 @@ def compare_shots(game, n, near, out):
     print(f"MAME frame {n} (RTL frame ~{near}): best RTL frame {best[1]}, "
           f"{best[0]} of {rm.VIS_W * rm.VIS_H} pixels identical")
     np.save(out / f"shot_best_f{n}.npy", best[2])
+
+
+# rtl/gx_board_cfg.sv's per-set values the bench needs: the ESC's list and the
+# K055673's x offset less daiskiss's -26 (konamigx.cpp's machine configs).
+ESC = {"daiskiss": (1, 0xc00000, 0x100), "mtwinbee": (1, 0xc00000, 0x100),
+       "tbyahhoo": (1, 0xc00000, 0x100), "sexyparo": (1, 0xc00604, 0xfc),
+       "sexyparoa": (1, 0xc00604, 0xfc)}
+HADJ = {"crzcross": -20, "puzldama": -20, "fantjour": -20, "fantjoura": -20,
+        "gokuparo": -20, "sexyparo": -16, "sexyparoa": -16}
+
+
+def board_cfg(game):
+    gen, src, count = ESC.get(game, (0, 0xc00000, 0x100))
+    return [f"+ESC_GEN={gen}", f"+ESC_SRC={src:x}", f"+ESC_COUNT={count:x}",
+            f"+OBJ_HADJ={HADJ.get(game, 0) & 0x3ff}"]
 
 
 def main():
@@ -186,7 +203,8 @@ def main():
         tn = check_gx_tilemap.write_vectors(cap)
         on = check_gx_obj.write_vectors(cap)
         args = [f"+FRAMES={a.frames}", f"+TNTILES={tn}", f"+ONTILES={on}", f"+OUT={a.out}/", f"+ROM_WAIT={a.rom_wait}",
-                f"+SND_TIME_FROM={SND_TIME_FROM}", f"+SND_OFFSET={SND_OFFSET}"]
+                f"+SND_TIME_FROM={SND_TIME_FROM}", f"+SND_OFFSET={SND_OFFSET}",
+                f"+SET={a.game}"] + board_cfg(a.game)
         # the frames to record, one window per --shot
         (out / "shot_frames.hex").write_text("".join(
             f"{f:x}\n" for n in shots for f in range(shots[n] - margin, shots[n] + margin + 1) if f > 0))

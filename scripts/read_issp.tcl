@@ -104,6 +104,24 @@ set fields_L {
     {scroll_modes    96 111 hex}
 }
 
+# INSTANCE M, 84 bits: the CPU ROM cache's last SDRAM fetch (gx_romcache).
+set fields_M {
+    {gran_data_lo     0  31 hex}
+    {gran_data_hi    32  63 hex}
+    {gran_addr       64  83 hex}
+}
+
+# INSTANCE N, 88 bits: four words of CPU-visible memory (gx_main's JTAG
+# reader). { addr, done, word 0..3 }.
+set fields_N {
+    {word0            0  15 hex}
+    {word1           16  31 hex}
+    {word2           32  47 hex}
+    {word3           48  63 hex}
+    {done            64  64 bit}
+    {word_addr       65  87 hex}
+}
+
 proc bits_to_int {s lo hi} {
     # read_probe_data returns the bus MSB-first, so index from the right.
     set n [string length $s]
@@ -141,13 +159,28 @@ if {[llength $insts] == 0} {
 }
 foreach i $insts { puts "instance: $i" }
 
+# the instance is the first argument; "clear" and "peek ..." follow it
 set want ""
-foreach a $argv { if {$a ne "clear"} { set want $a } }
+if {[llength $argv] > 0} {
+    set a0 [lindex $argv 0]
+    if {$a0 ne "clear" && $a0 ne "peek" && $a0 ne "dump"} { set want $a0 }
+}
 set idx [lindex [lindex $insts 0] 0]
 set inst_id [lindex [lindex $insts 0] 3]
 if {$want ne ""} {
+    # Refuse rather than fall back to instance 0: one DE10-nano is shared by
+    # several cores, so the bitstream on the board may be another one's, and
+    # decoding its probe against this core's field table reports numbers that
+    # look real. That happened on 2026-09-20 -- instance I was read off a core
+    # whose instances were M and V.
+    set found 0
     foreach i $insts {
-        if {[lindex $i 3] eq $want} { set idx [lindex $i 0]; set inst_id $want }
+        if {[lindex $i 3] eq $want} { set idx [lindex $i 0]; set inst_id $want; set found 1 }
+    }
+    if {!$found} {
+        puts "INSTANCE '$want' IS NOT IN THE LOADED BITSTREAM -- it has: [join [lmap i $insts {lindex $i 3}] { }]"
+        puts "is another core's build on the board? load this one and try again"
+        exit 1
     }
 }
 
@@ -159,6 +192,8 @@ switch -- $inst_id {
     J       { set fields $fields_J }
     K       { set fields $fields_K }
     L       { set fields $fields_L }
+    M       { set fields $fields_M }
+    N       { set fields $fields_N }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1
@@ -183,6 +218,66 @@ foreach f $fields {
 
 # write_source_data takes a BINARY STRING unless -value_in_hex is given
 proc write_src {idx v} { write_source_data -instance_index $idx -value [format %X $v] -value_in_hex }
+
+# peek <first granule> [count]: instance M's source asks the CPU's ROM cache
+# to read a granule of the packed image -- [0] toggles, [31:12] the address --
+# and the answer comes back on the same probe. The CPU is halted when this is
+# used, so the fetch it reports is the peek's.
+# dump <first byte address> <words>: instance N's source asks gx_main to read
+# four words at a time -- [0] toggles, [31:9] the word address -- and they
+# come back on the same probe. One line per group, for scripts/memdump.py.
+# Read only RAM: a register read can clear what it reports.
+set dp [lsearch -exact $argv "dump"]
+if {$dp >= 0} {
+    scan [lindex $argv [expr {$dp + 1}]] %x dfirst
+    set dwords [lindex $argv [expr {$dp + 2}]]
+    set t 0
+    set wa [expr {$dfirst >> 1}]
+    set left $dwords
+    while {$left > 0} {
+        # A group is asked for by toggling, and the answer is believed only
+        # when the probe reports that address. If it does not, the request is
+        # made again rather than waited on: the toggle and the address cross
+        # from this clock into the core's, and a build without the
+        # synchroniser (gx_main, md_t2) can read the group before's address.
+        set ok 0
+        for {set issue 0} {$issue < 40 && !$ok} {incr issue} {
+            set t [expr {1 - $t}]
+            write_src $idx [expr {($wa << 9) | $t}]
+            for {set tries 0} {$tries < 8} {incr tries} {
+                set r [read_probe_data -instance_index $idx]
+                # the reader leaves the address of the LAST word of the group
+                if {[bits_to_int $r 64 64] && [bits_to_int $r 65 87] == $wa + 3} {
+                    set ok 1
+                    break
+                }
+                after 1
+            }
+        }
+        if {!$ok} { puts "  dump stalled at [format %06X [expr {$wa*2}]]"; break }
+        puts [format "  dump %06X %04X %04X %04X %04X" [expr {$wa * 2}]               [bits_to_int $r 0 15] [bits_to_int $r 16 31]               [bits_to_int $r 32 47] [bits_to_int $r 48 63]]
+        set wa [expr {$wa + 4}]
+        set left [expr {$left - 4}]
+    }
+}
+
+set pk [lsearch -exact $argv "peek"]
+if {$pk >= 0} {
+    scan [lindex $argv [expr {$pk + 1}]] %x first
+    set count 1
+    if {[llength $argv] > $pk + 2} { set count [lindex $argv [expr {$pk + 2}]] }
+    set t 0
+    for {set g $first} {$g < $first + $count} {incr g} {
+        set t [expr {1 - $t}]
+        write_src $idx [expr {($g << 12) | $t}]
+        after 5
+        set r [read_probe_data -instance_index $idx]
+        set ga [bits_to_int $r 64 83]
+        set lo [bits_to_int $r 0 31]
+        set hi [bits_to_int $r 32 63]
+        puts [format "  peek %05X -> %08X%08X%s" $ga $hi $lo               [expr {$ga == $g ? "" : [format "   (asked for %05X)" $g]}]]
+    }
+}
 if {$do_clear} {
     write_src $idx 1
     write_src $idx 0

@@ -81,9 +81,10 @@ git diff --no-index rtl/video/k055673/jt053246_dma_upstream_reference.v rtl/vide
 |---|---|---|
 | `jt053246_dma.v` | `GX_ORDER` parameter: copy the first 256 sprites (words 0–2047) in RAM order, instead of into the table slot named by each sprite's priority byte | The slot sort keeps one sprite per priority value. `daiskiss` gives many sprites the same z-code — 35 sprites on 2 values on its title frame — and scored in software the slot sort kept 2 of them. jotego's README calls the sort "this implementation"; its PCB measurements are of the DMA's duration only. Ordering moves to the line buffer (below). |
 | `jt053246_scan.sv` | outputs `zcode` (word 0 bits 7:0), `attr_full` (word 6 as scanned) and `obj_idx` (the table index, latched with `zcode`); `HADJ` made a parameter | the line buffer's key needs the z-code; GX's colour callback and `primode` filter need word 6 bits 10–15; the mixer ranks a sprite against a shadow by index, as MAME's order does. `obj_idx` must be latched: `scan_obj` advances in the same step that issues a multi-tile sprite's last draw, and read live it was one high on 60% of frame 6000's sprite pixels. `HADJ` is a Simpsons-specific shift for sprites starting left of `hdump` 0x20; GX runs with 0 |
-| `jt053246.sv` | passes `GX_ORDER`, `HADJ`, `zcode`, `attr_full`, `obj_idx` through | plumbing |
+| `jt053246_scan.sv` | outputs `pf_on`/`pf_code`: the tile the drawer will be given next | the SDRAM behind the sprite ROM answers in 10 clocks and `jtframe_draw` has eight to spare, so every row waited for memory before its first pixel and the scan ran out of line time on 32 of 234 lines (`docs/ROADMAP.md`). The scan already computes the next tile of a sprite one step early (`hcode + hsum`), so `gx_rom_port` fetches it in the idle time it has. No line runs short with it |
+| `jt053246.sv` | passes `GX_ORDER`, `HADJ`, `zcode`, `attr_full`, `obj_idx`, `pf_on`, `pf_code` through | plumbing |
 
-`jtsimson_obj.v` is **unmodified and not used by GX**. Its GX counterpart is
+`jtsimson_obj.v` is **not used by GX**, and differs only by tying off the two new scan outputs. Its GX counterpart is
 [`../gx_obj.v`](../gx_obj.v), derived from it and saying so in its header: GX's sprite callback
 (VRC code banks, colour and priority through the K055555 fields), `konamigx_mixer`'s solid/shadow
 split and `primode` 4 filter, 5 bpp, and the line buffer with a `{z-code, priority}` key —

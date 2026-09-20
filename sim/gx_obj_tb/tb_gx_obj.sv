@@ -64,8 +64,8 @@ reg  [ 7:0] shdpri0, shdpri1, shdpri2, spri_min;
 reg  [ 9:0] voffset = 0;
 wire [22:0] rom_addr;
 wire        rom_cs;
-reg         rom_ok = 0;
-reg  [39:0] rom_data;
+wire        rom_ok;
+wire [39:0] rom_data;
 wire        pxl_valid;
 wire [12:0] pxl_pen;
 wire [ 7:0] pxl_pri, pxl_z, pxl_idx;
@@ -93,20 +93,78 @@ reg [ 7:0] misc_v [16];    // opri, oinprion, ocblk, wrport2, primode, shadowon,
 reg [39:0] rom_v  [1 << 20];   // fixed size: Verilator cannot $readmemh a dynamic array
 int        ntiles, ROM_LAT = 6;
 
+// +PORT=0 (default): the ideal model -- every fetch answered ROM_LAT clocks
+// after the address, nothing held between fetches.
+//
+// +PORT=1: rtl/memory/gx_rom_port.sv, the board's own, against a memory that
+// answers c_req ROM_LAT_M clk_mem cycles later. That is the path whose
+// latency the sprite scan runs out of line time on, and the one the scan's
+// prefetch hint (+HINT=1, the default with PORT) is there to hide. The
+// board's measured numbers are in gx_sdram_tb: ROM_LAT_M 18 gives the 11
+// clocks a first fetch costs there.
+int  use_port = 0, use_hint = 1, ROM_LAT_M = 18;
+initial begin
+    void'($value$plusargs("PORT=%d", use_port));
+    void'($value$plusargs("HINT=%d", use_hint));
+    void'($value$plusargs("ROM_LAT_M=%d", ROM_LAT_M));
+end
+
 reg [22:0] last_addr;
 int        lat;
-always @(posedge clk) begin
-    rom_ok <= 1'b0;
+reg         id_ok = 0;
+reg  [39:0] id_data;
+always @(posedge clk) if (!use_port) begin
+    id_ok <= 1'b0;
     if (!rom_cs) lat <= 0;
     else if (lat == 0 || rom_addr != last_addr) begin
         last_addr <= rom_addr;
         lat       <= 1;
     end else if (lat < ROM_LAT) lat <= lat + 1;
     else begin
-        rom_ok   <= 1'b1;
-        rom_data <= rom_v[(((rom_addr >> 5) % ntiles) << 5) | rom_addr[4:0]];
+        id_ok   <= 1'b1;
+        id_data <= rom_v[(((rom_addr >> 5) % ntiles) << 5) | rom_addr[4:0]];
     end
 end
+
+reg clk_mem = 0;
+always #5.2085 clk_mem = ~clk_mem;
+
+wire        p_req;
+wire [25:0] p_addr;
+reg         p_valid = 0;
+reg  [63:0] p_rdata;
+wire        p_ok;
+wire [63:0] p_g;
+int         m_cnt = 0;
+reg         p_req_l = 0;
+
+// the memory behind the arbiter
+always @(posedge clk_mem) begin
+    p_valid <= 0;
+    p_req_l <= p_req;
+    if (!p_req) m_cnt <= 0;
+    else if (m_cnt < ROM_LAT_M) m_cnt <= m_cnt + 1;
+    else if (!p_valid) begin
+        int g; reg [39:0] row;
+        g   = p_addr >> 3;
+        row = rom_v[((g >> 5) % ntiles) << 5 | g[4:0]];
+        p_rdata <= { 24'd0, row[7:0], row[15:8], row[23:16], row[31:24], row[39:32] };
+        p_valid <= 1;
+        m_cnt   <= 0;
+    end
+end
+
+gx_rom_port #(.AW(20), .PAIR(1)) u_port (
+    .clk(clk), .clk_mem(clk_mem), .rst(rst),
+    .cs(rom_cs && use_port != 0), .addr(rom_addr[19:0]), .ok(p_ok), .data(p_g),
+    .hint_cs(dut.pf_cs && use_port != 0 && use_hint != 0), .hint_addr(dut.pf_addr[19:0]),
+    .base(26'd0),
+    .c_req(p_req), .c_addr(p_addr), .c_valid(p_valid), .c_rdata(p_rdata)
+);
+
+assign rom_ok   = use_port ? p_ok : id_ok;
+assign rom_data = use_port ? { p_g[7:0], p_g[15:8], p_g[23:16], p_g[31:24], p_g[39:32] }
+                           : id_data;
 
 // ----------------------------------------------------------- probes
 // +ROM_DUMP=n: print the first n sprite ROM answers (address, data)

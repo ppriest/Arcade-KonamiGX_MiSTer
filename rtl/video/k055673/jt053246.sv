@@ -65,6 +65,8 @@ module jt053246(    // sprite logic
     // indr module / 051937
     output reg        dr_start,
     input             dr_busy,
+    output            pf_on,      // [GX] the next tile, for the ROM port to fetch ahead
+    output     [15:0] pf_code,
 
     // Debug
     input      [ 7:0] debug_bus,
@@ -127,6 +129,8 @@ jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
     .shd       ( shd        ),
     .dr_start  ( dr_start   ),
     .dr_busy   ( dr_busy    ),
+    .pf_on     ( pf_on      ),
+    .pf_code   ( pf_code    ),
     .debug_bus ( debug_bus  )
 );
 

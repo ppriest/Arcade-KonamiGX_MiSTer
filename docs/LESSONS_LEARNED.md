@@ -534,6 +534,25 @@ testbench that found it wired `psikyo_sdram_top` verbatim plus `sdram_chip_model
 screen path. When sim and hardware disagree and timing is clean, swap behavioural models for the
 real transport stack before blaming synthesis.
 
+### A packed SDRAM image is shorter than the address space it stands for
+
+MAME maps a CPU ROM region whole and leaves what no ROM file loads as zero. The SDRAM image packs
+the regions back to back to save space, so the CPU image ends where the tile graphics begin, and a
+read above its length returns graphics instead of zero. Every bench had the region's own image
+behind the ROM port, zeros and all, so the fault existed only on the board.
+
+It surfaced as something that looked nothing like a memory bug: stray sprites in a corner of
+Daisu-Kiss. The ESC protection takes a sprite's piece list from a pointer in work RAM, reads the
+count of pieces at it, and walks them; five of that scene's pointers are above the image's length.
+Where MAME reads a count of zero the board read tile graphics -- 65,278 pieces -- and the ESC held
+the bus for frames, leaving the sprite list half written with the previous frame's entries still
+marked active.
+
+So: for every region the image packs, ask what the CPU reads at the addresses the image does not
+cover, and answer those reads the way the driver's address map does. Check it against the region
+image rather than assuming the gaps are unreachable -- the whole reason this one was reachable is
+that a protection chip dereferences data as pointers.
+
 ### Ask of every stimulus whether it is the shape the real system produces
 
 `tb_maincpu.sv` pulsed `vblank` for one clock; hardware holds it for the whole 38-line blank

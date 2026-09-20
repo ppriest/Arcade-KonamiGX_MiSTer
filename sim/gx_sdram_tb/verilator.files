@@ -1,5 +1,4 @@
 rtl/memory/sdram/sdram.sv
-rtl/memory/sdram_phy.sv
 rtl/memory/sdram_arbiter.sv
 rtl/memory/sdram_download.sv
 rtl/memory/gx_rom_port.sv

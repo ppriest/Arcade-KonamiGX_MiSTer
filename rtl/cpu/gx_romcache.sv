@@ -37,7 +37,13 @@ module gx_romcache #(
     input  [63:0]     p_data,
 
     output reg [15:0] dbg_hits,
-    output reg [15:0] dbg_misses
+    output reg [15:0] dbg_misses,
+    output reg [19:0] dbg_addr,    // the last granule fetched from SDRAM
+    output reg [63:0] dbg_data,
+    // JTAG peek: a toggle asks for one granule, read back on dbg_addr/dbg_data
+    // (the board's own memory dump; the CPU is usually halted when it is used)
+    input             peek_t,
+    input      [19:0] peek_addr
 );
 
 localparam TW = 20 - LINES_LOG;     // tag bits of the 20-bit granule address
@@ -64,6 +70,12 @@ function [15:0] word( input [63:0] gr, input [1:0] w );
 endfunction
 
 reg                  served, busy, sweeping;
+// peek_t crosses from the probe's clock: two flops before it is believed,
+// so peek_addr has settled by the time it is sampled (gx_main says more)
+reg                  peek_t1, peek_t2;
+always @(posedge clk) begin peek_t1 <= peek_t; peek_t2 <= peek_t1; end
+
+reg                  peek_s, peek_busy;
 reg  [LINES_LOG-1:0] sw_cnt;
 
 always @(posedge clk) begin
@@ -72,6 +84,7 @@ always @(posedge clk) begin
     if( rst ) begin
         served <= 0; busy <= 0; p_cs <= 0;
         sweeping <= 1; sw_cnt <= 0;
+        peek_busy <= 0; peek_s <= peek_t2;
         dbg_hits <= 0; dbg_misses <= 0;
     end else if( sweeping ) begin
         t_we <= 1; wa <= sw_cnt; t_wd <= 0;
@@ -79,11 +92,19 @@ always @(posedge clk) begin
         if( &sw_cnt ) sweeping <= 0;
     end else begin
         if( !cs ) served <= 0;
-        if( busy ) begin
+        if( peek_busy ) begin
+            if( p_ok ) begin
+                peek_busy <= 0; p_cs <= 0;
+                dbg_addr <= p_addr; dbg_data <= p_data;
+            end
+        end else if( peek_s != peek_t2 && !busy && !cs ) begin
+            peek_busy <= 1; p_cs <= 1; p_addr <= peek_addr; peek_s <= peek_t2;
+        end else if( busy ) begin
             if( p_ok ) begin
                 p_cs <= 0; busy <= 0;
                 t_we <= 1; d_we <= 1; wa <= idx; t_wd <= { 1'b1, tag };
                 ok <= 1; data <= word( p_data, addr[2:1] ); served <= 1;
+                dbg_addr <= p_addr; dbg_data <= p_data;
             end
         end else if( cs && !served ) begin
             if( hit ) begin

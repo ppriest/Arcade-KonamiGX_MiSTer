@@ -12,31 +12,31 @@
     <!-- the SDRAM image rtl/memory/gx_sdram_top.sv expects for this set
          (rtl/gx_board_cfg.sv arm 5); written and proven by
          scripts/build_mra.py, not by hand -->
-    <rom index="0" zip="fantjour.zip|konamigx.zip" md5="none" address="0x30000000">
+    <rom index="0" zip="gokuparo.zip|fantjour.zip|konamigx.zip" md5="none" address="0x30000000">
         <!-- maincpu, the CPU's window packed: BIOS, then 0x200000.. moved down by 0x1e0000 -->
-        <part name="300a01.34k"/>
+        <part name="300a01.34k" crc="d5fa95f5"/>
         <interleave output="32">
-            <part name="321jad04.27b" map="0012"/>
-            <part name="321jad02.21b" map="1200"/>
+            <part name="321jad04.27b" crc="916a7951" map="0012"/>
+            <part name="321jad02.21b" crc="c2e548c0" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
         <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
-        <part name="321b14.17h"/>  <!-- four-byte part -->
+        <part name="321b14.17h" crc="437d0057"/>  <!-- four-byte part -->
         <part repeat="2936012">00</part>
-        <part name="321b12.13g"/>  <!-- fifth bytes -->
+        <part name="321b12.13g" crc="5f9edfa0"/>  <!-- fifth bytes -->
         <part repeat="734003">00</part>
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="4194305">00</part>
         <interleave output="32">
-            <part name="321b11.25g" map="0021"/>
-            <part name="321b10.28g" map="2100"/>
+            <part name="321b11.25g" crc="c6e2e74d" map="0021"/>
+            <part name="321b10.28g" crc="ea9f8c48" map="2100"/>
         </interleave>
-        <part name="321b09.30g"/>
+        <part name="321b09.30g" crc="94add237"/>
     </rom>
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
-    <rom index="2" zip="fantjour.zip|konamigx.zip" md5="none">
+    <rom index="2" zip="gokuparo.zip|fantjour.zip" md5="none">
         <part name="gokuparo.nv"/>
     </rom>
 

@@ -227,7 +227,8 @@ wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
 wire [63:0] rom_data;
 wire [23:0] tile_rom_addr;
-wire [22:0] obj_rom_addr;
+wire [22:0] obj_rom_addr, obj_pf_addr;
+wire        obj_pf_cs;
 wire [39:0] tile_rom_data, obj_rom_data;
 
 gx_sdram_top u_mem (
@@ -241,7 +242,8 @@ gx_sdram_top u_mem (
 	// gx_tilemap's rom_addr is a row index and gx_obj's a half-row index (the
 	// video benches' ROM models); each is one granule
 	.tile_cs(tile_rom_cs), .tile_addr(tile_rom_addr[20:0]), .tile_ok(tile_rom_ok), .tile_data(tile_rom_data),
-	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[19:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data)
+	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[19:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data),
+	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[19:0])
 );
 
 ///////////////////////   INPUTS   ///////////////////////////////
@@ -308,20 +310,37 @@ wire [63:0] dbg_ee, dbg_irq;
 wire [95:0] dbg_esc_st;
 wire [95:0] dbg_obj;
 wire [111:0] dbg_mix;
+wire [83:0] dbg_rom;
 wire [ 1:0] dbg_esc;
+
+// The sources the ISSP probes below drive, and the probe the JTAG memory
+// read answers on. They are used by the instance above, which is in both
+// revisions, so they are declared here and tied off when the probes are
+// compiled out.
+`ifdef DEBUG_ISSP
+wire [31:0] peek_src;
+wire [31:0] mem_src;
+`else
+wire [31:0] peek_src = 32'd0;
+wire [31:0] mem_src  = 32'd0;
+`endif
+wire [87:0] dbg_mem;
 
 gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
 	.tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
-	.obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
+	.obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
 	.snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din,
 	.inputs, .coins, .dsw, .service,
 	.ee_blank(ee_blank), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
 	.offs_x, .offs_y, .primode, .obj_hadj, .esc_gen, .esc_src, .esc_count,
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
-	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_mix(dbg_mix)
+	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_mix(dbg_mix), .dbg_rom(dbg_rom),
+	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
+	.rom_top(tile_base),
+	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem)
 );
 
 ///////////////////////   PROBES   ///////////////////////////////
@@ -378,6 +397,20 @@ issp_probe #(.INSTANCE_ID("H"), .PROBE_W(64), .SOURCE_W(8)) u_issp_irq (
 // Instance L, 96 bits: what the game programs into the mixer -- [15:0]
 // K055555 VINMIX, [31:16] VMIXON, [47:32] INPUT_ENABLES, [63:48] K054338
 // alpha 1, [79:64] alpha 2, [95:80] control, [111:96] K056832 0x0a (fields_L)
+// Instance M, 84 bits: the last granule the CPU's ROM cache fetched from
+// SDRAM -- [63:0] the bytes, [83:64] its granule address in the packed
+// image (fields_M). At a halt it is the fetch that fed the CPU.
+// its source asks for a granule: [0] toggles to read, [31:12] the address
+issp_probe #(.INSTANCE_ID("M"), .PROBE_W(84), .SOURCE_W(32)) u_issp_rom (
+	.clk(clk_vid), .probe(dbg_rom), .source(peek_src)
+);
+// Instance N, 88 bits: four words of anything the CPU can read, at the
+// address its source asks for -- [0] toggles the read, [31:9] the word
+// address. The probe is { addr, done, word 0..3 } (fields_N). This is how a
+// capture is taken from the board instead of from MAME (scripts/memdump.py).
+issp_probe #(.INSTANCE_ID("N"), .PROBE_W(88), .SOURCE_W(32)) u_issp_mem (
+	.clk(clk_vid), .probe(dbg_mem), .source(mem_src)
+);
 issp_probe #(.INSTANCE_ID("L"), .PROBE_W(112), .SOURCE_W(8)) u_issp_mix (
 	.clk(clk_vid), .probe(dbg_mix), .source()
 );

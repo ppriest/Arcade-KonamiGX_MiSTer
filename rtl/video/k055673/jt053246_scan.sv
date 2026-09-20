@@ -51,6 +51,14 @@ module jt053246_scan (    // sprite logic
     // indr module / 051937
     output reg        dr_start,
     input             dr_busy,
+    // [GX] the tile the drawer will be given next, while it is still on this
+    // one: the SDRAM behind the sprite ROM takes longer to answer than the
+    // eight pixels the drawer has to spare, so the port fetches this ahead.
+    // In the draw state `code` is the tile being drawn and hstep already
+    // points at the next, so hcode+hsum is the next tile's code -- and on the
+    // way in, before the first dr_start, it is this sprite's first tile.
+    output            pf_on,
+    output     [15:0] pf_code,
 
     // Debug
     input      [ 7:0] debug_bus
@@ -70,6 +78,7 @@ reg  [ 8:0] vlatch, ymove, vscl, hscl;
 reg  [ 7:0] scan_obj/*, zcode*/; // max 256 objects
 reg  [ 3:0] size;
 reg  [ 2:0] hstep, hcode, hsum, vsum;
+reg  [ 2:0] pf_h;                // [GX] the next tile's code bits
 reg  [ 2:0] vsum4;               // [GX]
 reg         vmir4, vflip4;       // [GX]
 reg  [ 1:0] scan_sub, reserved;
@@ -158,6 +167,9 @@ always @* begin : B
         2: hsum = hmir ? {2'd0,hstep[0]^hflip}          : {1'd0,hstep[1:0]^{2{hflip}}};
         3: hsum = hmir ? ({1'b0,hstep[1:0]^{2{hflip}}}) : hstep[2:0]^{3{hflip}};
     endcase
+    // [GX] the tile the drawer is given next: the draw state's own
+    // {code[4],code[2],code[0]} <= hcode + hsum, one step early
+    pf_h = hcode + hsum;
     case( vsz )
         0: vsum = 0;
         1: vsum = { 2'd0, ydiff[4]^vflip   };
@@ -303,6 +315,11 @@ always @(posedge clk) begin : A
         end
     end
 end
+
+// [GX] valid in the draw state ({indr,scan_sub} >= 5), where the drawer is
+// busy with the tile before it, or about to be given this one
+assign pf_on   = indr && scan_sub[0] && inzone && !done;
+assign pf_code = { code[15:5], pf_h[2], code[3], pf_h[1], code[1], pf_h[0] };
 
 initial pzoffset ='{
     8, 7, 7, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4

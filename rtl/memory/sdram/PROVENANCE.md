@@ -11,7 +11,11 @@
 
 The rest of the stack beside it (`sdram_phy.sv`, `sdram_arbiter.sv`,
 `sdram_download.sv`, `sdram_narrow_bridge.sv`, `rom_loader.sv`, `ddram_phy.sv`)
-came from the same Fuuki tree in the same copy, also unmodified. Fuuki's is the
+came from the same Fuuki tree in the same copy. `sdram_arbiter.sv` has since
+been changed to drive the chip's port itself -- `sdram_phy.sv`, which it used
+to go through, cost a cycle each way, and three cycles of the sprite ROM's
+latency is the difference between the sprite scan finishing a line and not
+(`docs/ROADMAP.md`). That file is gone; the rest is unmodified. Fuuki's is the
 more evolved of the two: one parameterised `sdram_arbiter.sv` in place of
 Psikyo's `sdram_arbiter2/5/6` trio, and 26-bit addressing throughout. Seta's
 largest set is 15.5 MB so it fits the stock 32 MB part comfortably; the wider

@@ -166,6 +166,8 @@ jt053246 #(
     // draw module / 053247
     .dr_start   ( dr_start  ),
     .dr_busy    ( dr_busy   ),
+    .pf_on      (           ),   // [GX] unused here
+    .pf_code    (           ),
 
     // Debug
     .debug_bus  ( debug_bus ),

@@ -14,26 +14,26 @@
          scripts/build_mra.py, not by hand -->
     <rom index="0" zip="daiskiss.zip|konamigx.zip" md5="none" address="0x30000000">
         <!-- maincpu, the CPU's window packed: BIOS, then 0x200000.. moved down by 0x1e0000 -->
-        <part name="300a01.34k"/>
+        <part name="300a01.34k" crc="d5fa95f5"/>
         <interleave output="32">
-            <part name="535jaa03.27b" map="0012"/>
-            <part name="535jaa02.31b" map="1200"/>
+            <part name="535jaa03.27b" crc="9dc10140" map="0012"/>
+            <part name="535jaa02.31b" crc="e5b3e0e5" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
         <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
-        <part name="535a19.17h"/>  <!-- four-byte part -->
+        <part name="535a19.17h" crc="fa1c59d1"/>  <!-- four-byte part -->
         <part repeat="2097152">00</part>
-        <part name="535a18.13g"/>  <!-- fifth bytes -->
+        <part name="535a18.13g" crc="d02e5103"/>  <!-- fifth bytes -->
         <part repeat="524288">00</part>
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="3145728">00</part>
         <interleave output="32">
-            <part name="535a17.25g" map="0021"/>
-            <part name="535a13.28g" map="2100"/>
+            <part name="535a17.25g" crc="b12070e2" map="0021"/>
+            <part name="535a13.28g" crc="10cf9d05" map="2100"/>
         </interleave>
         <part repeat="2097152">00</part>
-        <part name="535a11.30g"/>
+        <part name="535a11.30g" crc="2b176b0f"/>
         <part repeat="524288">00</part>
     </rom>
 

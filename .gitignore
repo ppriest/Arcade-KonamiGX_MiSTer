@@ -92,6 +92,11 @@ roms/
 # which on the Fuuki core silently swallowed rtl/debug/ -- the core's own
 # instrumentation source.
 /debug/
+# Screenshots pulled off the MiSTer land in docs/screenshots/<set>/ with a
+# timestamped name. That directory is tracked, because a few chosen shots
+# belong with the documentation, but the raw captures are scratch: 48 of them
+# went in on a `git add -A` before this rule existed.
+docs/screenshots/*/[0-9]*-screen.png
 /*.png
 /*.txt
 scratch_*.png

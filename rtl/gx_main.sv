@@ -73,6 +73,8 @@ module gx_main (
     input      [39:0] tile_rom_data,
     output     [22:0] obj_rom_addr,
     output            obj_rom_cs,
+    output     [22:0] obj_pf_addr,           // the row the sprite scan will draw next
+    output            obj_pf_cs,
     input             obj_rom_ok,
     input      [39:0] obj_rom_data,
 
@@ -123,7 +125,15 @@ module gx_main (
     output     [ 1:0] dbg_esc,               // { the CPU is held on its ESC write, the ESC is busy }
     output     [95:0] dbg_esc_st,            // { count2, SR high byte, ESC completions, gx_esc dbg[63:0] }
     output     [95:0] dbg_obj,               // sprite DMA starts, vblanks, OBJSET1, short lines (probe J)
-    output    [111:0] dbg_mix                // the mixer's registers (probe L)
+    output    [111:0] dbg_mix,               // the mixer's registers (probe L)
+    output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
+    input             peek_t,                // JTAG: read one granule of the packed image
+    input      [19:0] peek_addr,
+    // JTAG: read four words of anything the CPU can read (scripts/memdump.py)
+    input      [25:0] rom_top,             // SDRAM bytes the packed CPU image occupies
+    input             mem_t,
+    input      [23:1] mem_addr,
+    output     [87:0] dbg_mem                // { addr, done, the four words }
 );
 
 // ------------------------------------------------------------ clocks
@@ -234,7 +244,7 @@ gx_video u_video (
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .obj_hadj,
     .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix,
-    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
+    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
     .pal_we(pal_fwd_we), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }),
@@ -266,6 +276,44 @@ gx_esc u_escm (
     .m_din(u_din), .m_ack(esc_ack)
 );
 
+// ------------------------------------------------------------ JTAG reads
+// A third bus master, below the ESC and the CPU: on a toggle of mem_t it
+// reads the four words at mem_addr and holds them on the probe. It is how
+// the board's own memory is read out (scripts/memdump.py) -- the benches
+// reproduce MAME from a capture, and this is the same capture taken from
+// the board instead. It steals four bus cycles, far fewer than the ESC
+// takes, so a game keeps running while it is read.
+// mem_t and mem_addr come from the probe's clock, not this one. The toggle
+// goes through two flops before it is believed, which leaves the address
+// stable for two clocks before it is sampled: taken directly, a group could
+// be read at the address of the group before (the read stalled every few
+// dozen groups until this was added).
+reg         md_t1, md_t2;
+always @(posedge clk) begin md_t1 <= mem_t; md_t2 <= md_t1; end
+
+reg         md_s, md_busy, md_req;
+reg  [ 1:0] md_w;                            // which of the four words
+reg  [23:1] md_addr;
+reg  [63:0] md_data;
+wire        md_ack;
+
+always @(posedge clk) begin
+    if( rst ) begin
+        md_busy <= 0; md_req <= 0; md_s <= md_t2; md_w <= 0;
+    end else if( md_busy ) begin
+        if( md_ack ) begin
+            md_data[16*md_w +: 16] <= u_din;
+            if( md_w == 2'd3 ) begin md_busy <= 0; md_req <= 0; end
+            else begin md_w <= md_w + 2'd1; md_addr <= md_addr + 23'd1; end
+        end
+    end else if( md_s != md_t2 ) begin
+        md_s    <= md_t2;
+        md_busy <= 1; md_req <= 1; md_w <= 0;
+        md_addr <= mem_addr;
+    end
+end
+assign dbg_mem = { md_addr, !md_busy, md_data };
+
 // CPU-side state (the block that drives it is below the unit)
 localparam [1:0] C_IDLE = 0, C_BUSY = 1, C_ESC = 2, C_READY = 3;
 reg  [1:0] cst;
@@ -277,7 +325,7 @@ reg        esc_seen;
 localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
-reg         u_ack, u_esc;                   // the access in progress is the ESC's
+reg         u_ack, u_esc, u_md;             // whose access is in progress
 reg  [23:1] ua_r;                           // the request, held for the access
 reg  [ 1:0] ube_r;
 reg         uwe_r;
@@ -293,14 +341,29 @@ wire        cpu_req_now;
 // for the next cpu_cen: one wait state, Phase 0's budget (docs/ROADMAP.md).
 // ua/ube/uwe/ud are the source while idle and the held request after.
 wire        take_esc = ust == U_IDLE && esc_req && !u_ack;
-wire        take_cpu = ust == U_IDLE && !take_esc && cpu_req_now;
-wire        take     = take_esc || take_cpu;
-wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : a32[23:1];
-wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : { ~nUDS, ~nLDS };
-wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : !nWr;
-wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : cpu_dout;
+wire        take_md  = ust == U_IDLE && !take_esc && md_req && !u_ack;
+wire        take_cpu = ust == U_IDLE && !take_esc && !take_md && cpu_req_now;
+wire        take     = take_esc || take_md || take_cpu;
+wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_md ? md_addr : a32[23:1];
+wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11   : { ~nUDS, ~nLDS };
+wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_md ? 1'b0    : !nWr;
+wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_md ? 16'd0   : cpu_dout;
 wire [23:0] ub  = { ua, 1'b0 };             // byte address of the word
 assign esc_ack = u_ack && u_esc;
+assign md_ack  = u_ack && u_md;
+
+// The CPU addresses the packed image actually backs: the BIOS, and 0x200000
+// up to the image's length. konamigx.cpp maps the whole region and leaves
+// what no ROM loads as zero; here the tile graphics follow the CPU image in
+// SDRAM, so a read outside these windows came back as graphics.
+//
+// It is not a corner: daiskiss's ESC takes a sprite's piece list from
+// 0x4f0080, which is zero in MAME and tile data here, so it read a count of
+// 32,497 pieces and walked them, holding the bus for frames at a time. The
+// sprite list was left half written -- the stray graphics in the top-left
+// corner on the board (docs/ROADMAP.md).
+wire [23:0] cpu_end    = 24'h200000 + ( rom_top[23:0] - 24'h020000 );
+wire        rom_backed = ub < 24'h020000 || ( ub >= 24'h200000 && ub < cpu_end );
 
 // ------------------------------------------------------------ ROM cache
 reg         cr_cs;
@@ -311,7 +374,8 @@ gx_romcache u_cache (
     .clk, .rst,
     .a_pre(ua[22:1]), .cs(cr_cs), .addr(cr_addr), .ok(cr_ok), .data(cr_data),
     .p_cs(rom_cs), .p_addr(rom_addr), .p_ok(rom_ok), .p_data(rom_data),
-    .dbg_hits(dbg_rom_hits), .dbg_misses(dbg_rom_misses)
+    .dbg_hits(dbg_rom_hits), .dbg_misses(dbg_rom_misses),
+    .dbg_addr(dbg_rom[83:64]), .dbg_data(dbg_rom[63:0]), .peek_t, .peek_addr
 );
 reg  esc_started;                           // the CPU's write started the ESC
 
@@ -332,7 +396,8 @@ always @(posedge clk) begin
         if( cst == C_ESC ) esc_started <= 0;
         // the ESC while it is busy, the CPU otherwise: decode and issue
         if( take ) begin
-            u_esc <= take_esc; ua_r <= ua; ube_r <= ube; uwe_r <= uwe; ud_r <= ud;
+            u_esc <= take_esc; u_md <= take_md;
+            ua_r <= ua; ube_r <= ube; uwe_r <= uwe; ud_r <= ud;
             ust     <= U_WAIT;
             bus_d16 <= ud;
             usrc    <= R_ZERO;
@@ -340,7 +405,9 @@ always @(posedge clk) begin
             if( take_cpu && fc == 3'b111 ) begin
                 usrc <= R_ZERO;                  // interrupt acknowledge
             end else if( ub < 24'h800000 ) begin
-                cr_addr <= ua[22:1]; cr_cs <= 1; ust <= U_ROM;
+                if( rom_backed ) begin
+                    cr_addr <= ua[22:1]; cr_cs <= 1; ust <= U_ROM;
+                end else usrc <= R_ZERO;
             end else if( ub >= 24'hc00000 && ub < 24'hc20000 ) begin
                 wr_a <= ua[16:1]; wr_d <= ud;
                 if( uwe ) begin wr_we_h <= ube[1]; wr_we_l <= ube[0]; end
@@ -443,14 +510,14 @@ end
 // C_IDLE: a new access goes to the unit. On its ack: ready, unless it was
 // the ESC's starting write, which waits for the ESC.
 assign cpu_req_now = cst == C_IDLE && mem_needed && !ready && !esc_busy;
-assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !esc_started;
+assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !u_md && !esc_started;
 
 always @(posedge clk) begin
     if( rst ) begin
         cst <= C_IDLE; ready <= 0; esc_seen <= 0;
     end else case( cst )
         C_IDLE: if( take_cpu ) cst <= C_BUSY;
-        C_BUSY: if( u_ack && !u_esc ) begin
+        C_BUSY: if( u_ack && !u_esc && !u_md ) begin
             cpu_din <= u_din;
             if( esc_started ) begin cst <= C_ESC; esc_seen <= 0; end
             else if( cpu_cen ) cst <= C_IDLE;      // taken this clock (fast_rdy)
@@ -498,7 +565,7 @@ end
 reg  [23:0] dma_t;
 reg         lvbl_l, irq3, irq4, dma_run;
 reg         int1_l, int2_l, pend1, pend2;     // syncen bits 0/1, taken at an INT edge
-wire        iack = cst == C_BUSY && u_ack && !u_esc && fc == 3'b111;
+wire        iack = cst == C_BUSY && u_ack && !u_esc && !u_md && fc == 3'b111;
 wire [ 2:0] iack_lvl = a32[3:1];
 wire [23:0] dma_len = wrport2[0] ? 24'd13824 : 24'd18432;   // (256+32) / (342+42) us at 48 MHz
 

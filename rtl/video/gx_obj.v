@@ -90,6 +90,12 @@ module gx_obj #(parameter
     output            rom_cs,
     input             rom_ok,
     input      [39:0] rom_data,
+    // the row the scan will draw next, for the port to fetch ahead of the
+    // drawer: a fetch takes longer than the eight pixels the drawer has to
+    // spare, so without this every row waits for memory before its first
+    // pixel (docs/ROADMAP.md, sprite drawing time)
+    output            pf_cs,
+    output     [22:0] pf_addr,
 
     // pixel output, one pxl_cen behind hdump as the line buffer reads it
     output            pxl_valid,
@@ -153,6 +159,8 @@ always @(posedge clk) begin
     ln_short <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7 && !ln_done;
 end
 wire [ 3:0] ysub;
+wire        pf_on;
+wire [15:0] pf_code;
 wire [11:0] hzoom;
 wire [ 1:0] pre_shd;
 wire [13:1] dma_addr;
@@ -203,6 +211,8 @@ jt053246 #(
     .shd        ( pre_shd   ),
     .dr_start   ( dr_start  ),
     .dr_busy    ( dr_busy   ),
+    .pf_on      ( pf_on     ),
+    .pf_code    ( pf_code   ),
     .debug_bus  ( 8'd0      ),
     .st_addr    ( 8'd0      ),
     .st_dout    (           )
@@ -305,6 +315,19 @@ assign buf_din = buf_pred;    // the solid/shadow split is in gx_obj_linebuf
 
 // draw_addr = { code, H, Y } -> external { code, Y, H }
 assign rom_addr = { draw_addr[24:7], draw_addr[5:2], draw_addr[6] };
+
+// the hinted tile's first half, as jtframe_draw would ask for it: its code
+// through the same bank mapping (only bits 4, 2 and 0 differ, so the bank
+// bits are this sprite's), its row with vflip applied, half = hflip
+reg [17:0] pf_code18;
+always @* case( pf_code[15:14] )
+    2'd0: pf_code18 = { kx47[4][ 3:0], pf_code[13:0] };
+    2'd1: pf_code18 = { kx47[4][11:8], pf_code[13:0] };
+    2'd2: pf_code18 = { kx47[5][ 3:0], pf_code[13:0] };
+    2'd3: pf_code18 = { kx47[5][11:8], pf_code[13:0] };
+endcase
+assign pf_cs   = pf_on;
+assign pf_addr = { pf_code18, ysub ^ {4{vflip}}, hflip };
 
 jtframe_objdraw_gate #(
     .AW(10), .CW(18), .PW(PW), .ZW(12), .ZI(6), .ZENLARGE(1),

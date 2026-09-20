@@ -78,6 +78,8 @@ module gx_sdram_top (
 
     input  wire        obj_cs,        // gx_obj: its rom_addr, a half-row index ([4:0] within a tile)
     input  wire [19:0] obj_addr,
+    input  wire        obj_pf_cs,     // and the half-row it will ask for next
+    input  wire [19:0] obj_pf_addr,
     output wire        obj_ok,
     output wire [39:0] obj_data
 );
@@ -148,30 +150,9 @@ sdram u_sdram (
     .dout2(p_dout[2]), .req2(p_req[2]), .ack2(p_ack[2])
 );
 
-logic        phy_req  [0:2], phy_we [0:2], phy_we16 [0:2];
-logic [25:0] phy_addr [0:2];
-logic [15:0] phy_wdata[0:2];
-wire         phy_busy [0:2], phy_valid[0:2];
-wire  [63:0] phy_rdata[0:2];
-
-genvar gi;
-generate
-    for (gi = 0; gi < 3; gi = gi + 1) begin : g_phy
-        sdram_phy u_phy (
-            .clk(clk_mem), .reset(reset),
-            .port_addr(p_addr[gi]), .port_wrl(p_wrl[gi]), .port_wrh(p_wrh[gi]),
-            .port_din(p_din[gi]), .port_dout(p_dout[gi]),
-            .port_req(p_req[gi]), .port_ack(p_ack[gi]),
-            .req(phy_req[gi]), .we(phy_we[gi]), .we16(phy_we16[gi]),
-            .addr(phy_addr[gi]), .wdata(phy_wdata[gi]),
-            .busy(phy_busy[gi]), .valid(phy_valid[gi]), .rdata(phy_rdata[gi])
-        );
-    end
-endgenerate
-
 // port 1: nothing yet
-assign phy_req[1] = 1'b0; assign phy_we[1] = 1'b0; assign phy_we16[1] = 1'b0;
-assign phy_addr[1] = 26'd0; assign phy_wdata[1] = 16'd0;
+assign p_req[1] = 1'b0; assign p_addr[1] = 25'd0;
+assign p_wrl[1] = 1'b0; assign p_wrh[1] = 1'b0; assign p_din[1] = 16'd0;
 
 // ------------------------------------------------------------ port 0: graphics
 wire [1:0]  arb0_req, arb0_valid;
@@ -181,9 +162,9 @@ wire [63:0] tile_g, obj_g;
 
 sdram_arbiter #(.N(2)) u_arb0 (
     .clk(clk_mem), .reset(reset),
-    .phy_req(phy_req[0]), .phy_we(phy_we[0]), .phy_we16(phy_we16[0]),
-    .phy_addr(phy_addr[0]), .phy_wdata(phy_wdata[0]),
-    .phy_busy(phy_busy[0]), .phy_valid(phy_valid[0]), .phy_rdata(phy_rdata[0]),
+    .port_addr(p_addr[0]), .port_wrl(p_wrl[0]), .port_wrh(p_wrh[0]),
+    .port_din(p_din[0]), .port_dout(p_dout[0]),
+    .port_req(p_req[0]), .port_ack(p_ack[0]),
     .c_req(arb0_req), .c_addr(arb0_addr),
     .c_valid(arb0_valid), .c_rdata(arb0_rdata),
     .dl_req(1'b0), .dl_addr(26'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
@@ -192,12 +173,14 @@ sdram_arbiter #(.N(2)) u_arb0 (
 gx_rom_port #(.AW(21)) u_tile (
     .clk, .clk_mem, .rst(reset),
     .cs(tile_cs), .addr(tile_addr), .ok(tile_ok), .data(tile_g),
+    .hint_cs(1'b0), .hint_addr(21'd0),
     .base(tile_base),
     .c_req(arb0_req[0]), .c_addr(arb0_addr[25:0]), .c_valid(arb0_valid[0]), .c_rdata(arb0_rdata)
 );
 gx_rom_port #(.AW(20), .PAIR(1)) u_obj (
     .clk, .clk_mem, .rst(reset),
     .cs(obj_cs), .addr(obj_addr), .ok(obj_ok), .data(obj_g),
+    .hint_cs(obj_pf_cs), .hint_addr(obj_pf_addr),
     .base(obj_base),
     .c_req(arb0_req[1]), .c_addr(arb0_addr[51:26]), .c_valid(arb0_valid[1]), .c_rdata(arb0_rdata)
 );
@@ -212,9 +195,9 @@ wire [63:0] arb2_rdata;
 
 sdram_arbiter #(.N(1)) u_arb2 (
     .clk(clk_mem), .reset(reset),
-    .phy_req(phy_req[2]), .phy_we(phy_we[2]), .phy_we16(phy_we16[2]),
-    .phy_addr(phy_addr[2]), .phy_wdata(phy_wdata[2]),
-    .phy_busy(phy_busy[2]), .phy_valid(phy_valid[2]), .phy_rdata(phy_rdata[2]),
+    .port_addr(p_addr[2]), .port_wrl(p_wrl[2]), .port_wrh(p_wrh[2]),
+    .port_din(p_din[2]), .port_dout(p_dout[2]),
+    .port_req(p_req[2]), .port_ack(p_ack[2]),
     .c_req(arb2_req), .c_addr(arb2_addr),
     .c_valid(arb2_valid), .c_rdata(arb2_rdata),
     .dl_req(dl_req), .dl_addr(dl_addr), .dl_data(dl_data), .dl_we16(dl_we16), .dl_busy(dl_busy)
@@ -223,6 +206,7 @@ sdram_arbiter #(.N(1)) u_arb2 (
 gx_rom_port #(.AW(20)) u_cpu (
     .clk, .clk_mem, .rst(reset),
     .cs(cpu_cs), .addr(cpu_addr), .ok(cpu_ok), .data(cpu_data),
+    .hint_cs(1'b0), .hint_addr(20'd0),
     .base(BASE_MAINCPU),
     .c_req(arb2_req[0]), .c_addr(arb2_addr), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata)
 );

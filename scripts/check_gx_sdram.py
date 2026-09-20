@@ -46,6 +46,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("set", choices=build_mra.SETS)
     ap.add_argument("--sim", choices=("verilator", "modelsim"), default="verilator")
+    ap.add_argument("--plus", nargs="*", default=[],
+                    help="extra plusargs for the bench, without the + (HAMMER=1, LATENCY=1)")
     ap.add_argument("--limit", type=int, default=0,
                     help="stream only the first N bytes of each run, and sample within them (a quick ModelSim run)")
     a = ap.parse_args()
@@ -136,13 +138,14 @@ def main():
           f"{ng} CPU granules, {len(trows)} tile rows, {len(orows)} sprite half-rows")
 
     runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
-    r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_sdram_tb"], cwd=REPO,
+    r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_sdram_tb"]
+                       + [f"+{x}" for x in a.plus], cwd=REPO,
                        capture_output=True, text=True)
     log = r.stdout + r.stderr
     (OUT / "sim.log").write_text(log)
     lines = [ln[2:] if ln.startswith("# ") else ln for ln in log.splitlines()]   # ModelSim prefixes "# "
     tail = [ln for ln in lines if ln.startswith("  ") or ln.startswith("FAIL") or ln.startswith("PASS")]
-    print("\n".join(tail[-14:]))
+    print("\n".join(tail[-16:]))
     return 0 if "PASS" in log and "FAIL" not in log else 1
 
 

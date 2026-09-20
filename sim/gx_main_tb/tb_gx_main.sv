@@ -189,7 +189,7 @@ gx_main dut (
     .rst, .clk, .clk_cpu,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
-    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data,
+    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
     .snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din(snd_din_mux),
     .inputs(32'hFFFF_FFFF), .coins(8'h7F), .dsw(16'hFEFF), .service(8'hFF),
     .ee_blank(rst), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
@@ -198,7 +198,9 @@ gx_main dut (
     // +OBJ_HADJ (sexyparo: 0, c00604, fc, -16)
     .obj_hadj(10'(obj_hadj)), .esc_gen(esc_gen[0]), .esc_src(24'(esc_src)), .esc_count(9'(esc_count)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
-    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj()
+    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0), .mem_t(1'b0), .mem_addr(23'd0), .dbg_mem(),
+    // the SDRAM layout's tile_base: where the packed CPU image ends
+    .rom_top(26'h200000)
 );
 
 // ----------------------------------------------------------- trace
@@ -211,6 +213,7 @@ wire [2:0] ipl_mask = dut.u_cpu.flagssr[2:0];
 `else
 wire [2:0] ipl_mask = 3'd0;
 `endif
+int junk_from = 0;
 int obj_hadj = 0, esc_gen = 1, esc_src = 24'hc00000, esc_count = 'h100;
 initial begin
     void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
@@ -378,6 +381,11 @@ initial begin
     fd = $fopen({"debug/", set_name, "-rom/maincpu.bin"}, "rb");
     got = $fread(rom, fd); $fclose(fd);
     if (got != ROM_BYTES) $fatal(1, "maincpu.bin: %0d bytes", got);
+    // +ROM_JUNK_FROM=<hex CPU address>: what the board holds where the .mra
+    // wrote nothing -- MAME's region reads 0 there, the SDRAM whatever was
+    // in it. A BIOS that sums the whole window sees the difference.
+    if ($value$plusargs("ROM_JUNK_FROM=%h", junk_from))
+        for (int i = junk_from; i < ROM_BYTES; i++) rom[i] = 8'(i * 7 + 8'h5a);
     $readmemh({TD, "rom.hex"}, trom_v);
     $readmemh({OD, "rom.hex"}, orom_v);
     fd = $fopen({SD, "snd.hex"}, "r");
