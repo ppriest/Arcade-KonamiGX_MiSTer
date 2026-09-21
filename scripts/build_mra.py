@@ -136,6 +136,17 @@ def cfg_arm(mod, set_name, lo):
             f"obj_size4 = 24'h{lo['obj_size4']:06x}; end  // {set_name}")
 
 
+# The sound board's ROMs, after the graphics (gx_sdram_top's snd_base): the
+# sound CPU's program space, then the K054539 samples, each at its largest.
+SND_CPU = 0x40000
+SND_PCM = 0x400000
+
+
+def snd_base(lo):
+    """Where the sprite region's spread ends: gx_sdram_top's snd_base."""
+    return lo["obj_base"] + 2 * lo["obj_size4"]
+
+
 def rtl_arm(mod):
     """gx_board_cfg.sv's arm for a mod byte, as a dict, or None."""
     src = RTL_CFG.read_text(encoding="utf8")
@@ -378,6 +389,25 @@ def build(set_name, mod, gl, games, blocks, check_only):
         st.data += data
         st.pos += length
     st.fill_to(lo["obj_base"] + used)
+
+    # the sound board: the sound 68000's program, then the K054539 samples,
+    # stored as they come from where the sprite region's spread ends
+    # (gx_sdram_top's snd_base). The samples are padded to SND_PCM so the
+    # stream ends at the same offset from snd_base for every set, which is
+    # the length the DDR3 loader copies.
+    snd = snd_base(lo)
+    # then the RAMs written at runtime: the K054539s' (2 x 32 KB) and the
+    # TMS57002's (256 KB), gx_sound's RAM_OFF and DSP_OFF
+    if snd + SND_CPU + SND_PCM + 0x10000 + 0x40000 > 32 * MB:
+        raise SystemExit(f"{set_name}: the sound board's RAMs end past the 32 MB module")
+    for region, at, pad in (("soundcpu", snd, SND_CPU), ("k054539", snd + SND_CPU, SND_PCM)):
+        size, loads = bri.region_loads(blocks[set_name], region)
+        if size > pad:
+            raise SystemExit(f"{set_name}: {region} is {size:#x}, more than the {pad:#x} reserved")
+        truth = bri.build(set_name, region)
+        st.lines.append(f"        <!-- {region}: MAME's region as it is -->")
+        emit_loads(st, zips, set_name, loads, truth, 0, at, size)
+        st.fill_to(at + pad)
 
     # the default EEPROM image, MAME's "eeprom" region (most sets: "to prevent
     # game booting with error"); the core loads ioctl index 2 into the 93C46

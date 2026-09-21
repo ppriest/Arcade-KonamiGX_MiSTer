@@ -46,6 +46,13 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("set", choices=build_mra.SETS)
     ap.add_argument("--sim", choices=("verilator", "modelsim"), default="verilator")
+    ap.add_argument("--fill", default="", metavar="LO:HI",
+                    help="stream this range of the .mra even where it is zeros. The zero fill "
+                         "padding a graphics region to its nominal size is what drove the "
+                         "one-byte spread off the end of the chip and back over the image, so "
+                         "skipping it (the default, for speed) hides that class of fault.")
+    ap.add_argument("--dense", type=lambda x: int(x, 0), default=0, metavar="N",
+                    help="check every CPU granule below N (a byte address), not just the sample")
     ap.add_argument("--plus", nargs="*", default=[],
                     help="extra plusargs for the bench, without the + (HAMMER=1, LATENCY=1)")
     ap.add_argument("--limit", type=int, default=0,
@@ -67,21 +74,27 @@ def main():
 
     # the stream as runs of data: a zero fill of 4096 bytes or more is skipped
     N = len(img)
+    fill_lo, fill_hi = (int(x, 0) for x in a.fill.split(":")) if a.fill else (0, 0)
+
+    def keep(at):
+        """a zero run at `at` is streamed anyway when --fill covers it"""
+        return fill_lo <= at < fill_hi
+
     runs, bytes_out, cut = [], bytearray(), []     # cut: the tails --limit left out
     i = 0
     while i < N:
-        if img[i] == 0:
+        if img[i] == 0 and not keep(i):
             j = i
-            while j < N and img[j] == 0:
+            while j < N and img[j] == 0 and not keep(j):
                 j += 1
             if j - i >= 4096:
                 i = j
                 continue
         j = i
         while j < N:
-            if img[j] == 0:
+            if img[j] == 0 and not keep(j):
                 k = j
-                while k < N and img[k] == 0:
+                while k < N and img[k] == 0 and not keep(k):
                     k += 1
                 if k - j >= 4096:
                     break
@@ -110,8 +123,9 @@ def main():
     packed = main_img[:0x20000] + main_img[0x200000:]
     ng = min(len(packed), lo["tile_base"]) // 8      # the window past its loads is not in the image
     tile_size4, obj_size4 = lo["tile_size4"], lo["obj_size4"]
+    cpu_gr = sorted(set(sample(ng)) | set(range(min(a.dense // 8, ng))))
     with open(OUT / "cpu.hex", "w") as f:
-        for gi in sample(ng):
+        for gi in cpu_gr:
             if not streamed(8 * gi, 8 * gi + 8):
                 continue
             gran = packed[8 * gi:8 * gi + 8]
@@ -133,6 +147,16 @@ def main():
         for r in sample(len(orows)):
             if spread_ok(lo["obj_base"], obj_size4, r):
                 f.write(f"{r:06x} {orows[r]}\n")
+    # the sound board's ROMs: stored as they come from snd_base, so the SDRAM
+    # granule is the image's own eight bytes, read through the absolute port
+    snd = build_mra.snd_base(lo)
+    snd_end = min(N, snd + build_mra.SND_CPU + build_mra.SND_PCM)
+    with open(OUT / "snd.hex", "w") as f:
+        for gi in sample((snd_end - snd) // 8):
+            g = snd // 8 + gi
+            if not streamed(8 * g, 8 * g + 8):
+                continue
+            f.write(f"{g:06x} {int.from_bytes(img[8 * g:8 * g + 8], 'little'):016x}\n")
     (OUT / "cfg.hex").write_text(f"{lo['tile_base']:07x}\n{lo['obj_base']:07x}\n{tile_size4:06x}\n{obj_size4:06x}\n")
     print(f"stream: {len(bytes_out):#x} bytes in {len(runs)} runs of {len(img):#x}; "
           f"{ng} CPU granules, {len(trows)} tile rows, {len(orows)} sprite half-rows")

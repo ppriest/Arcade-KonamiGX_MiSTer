@@ -84,8 +84,8 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- graphics ROMs
-reg [39:0] trom_v [1 << 20];
-reg [39:0] orom_v [1 << 20];
+reg [39:0] trom_v [1 << 21];   // crzcross's tile region is 2M rows
+reg [39:0] orom_v [1 << 21];
 int        tntiles, ontiles, ROM_LAT = 6;
 wire [23:0] tile_rom_addr;  wire tile_rom_cs;  reg tile_rom_ok = 0; reg [39:0] tile_rom_data;
 wire [22:0] obj_rom_addr;   wire obj_rom_cs;   reg obj_rom_ok = 0;  reg [39:0] obj_rom_data;
@@ -145,9 +145,116 @@ reg         lvbl_st = 1;
 always @(posedge clk) lvbl_st <= vid_lvbl;
 gx_snd_stub u_stub ( .clk, .rst, .frame(lvbl_st & ~vid_lvbl), .wr(snd_wr), .rd(snd_rd && snd_stub != 0),
                      .addr(snd_addr), .din(snd_dout), .dout(stub_dout) );
-wire [7:0]  snd_din_mux = snd_stub != 0 ? stub_dout : snd_din;
+// +SND_REAL=1: the K056800 with the sound board behind it (Phase 3a), the
+// sound 68000 running the real sound program out of +SND_ROM, so the main
+// CPU is answered the way the hardware answers it rather than with MAME's
+// replies replayed by time. The sound board's SDRAM is modelled here: the
+// program at 0, the samples at 0x40000, the K054539s' RAM at 0x440000,
+// the TMS57002's at 0x450000 (gx_sound's offsets from snd_base, which is 0
+// in this model).
+int         snd_real = 0;
+wire [7:0]  k8_host;
+wire        k8_wr, k8_rd, k8_irq;
+wire [2:0]  k8_addr;
+wire [7:0]  k8_din, k8_dout;
+gx_k056800 u_k056800 (
+    .clk, .rst,
+    .h_wr(snd_wr && snd_real != 0), .h_rd(snd_rd && snd_real != 0), .h_addr(snd_addr[2:0]),
+    .h_din(snd_dout), .h_dout(k8_host),
+    .s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout), .irq(k8_irq)
+);
 
-always @(posedge clk) if (snd_rd && snd_stub == 0) begin
+localparam int SMEM = 'h490000 / 8;
+reg  [63:0] smem [0:SMEM-1];
+wire        sm_cs, sm_inval, sm_wreq;
+wire [22:0] sm_addr;
+reg         sm_ok = 0, sm_wbusy = 0;
+reg  [63:0] sm_data;
+wire [25:0] sm_waddr;
+wire [15:0] sm_wdata;
+wire        sm_we16;
+reg  [ 3:0] sm_wcnt = 0;
+wire        dx_cs, dx_inval;
+wire [14:0] dx_addr;
+reg         dx_ok = 0;
+reg  [63:0] dx_data;
+always @(posedge clk) begin
+    sm_ok <= 1'b0;
+    if (sm_cs && !sm_ok) begin
+        sm_data <= (int'(sm_addr) < SMEM) ? smem[sm_addr] : 64'd0;
+        sm_ok   <= 1'b1;
+    end
+    // a write is taken (busy) and finishes a few clocks later, as the arbiter's
+    if (sm_wreq && !sm_wbusy && sm_wcnt == 0) begin
+        if (int'(sm_waddr >> 3) < SMEM) begin
+            if (sm_we16) smem[sm_waddr >> 3][8 * sm_waddr[2:0] +: 16] <= sm_wdata;
+            else         smem[sm_waddr >> 3][8 * sm_waddr[2:0] +: 8]  <= sm_wdata[7:0];
+        end
+        sm_wbusy <= 1'b1; sm_wcnt <= 4'd6;
+    end else if (sm_wcnt != 0) begin
+        sm_wcnt <= sm_wcnt - 4'd1;
+        if (sm_wcnt == 4'd1) sm_wbusy <= 1'b0;
+    end
+end
+
+reg  [3:0] dx_cnt = 0;
+always @(posedge clk) begin
+    dx_ok <= 1'b0;
+    if (!dx_cs || dx_ok) dx_cnt <= 0;
+    else if (dx_cnt == 4'd8) begin
+        dx_data <= smem[('h450000 >> 3) + int'(dx_addr)];
+        dx_ok   <= 1'b1;
+        dx_cnt  <= 0;
+    end else dx_cnt <= dx_cnt + 4'd1;
+end
+
+wire        snd_run;
+wire [63:0] snd_dbg;
+gx_sound u_sound (
+    .clk, .clk_cpu, .rst(rst || !snd_run || snd_real == 0),
+    .snd_base(26'd0),
+    .m_cs(sm_cs), .m_addr(sm_addr), .m_ok(sm_ok), .m_data(sm_data), .m_inval(sm_inval),
+    .w_req(sm_wreq), .w_addr(sm_waddr), .w_data(sm_wdata), .w_we16(sm_we16), .w_busy(sm_wbusy),
+    .x_cs(dx_cs), .x_addr(dx_addr), .x_ok(dx_ok), .x_data(dx_data), .x_inval(dx_inval),
+    .k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
+    .dbg(snd_dbg), .dsp_dbg()
+);
+initial begin
+    string f;
+    void'($value$plusargs("SND_REAL=%d", snd_real));
+    if (snd_real != 0) begin
+        if (!$value$plusargs("SND_ROM=%s", f)) $fatal(1, "+SND_REAL needs +SND_ROM");
+        $readmemh(f, smem);
+    end
+end
+
+wire [7:0]  snd_din_mux = snd_real != 0 ? k8_host : snd_stub != 0 ? stub_dout : snd_din;
+
+// +SND_LOG=n: the first n mailbox events of the real sound board -- what
+// the main CPU sends (H>S) and what the sound CPU answers (S>H) -- with the
+// frame, and a line each frame the sound CPU's address and access count, so
+// the exchange can be read directly instead of inferred from the main CPU's
+// writes
+int snd_log = 0;
+initial void'($value$plusargs("SND_LOG=%d", snd_log));
+reg [15:0] snd_acc_l = 0;
+always @(posedge clk) if (snd_real != 0 && snd_log > 0) begin
+    // host registers 4-6 are the volume and mute (the main CPU ramps the volume
+    // with hundreds of 0x35 writes); only the command registers are logged
+    if (snd_wr && snd_addr[3] == 1'b0 && (snd_addr[2:0] < 3'd4 || snd_addr[2:0] == 3'd7)) begin
+        $display("SNDLOG f%0d H>S reg %0d = %02x", frame, snd_addr[2:0], snd_dout); snd_log--;
+    end
+    if (k8_wr) begin
+        $display("SNDLOG f%0d S>H reg %0d = %02x", frame, k8_addr, k8_din); snd_log--;
+    end
+end
+// gx_sound dbg: { 9'd0, accesses[15:0], irq2, IRQ 1, rst, 4'd0, sctrl, address }
+always @(posedge clk) if (snd_real != 0 && snd_log > 0 && !vid_lvbl && lvbl_st) begin
+    $display("SNDLOG f%0d sound CPU at %06x, %0d accesses, irq2 %0d, irq1 %0d, in reset %0d, sctrl %02x",
+             frame, snd_dbg[23:0], snd_dbg[54:39], snd_dbg[38], snd_dbg[37], snd_dbg[36], snd_dbg[31:24]);
+end
+
+always @(posedge clk) if (snd_rd && snd_stub == 0 && snd_real == 0) begin
     int k, target;
     k = rp_next[snd_addr];
     if (snd_time_from >= 0 && frame >= snd_time_from) begin
@@ -190,6 +297,10 @@ gx_main dut (
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
+    // the ROM readback windows: the bench answers with zero, which is what
+    // the board did before they existed
+    .tile_base(26'(tile_base)), .obj_base(26'(obj_base)),
+    .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
     .snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din(snd_din_mux),
     .inputs(32'hFFFF_FFFF), .coins(8'h7F), .dsw(16'hFEFF), .service(8'hFF),
     .ee_blank(rst), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
@@ -198,9 +309,13 @@ gx_main dut (
     // +OBJ_HADJ (sexyparo: 0, c00604, fc, -16)
     .obj_hadj(10'(obj_hadj)), .esc_gen(esc_gen[0]), .esc_src(24'(esc_src)), .esc_count(9'(esc_count)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
-    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0), .mem_t(1'b0), .mem_addr(23'd0), .dbg_mem(),
-    // the SDRAM layout's tile_base: where the packed CPU image ends
-    .rom_top(26'h200000)
+    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
+    // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
+    // sets it larger to get the behaviour before gx_main bounded it, when a
+    // read above the image's length returned what follows it in SDRAM --
+    // with +ROM_JUNK_FROM, what the board did.
+    .rom_top(26'(rom_top)), .pause_cpu(pause_cpu), .snd_run,
+    .mem_t(md_t), .mem_addr(23'(md_a)), .dbg_mem(dbg_mem)
 );
 
 // ----------------------------------------------------------- trace
@@ -214,6 +329,72 @@ wire [2:0] ipl_mask = dut.u_cpu.flagssr[2:0];
 wire [2:0] ipl_mask = 3'd0;
 `endif
 int junk_from = 0;
+
+// The graphics ROM readback port (0xd00000, 0xd4a000), answered from the
+// same rows the drawing ports read, in the SDRAM image's layout: one row per
+// granule, the region's bytes at 0-4. The set's own layout comes in as
+// +TILE_BASE/+OBJ_BASE (build_mra.rtl_arm); answering zero here is why no
+// bench could see Crazy Cross's ROM check fail.
+int tile_base = 'h200000, obj_base = 'ha00000;
+initial begin
+    void'($value$plusargs("TILE_BASE=%h", tile_base));
+    void'($value$plusargs("OBJ_BASE=%h", obj_base));
+end
+wire        gfx_cs;
+wire [22:0] gfx_addr;
+reg         gfx_ok = 0;
+reg  [63:0] gfx_data = 0;
+always @(posedge clk) begin
+    gfx_ok <= 1'b0;
+    if (gfx_cs && !gfx_ok) begin
+        int a; reg [39:0] row;
+        a = int'(gfx_addr) << 3;
+        if (a >= obj_base)       row = orom_v[(a - obj_base) >> 3];
+        else if (a >= tile_base) row = trom_v[(a - tile_base) >> 3];
+        else                     row = 40'd0;
+        gfx_data <= { 24'd0, row[7:0], row[15:8], row[23:16], row[31:24], row[39:32] };
+        gfx_ok   <= 1'b1;
+    end
+end
+int rom_top = 'h200000;
+// +PAUSE_AT=<frame>: hold the CPU from that frame on, as the Pause button
+// does, so what the video path keeps doing without it can be looked at
+int pause_at = 0, pause_for = 10;
+// +MEMDUMP=<hex byte address>: read four words there the way
+// scripts/memdump.py does on the board, and print them. The board reads the
+// third word of every group with its high byte zero; this is the same
+// request through the same logic, against the bench's own ROM.
+int  md_from = 0;
+reg  md_t = 0;
+reg [22:0] md_a = 0;
+wire [87:0] dbg_mem;
+initial void'($value$plusargs("MEMDUMP=%h", md_from));
+
+// the same four-word groups scripts/memdump.py asks the board for, through
+// the same logic, once the game is up
+reg [2:0] md_st = 0;
+reg [2:0] md_g  = 0;
+reg [7:0] md_wait = 0;
+always @(posedge clk) if (md_from != 0) case (md_st)
+    3'd0: if (frame == 4) begin md_a <= 23'(md_from >> 1); md_g <= 0; md_st <= 3'd1; end
+    3'd1: begin md_t <= ~md_t; md_wait <= 0; md_st <= 3'd2; end
+    3'd2: begin
+        md_wait <= md_wait + 8'd1;
+        if (md_wait > 8'd4 && dbg_mem[64] && dbg_mem[87:65] == md_a + 23'd3) begin
+            $display("MEMDUMP %06x  %04x %04x %04x %04x", { md_a, 1'b0 },
+                     dbg_mem[15:0], dbg_mem[31:16], dbg_mem[47:32], dbg_mem[63:48]);
+            if (md_g == 3'd3) md_st <= 3'd3;
+            else begin md_g <= md_g + 3'd1; md_a <= md_a + 23'd4; md_st <= 3'd1; end
+        end
+    end
+    default: ;
+endcase
+reg pause_cpu = 0;
+initial begin
+    void'($value$plusargs("PAUSE_AT=%d", pause_at));
+    void'($value$plusargs("PAUSE_FOR=%d", pause_for));
+end
+initial void'($value$plusargs("ROM_TOP=%h", rom_top));
 int obj_hadj = 0, esc_gen = 1, esc_src = 24'hc00000, esc_count = 'h100;
 initial begin
     void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
@@ -239,6 +420,11 @@ always @(posedge clk) if (!rst) begin
     end
     if (!vid_lvbl && lvbl_l) begin
         frame++;
+        // paused for +PAUSE_FOR frames (10 by default), then released: the
+        // writes either side must still be MAME's, in MAME's order, or an
+        // ack was dropped over the pause
+        if (pause_at != 0)
+            pause_cpu <= frame >= pause_at && frame < pause_at + pause_for;
         $fdisplay(ft, "# frame %0d", frame);
         $fflush(ft);                    // a snapshot taken here keeps the trace whole
         if (frame % 20 == 0) $display("frame %0d  seq %0d  %t", frame, seq, $time);

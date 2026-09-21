@@ -130,7 +130,17 @@ module gx_main (
     input             peek_t,                // JTAG: read one granule of the packed image
     input      [19:0] peek_addr,
     // JTAG: read four words of anything the CPU can read (scripts/memdump.py)
+    input             pause_cpu,           // hold the 68020 where it is (the Pause button)
+    output            snd_run,             // control_w bit 22: the sound CPU runs
     input      [25:0] rom_top,             // SDRAM bytes the packed CPU image occupies
+    // the graphics regions, and the port the ROM readback windows read them
+    // back through
+    input      [25:0] tile_base,
+    input      [25:0] obj_base,
+    output reg        gfx_cs,
+    output reg [22:0] gfx_addr,
+    input             gfx_ok,
+    input      [63:0] gfx_data,
     input             mem_t,
     input      [23:1] mem_addr,
     output     [87:0] dbg_mem                // { addr, done, the four words }
@@ -151,6 +161,9 @@ wire [3:0] pdiv_n = wrport2[1:0] == 2'd0 ? 4'd8 :    // 6 MHz
                     wrport2[1:0] == 2'd1 ? 4'd6 :    // 8 MHz
                     wrport2[1:0] == 2'd2 ? 4'd4 : 4'd3;
 assign pxl_cen_o = pxl_cen;
+// control_w (0xd58000) bits 23:16 are wrport2; bit 22 releases the sound CPU
+// and DSP from reset (konamigx.cpp control_w)
+assign snd_run = wrport2[6];
 
 always @(posedge clk) begin
     pdiv     <= pdiv + 4'd1 >= pdiv_n ? 4'd0 : pdiv + 4'd1;
@@ -171,7 +184,18 @@ reg         ready;
 reg  [ 2:0] ipl_n;                          // active low, as the kernel expects
 wire        mem_needed = busstate != 2'b01;
 wire        fast_rdy;                       // the unit's ack, straight to the kernel
-wire        cpu_clkena = !mem_needed || ready || fast_rdy;
+// Pause holds the kernel's clock enable low, which is a wait state as far as
+// it is concerned: it stops between instructions or mid-access, and resumes
+// exactly where it was. Everything else keeps running -- the video, so the
+// picture stays up, and the sprite DMA, which re-reads the same list.
+//
+// The handshake has to be held with it. An access that completes while
+// paused is acknowledged to a kernel that is not listening, so the two
+// places that retire an ack on a kernel edge wait for the pause to lift as
+// well; otherwise the ack is lost and the kernel repeats the access when it
+// wakes -- the fault the ESC's release had (LESSONS_LEARNED).
+wire        cpu_clkena = (!mem_needed || ready || fast_rdy) && !pause_cpu;
+wire        cpu_take   = cpu_cen && !pause_cpu;
 
 TG68KdotC_Kernel #(
     .SR_Read(2), .VBR_Stackframe(2), .extAddr_Mode(2),
@@ -245,6 +269,7 @@ gx_video u_video (
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .obj_hadj,
     .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
+    .rmrd_addr, .tile_gfx_bank,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
     .pal_we(pal_fwd_we), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }),
@@ -322,7 +347,7 @@ reg        esc_seen;
 // ------------------------------------------------------------ access unit
 // A request is { we, addr, be, data }; the unit answers with u_din and a
 // one-clock u_ack.
-localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4;
+localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
 reg         u_ack, u_esc, u_md;             // whose access is in progress
@@ -365,6 +390,70 @@ assign md_ack  = u_ack && u_md;
 wire [23:0] cpu_end    = 24'h200000 + ( rom_top[23:0] - 24'h020000 );
 wire        rom_backed = ub < 24'h020000 || ( ub >= 24'h200000 && ub < cpu_end );
 
+function [7:0] gfx_byte( input [2:0] k );
+    gfx_byte = gfx_data[8*k +: 8];
+endfunction
+
+// ------------------------------------------------------ ROM readback windows
+// The game checksums its own graphics ROMs by reading them back through the
+// chips: 0xd00000 the K056832's, 0xd4a000 the K055673's. Without them every
+// ROM test reports BAD, and Crazy Cross will not go in-game.
+//
+// Both windows name a byte of a region whose rows are five bytes, which the
+// SDRAM image holds as eight (four, then the fifth at offset 4). MAME's
+// k056832 rom_read_b computes base = (o/4)*5 + (o%4)*2 and reads base, then
+// base+1 on the next read of the same address -- m_rom_half, which a VRAM
+// read clears. Dividing that by five to find the row is avoidable: with
+// q = o/4 and r = o%4 the row and the byte within it fall out of r alone.
+wire [22:1] rmrd_addr;
+wire [31:0] tile_gfx_bank;
+reg         rom_half;
+reg  [ 2:0] gfx_sel;                         // byte within the granule
+reg         gfx_five;                        // the fifth-bit part (one byte)
+reg         gfx_word;                        // a 16-bit word, not a byte
+
+// ub is the word address; the window is read a byte at a time, so which byte
+// comes from the strobe -- UDS the even one, LDS the odd. Taking ub alone
+// gave the even byte for both lanes, so every other byte of the checksum was
+// a repeat and the test read the ROM as something it is not.
+wire [23:0] tr_ba   = ub + ( ube[1] ? 24'd0 : 24'd1 );
+wire [24:0] tr_o    = 25'(tr_ba - 24'hd00000) + { tile_gfx_bank[11:0], 13'd0 };
+wire [22:0] tr_q    = tr_o[24:2];
+wire [ 1:0] tr_r    = tr_o[1:0];
+// { row offset from q, byte within the row } for each r, and again for the
+// second half (base+1)
+reg  [22:0] tr_row;
+reg  [ 2:0] tr_bir;
+always @* begin
+    case( { rom_half, tr_r } )
+        3'b000: begin tr_row = tr_q;            tr_bir = 3'd0; end
+        3'b001: begin tr_row = tr_q;            tr_bir = 3'd2; end
+        3'b010: begin tr_row = tr_q;            tr_bir = 3'd4; end
+        3'b011: begin tr_row = tr_q + 23'd1;    tr_bir = 3'd1; end
+        3'b100: begin tr_row = tr_q;            tr_bir = 3'd1; end
+        3'b101: begin tr_row = tr_q;            tr_bir = 3'd3; end
+        3'b110: begin tr_row = tr_q + 23'd1;    tr_bir = 3'd0; end
+        3'b111: begin tr_row = tr_q + 23'd1;    tr_bir = 3'd2; end
+    endcase
+end
+// the fifth byte of a row sits at offset 4 of its granule, the other four at 0-3
+wire [25:0] tr_byte = tile_base + { tr_row, 3'b000 } + { 23'd0, tr_bir };
+
+// the sprite window: eight offsets, four words of the four-byte part and two
+// bytes of the fifth-bit part (k055673_5bpp_rom_word_r)
+wire [ 2:0] sr_off  = ub[3:1];
+wire [22:1] sr_w    = rmrd_addr + ( sr_off == 3'd0 ? 22'd2 :
+                                    sr_off == 3'd1 ? 22'd3 :
+                                    sr_off == 3'd5 ? 22'd1 : 22'd0 );
+// sr_w counts in words, so its value is the byte offset halved: the region
+// byte is i = 2*sr_w, and a row's four bytes are the granule's first four
+wire [25:0] sr_byte4 = obj_base + { 2'd0, sr_w[22:2], 3'b000 } + { 24'd0, sr_w[1], 1'b0 };
+// cases 2,3 and 6,7: romofs/2 is a byte of the fifth-bit part, +1 for 2,3.
+// romofs is rmrd_addr's own value, so romofs/2 is it shifted once more.
+wire [22:0] sr_five = { 1'b0, rmrd_addr[22:2] } + ( sr_off[2] ? 23'd0 : 23'd1 );
+wire [25:0] sr_byte5 = obj_base + { sr_five, 3'b000 } + 26'd4;
+wire        sr_is5   = sr_off[1:0] == 2'd2 || sr_off[1:0] == 2'd3;
+
 // ------------------------------------------------------------ ROM cache
 reg         cr_cs;
 reg  [22:1] cr_addr;
@@ -392,6 +481,19 @@ always @(posedge clk) begin
         wrport1_0 <= 0; wrport1_1 <= 0; wrport2 <= 0; vram_bank <= 0;
         esc_start <= 0; esc_started <= 0;
     end else case( ust )
+    // the granule the readback window asked for
+    U_GFX: if( gfx_ok ) begin
+        gfx_cs <= 0;
+        // a word from the sprite window, or the byte in the lane that asked
+        u_din  <= gfx_word  ? { gfx_byte(gfx_sel + 3'd1), gfx_byte(gfx_sel) }
+                : ube_r[1]  ? { gfx_byte(gfx_sel), 8'd0 }
+                            : { 8'd0, gfx_byte(gfx_sel) };
+        // the K056832 window alternates halves on repeated reads of the same
+        // address; the K055673 window does not
+        if( !gfx_five && !gfx_word ) rom_half <= ~rom_half;
+        u_ack <= 1;
+        ust   <= U_IDLE;
+    end
     U_IDLE: begin
         if( cst == C_ESC ) esc_started <= 0;
         // the ESC while it is busy, the CPU otherwise: decode and issue
@@ -416,6 +518,19 @@ always @(posedge clk) begin
                 // esc_w: the 32-bit write arrives as two words; the second starts it
                 if( uwe && !ub[1] ) esc_hi <= ud;
                 if( uwe &&  ub[1] ) begin esc_data <= { esc_hi[7:0], ud }; esc_start <= 1; esc_started <= 1; end
+            end else if( ub >= 24'hd00000 && ub < 24'hd02000 ) begin
+                // K056832 ROM readback, a byte at a time
+                gfx_cs <= 1; gfx_addr <= tr_byte[25:3]; gfx_sel <= tr_byte[2:0];
+                gfx_five <= 1'b0; gfx_word <= 1'b0;
+                ust <= U_GFX;
+            end else if( ub >= 24'hd4a000 && ub < 24'hd4a010 ) begin
+                // K055673 ROM readback: four words of the four-byte part,
+                // two bytes of the fifth-bit part
+                gfx_cs <= 1;
+                gfx_addr <= sr_is5 ? sr_byte5[25:3] : sr_byte4[25:3];
+                gfx_sel  <= sr_is5 ? sr_byte5[2:0]  : sr_byte4[2:0];
+                gfx_five <= sr_is5; gfx_word <= !sr_is5;
+                ust <= U_GFX;
             end else if( ub >= 24'hd20000 && ub < 24'hd24000 ) begin
                 spr_ram_cs <= 1; spr_ram_addr <= ua[13:1];
                 if( uwe ) spr_ram_we <= ube;
@@ -473,7 +588,7 @@ always @(posedge clk) begin
                 // (change_rambank); 0xda2000 is the same page again
                 vram_addr <= { (vram_bank[4:1] & 4'b1100) | { 2'b00, vram_bank[1:0] }, ua[12:1] };
                 vram_be   <= ube;
-                if( uwe ) vram_we <= 1; else vram_rd <= 1;
+                if( uwe ) vram_we <= 1; else begin vram_rd <= 1; rom_half <= 1'b0; end
                 usrc <= R_VRAM; ucnt <= 3'd3;
             end
         end
@@ -520,7 +635,7 @@ always @(posedge clk) begin
         C_BUSY: if( u_ack && !u_esc && !u_md ) begin
             cpu_din <= u_din;
             if( esc_started ) begin cst <= C_ESC; esc_seen <= 0; end
-            else if( cpu_cen ) cst <= C_IDLE;      // taken this clock (fast_rdy)
+            else if( cpu_take ) cst <= C_IDLE;     // taken this clock (fast_rdy)
             else begin ready <= 1; cst <= C_READY; end
         end
         C_ESC: begin
@@ -535,7 +650,7 @@ always @(posedge clk) begin
         // on the board, with the SDRAM's odd latencies, half of those were the
         // wrong one -- the ack was lost, the kernel repeated its write, and the
         // ESC ran the same command again, for ever (LESSONS_LEARNED).
-        C_READY: if( cpu_cen ) begin ready <= 0; cst <= C_IDLE; end
+        C_READY: if( cpu_take ) begin ready <= 0; cst <= C_IDLE; end
     endcase
 end
 

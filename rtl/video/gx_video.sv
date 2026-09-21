@@ -97,6 +97,9 @@ module gx_video #(
     input      [39:0] obj_rom_data,
     output     [22:0] obj_pf_addr,   // the row the sprite scan will draw next
     output            obj_pf_cs,
+    // what the CPU's ROM readback windows need from the two chips
+    output     [22:1] rmrd_addr,    // K053246 registers 4, 6, 7
+    output     [31:0] tile_gfx_bank,// K056832 registers 0x1a, 0x1b
 
     // ---- mixer (K055555, K054338, palette)
     input             k55_we,
@@ -216,7 +219,7 @@ gx_tilemap u_tm (
     .reg_we(tm_reg_we), .reg_addr(tm_reg_addr), .reg_din(tm_reg_din), .reg_be(tm_reg_be),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be, .vram_dout,
-    .offs_x, .offs_y, .dbg_regs5(tm_regs5),
+    .offs_x, .offs_y, .dbg_regs5(tm_regs5), .gfx_bank(tile_gfx_bank),
     .line_start, .line_y, .busy(), .unsupported(),
     .rom_addr(tile_rom_addr), .rom_cs(tile_rom_cs), .rom_ok(tile_rom_ok), .rom_data(tile_rom_data),
     .rd_x( bx[8:0] - 9'd24 ), .rd_pix(tm_pix)
@@ -237,7 +240,7 @@ gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .opri(k55[15]), .oinprion(k55[19]), .ocblk(k55[27]), .wrport2, .primode,
     .shadowon, .shdpri0(k55[37]), .shdpri1(k55[38]), .shdpri2(k55[39]), .spri_min,
     .rom_addr(obj_rom_addr), .rom_cs(obj_rom_cs), .rom_ok(obj_rom_ok), .rom_data(obj_rom_data),
-    .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs),
+    .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs), .rmrd_out(rmrd_addr),
     .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
     .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
     .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short)

@@ -48,6 +48,10 @@ module gx_rom_port #(
 
     input             hint_cs,      // PAIR=1: a granule the client will want
     input  [AW-1:0]   hint_addr,
+    // drop every held granule: for a client that also writes the memory it
+    // reads (the K054539s' RAM), since held granules are otherwise trusted
+    // never to go stale
+    input             inval,
 
     input  [25:0]     base,         // the region's byte address in SDRAM
     output reg        c_req,        // arbiter client (clk_mem)
@@ -105,6 +109,7 @@ always @(posedge clk) begin
         busy <= 0; s_val <= {NS{1'b0}}; vic <= 0; ansd <= 0;
     end else begin
         if( !cs ) ansd <= 0;
+        if( inval ) s_val <= {NS{1'b0}};
         if( busy ) begin
             if( done ) begin
                 busy         <= 0;

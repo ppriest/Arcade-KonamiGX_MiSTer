@@ -37,6 +37,14 @@ set_global_assignment -name VERILOG_FILE rtl/video/gx_obj.v
 set_global_assignment -name VERILOG_FILE rtl/video/gx_obj_linebuf.v
 set_global_assignment -name VERILOG_FILE rtl/video/gx_mixer.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_video.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68k.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/uaddrPla.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_k056800.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_k054539.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_tms57002.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_sound.sv
 
 # jtframe primitives the vendored chip modules instantiate -- see
 # rtl/jtframe/PROVENANCE.md. Bench-only jtframe files live in sim/jtframe_ver/

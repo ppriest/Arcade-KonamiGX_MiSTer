@@ -96,6 +96,9 @@ module gx_obj #(parameter
     // pixel (docs/ROADMAP.md, sprite drawing time)
     output            pf_cs,
     output     [22:0] pf_addr,
+    // the K053246's ROM readback address (registers 4, 6, 7), which the CPU
+    // reads its sprite ROM back through at 0xd4a000
+    output     [22:1] rmrd_out,
 
     // pixel output, one pxl_cen behind hdump as the line buffer reads it
     output            pxl_valid,
@@ -166,6 +169,7 @@ wire [ 1:0] pre_shd;
 wire [13:1] dma_addr;
 wire [15:0] dma_data;
 wire [22:1] rmrd_addr;
+assign rmrd_out = rmrd_addr;
 
 jt053246 #(
     .K55673   ( 0       ),

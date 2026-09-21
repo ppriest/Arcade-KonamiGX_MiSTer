@@ -91,6 +91,7 @@ gx_video dut (
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,
     .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .obj_hadj(10'(obj_hadj)), .obj_dma_trig(1'b0), .obj_dma_hold(1'b0),
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
+    .rmrd_addr(), .tile_gfx_bank(),
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pal_we, .pal_addr, .pal_din,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy()
@@ -101,12 +102,12 @@ reg [15:0] tregs_v [32];
 reg [ 7:0] tbank_v [8];
 reg [15:0] vram_v  [65536];
 reg [ 7:0] offs_v  [8];
-reg [39:0] trom_v  [1 << 20];     // K056832 5 bpp rows
+reg [39:0] trom_v  [1 << 21];     // K056832 5 bpp rows (fantjour's region is the largest)
 reg [15:0] spr_v   [2048];
 reg [ 7:0] k46_v   [8];
 reg [15:0] k47_v   [8];
 reg [ 7:0] omisc_v [16];
-reg [39:0] orom_v  [1 << 20];     // K055673 half rows
+reg [39:0] orom_v  [1 << 21];     // K055673 half rows
 reg [ 7:0] k55_v   [64];
 reg [15:0] k338_v  [16];
 reg [23:0] pal_v   [8192];

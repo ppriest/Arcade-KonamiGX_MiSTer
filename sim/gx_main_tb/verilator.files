@@ -21,6 +21,13 @@ rtl/video/gx_video.sv
 rtl/gx_eeprom93c46.v
 rtl/gx_esc.v
 rtl/gx_snd_stub.sv
+rtl/cpu/fx68k/fx68k.sv
+rtl/cpu/fx68k/fx68kAlu.sv
+rtl/cpu/fx68k/uaddrPla.sv
+rtl/sound/gx_k056800.sv
+rtl/sound/gx_k054539.sv
+rtl/sound/gx_tms57002.sv
+rtl/sound/gx_sound.sv
 obj_verilator/tg68k_ghdl/TG68KdotC_Kernel.v
 rtl/cpu/gx_romcache.sv
 rtl/gx_main.sv

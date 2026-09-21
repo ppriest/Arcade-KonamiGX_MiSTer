@@ -946,6 +946,60 @@ without it the games with one have no sprites. Exit criteria: three Type 2 sets 
 assumption in [`THIRD-PARTY.md`](../THIRD-PARTY.md). Exit criteria: register-write traces captured from MAME reproduce
 correct audio, verified by ear and by a decoded capture against MAME's own output.
 
+Split so that the part that unblocks games comes first. Crazy Cross's power-on check, and
+plausibly Fantastic Journey's palette, wait on the sound CPU answering over the K056800; the
+board's `gx_snd_stub` was built from Daisu-Kiss's test alone and answers the others wrongly. A
+real sound CPU running the real sound program answers every game's test by construction, where
+a better stub would mean guessing each game's protocol.
+
+- **3a -- the sound CPU answering.** `gxsndmap`: a 68000 at 8 MHz (`SUB_CLOCK/2`), ROM
+  0x000000-0x03ffff, RAM 0x100000-0x10ffff, the two K054539s at 0x200000 (#1 high byte, #2 low),
+  the TMS57002 at 0x300001 and 0x500000, the K056800's sound side at 0x400000. Released from
+  reset by bit 22 of the main CPU's control write. IRQ 2 is the K054539's timer, rising edge,
+  enabled by bit 0 of the control word at 0x500000 -- so the 054539's timer is needed before any
+  audio. For 3a the 054539s are their register files, timer and ROM readback; the TMS57002 is its
+  status and control words.
+  * **Done: the ROMs in the SDRAM image** (after the sprite spread; every set fits 32 MB, crzcross
+    and puzldama at 95%). Adding them needed the sprite transform bounded above: the padding
+    between the two regions otherwise wraps past 32 MB into the BIOS, yesterday's fault again.
+  * Budget: logic is at 43%, RAM blocks at 81% (107 M10K free). **Decided:** the sound CPU's
+    64 KB work RAM is block RAM (~52 M10K; it is on every instruction's path), and each K054539's
+    32 KB (MAME's `m_ram`, 0x8000) goes in SDRAM -- the two together with the CPU's would be
+    128 KB against ~107 left. The chips reach that RAM through a byte-at-a-time pointer port
+    (registers 0x22d/0x22e, `rom_addr == 0x80`), and even at audio rate eight channels at 48 kHz
+    is little bandwidth. The TMS57002's 256 KB (3c) is SDRAM for the same reason.
+  * The K054539's timer drives IRQ 2: a write to 0x227 sets a square wave of
+    `(38 + n) * clock / 384 / 14400` Hz (clock 18.432 MHz), output while 0x22f bit 5 is set;
+    the sound CPU interrupts on its rising edge. Register 0x22d reads the sample ROM's bank
+    `rom_addr` at an auto-incrementing pointer (or the RAM when `rom_addr == 0x80`), which is
+    how the sound CPU checksums the sample ROMs its power-on test reports.
+  * **Crazy Cross gets past its power-on check on the board** with the sound board selected
+    (build 46, fx68k). Probe S shows the sound CPU released and running its main loop
+    (0x1990), and the main CPU in the game's frame loop at 0x210090 -- wait for the vblank
+    flag, then program the K053246 -- where with the stub, and with TG68K, it sat in the
+    handshake subroutine at 0x20aa1c. In the board bench (`check_gx_main --snd-real
+    +SND_LOG=n`) the whole exchange runs: `F7` acknowledged, the pattern echo, the heartbeat,
+    `FE` answered with `C0` and then the result `01`.
+  * **TG68K was the wrong core for it.** Chosen for convenience (one Verilog conversion for both
+    CPUs); Seta had measured it 3.5x fast on a plain 68000, and here it answered the handshake
+    visibly early and the board sat in it. fx68k, cycle-accurate, is what got through. The
+    main CPU stays TG68K.C, a 68EC020 that fx68k does not implement.
+  * Open: the sound program holds `C0` for 70 frames in the bench, where gx_snd_stub's notes
+    say MAME holds it about 230. The main CPU accepts both; the difference is unexplained.
+  * Open: no sound yet -- the voices are 3b. And the OSD still defaults to the stub.
+- **3b -- audio.** The K054539s' PCM and the mix.
+- **3c -- the DASP effects.** The TMS57002, its RAM in SDRAM.
+  * `rtl/sound/gx_tms57002.sv`, against MAME's tms57002 through a Python model of it
+    (`scripts/tms57002.py`) and MAME's own host traffic (`scripts/mame/dasp_log.lua`,
+    `scripts/check_gx_tms57002.py`). Two clocks a word at 48 MHz: 500 words' time a sample
+    against the programs' 250, the rest for SDRAM stalls. The RAM is at snd_base + 0x450000.
+  * Every set uses 256 KB in WORD mode; st0 SEL varies (01c6ba, 0186ba, 01869a), so both the
+    byte and the nibble layouts are in.
+  * Fantastic Journey: the self-test program (a RAM test, 140 words) returns `e4 02 00 00` as
+    in MAME, and gx_main_tb with the real sound board matches MAME's main-CPU writes through
+    frame 200.
+  * Open: the outputs (`so`) are not yet routed anywhere (3b), and the inputs are zero.
+
 **Phase 4 — The rest of the Type 2 list, and accuracy.**
 
 The remaining nineteen sets, every clone's `.mra`, the LE2 light guns, the four sprite ROM layouts,
@@ -1187,4 +1241,27 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
      piece counts are 0 to 4, the scale MAME shows; and the sprite list's tail slots read
      `00f0 00f1 ... 00ff` -- the slot numbers MAME's fill writes, bit 15 clear -- where they held
      0x9052 with four still active. 35 active entries, contiguous, no strays.
+   - **On the board, still wrong** (each needs the next measurement named, not another guess):
+     * **Crazy Cross's RAM/ROM check: waits for Phase 3.** The BAD entries are the checks the
+       *sound* CPU does. The main CPU asks for them over the K056800 mailbox and waits for the
+       reply at 0xd52010 (0x20a826-0x20a876), with a countdown in d7 that marks the test failed
+       when no answer comes (0x20a81c). The board has no sound CPU -- the mailbox is an echo --
+       so every one times out. 7C/S and 9C/S are the sound program ROMs; 7G/M is where
+       315a18.7g, a K054539 sample ROM, sits: on the main board but the sound CPU's to read.
+       Found in simulation: MAME's reference extended to frame 800 (it ended at 399, before the
+       test, which is why the first runs matched), and the first divergence is the return
+       address 0x20a836 against MAME's 0x20a880 at MAME frame 545. MAME shows the check all OK
+       at frame 600. The graphics entries were OK before the readback windows existed, so those
+       windows were not the blocker; they are MAME's behaviour and stay.
+     * **Fantastic Journey's pens.** The video path is not at fault: `check_gx_video
+       fantjour-f1800` is 64,512 of 64,512 against MAME. So it is the state the board builds.
+       Palette regions 0xd92000 and 0xd94000 read empty where MAME's capture has 594 and 155
+       nonzero bytes, while 0xd96400 matches exactly (192 of 256) -- but the board was at frame
+       300 and the capture is frame 1800, so that comparison proves nothing on its own. The
+       reference trace is built (`debug/fantjour-sys`, 5.9M accesses) and the write-stream
+       comparison to frame 1820 is the measurement that settles it.
+     * **Sexy Parodius runs slow.** Unmeasured. Slow means the CPU is starved, which on this board
+       has meant the ESC holding the bus (probe I: `esc_busy`, `count2`) or the CPU port losing
+       SDRAM time; `cpu_accesses` per frame from probe F against daiskiss's is the first number to
+       take.
    - Stacked shadows (MAME_KLUDGES), the other `.mra` sets on the board, the `.nvm` EEPROM save.

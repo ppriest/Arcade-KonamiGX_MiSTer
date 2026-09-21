@@ -29,7 +29,12 @@ assign ADC_BUS  = 'Z;
 assign USER_OUT = '1;
 assign {UART_RTS, UART_TXD, UART_DTR} = 0;
 assign {SD_SCK, SD_MOSI, SD_CS} = 'Z;
-assign DDRAM_CLK = clk_sys;           // the fast ROM load's (gx_rom_loader, ddram_phy)
+// DDR3 has two masters: the ROM loader while a game loads, the rotator
+// after. They never overlap -- the core is in reset with no picture while
+// the load runs -- so the mux is on ldr_busy (at the bottom of this file).
+// MISTER_FB is defined in both .qsf revisions for the rotator; its forced
+// blank is unused.
+assign FB_FORCE_BLANK = 0;
 
 assign VGA_F1 = 0;
 assign VGA_SCALER  = 0;
@@ -52,9 +57,16 @@ assign BUTTONS   = 0;
 
 wire [1:0] ar = status[122:121];
 
-// 288 x 224 visible
-assign VIDEO_ARX = (!ar) ? 12'd4 : (ar - 1'd1);
-assign VIDEO_ARY = (!ar) ? 12'd3 : 12'd0;
+wire [1:0] rot_sel    = status[64:63];
+wire       rotate_en  = rot_sel != 2'd0;
+wire       rotate_ccw = rot_sel == 2'd2;
+wire       flip_180   = status[65];
+
+// 288 x 224 visible, on a 4:3 screen -- 3:4 when it is turned on its side
+wire [11:0] base_arx = rotate_en ? 12'd3 : 12'd4;
+wire [11:0] base_ary = rotate_en ? 12'd4 : 12'd3;
+assign VIDEO_ARX = (!ar) ? base_arx : (ar - 1'd1);
+assign VIDEO_ARY = (!ar) ? base_ary : 12'd0;
 
 `include "build_id.v"
 localparam CONF_STR = {
@@ -62,6 +74,15 @@ localparam CONF_STR = {
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	// HDMI only: the analog output keeps the native raster either way. Every
+	// GX set is horizontal, so there is no per-set default to follow -- this
+	// is for a rotated monitor, not for the game.
+	"O[64:63],Rotation,Off,CW,CCW;",
+	"O[65],Flip 180,Off,On;",
+	// Phase 3a, until the sound 68000 is proven on the board: Stub is the
+	// stand-in built from Daisu-Kiss's power-on test, which the games that
+	// run today depend on; 68000 runs the real sound program
+	"O[66],Sound board,Stub,68000;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -192,17 +213,26 @@ wire [27:0] ldr_ddr_addr;
 wire [63:0] ldr_ddr_rdata;
 wire [26:0] ldr_addr;
 wire  [7:0] ldr_dout;
+// its side of the DDR3 mux at the bottom of this file
+wire  [7:0] ldr_DDRAM_BURSTCNT, ldr_DDRAM_BE;
+wire [28:0] ldr_DDRAM_ADDR;
+wire [63:0] ldr_DDRAM_DIN;
+wire        ldr_DDRAM_RD, ldr_DDRAM_WE;
 ddram_phy u_ddram (
 	.clk(clk_sys), .reset(reset),
-	.DDRAM_BUSY, .DDRAM_BURSTCNT, .DDRAM_ADDR, .DDRAM_DOUT, .DDRAM_DOUT_READY,
-	.DDRAM_RD, .DDRAM_DIN, .DDRAM_BE, .DDRAM_WE,
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(ldr_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(ldr_DDRAM_ADDR), .DDRAM_DOUT(DDRAM_DOUT),
+	.DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(ldr_DDRAM_RD),
+	.DDRAM_DIN(ldr_DDRAM_DIN), .DDRAM_BE(ldr_DDRAM_BE), .DDRAM_WE(ldr_DDRAM_WE),
 	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
 gx_rom_loader u_ldr (
 	.clk(clk_sys), .reset(reset),
-	// the stream ends where the sprite region's does: obj_base + 5/4 of its four-byte part
-	.length({ 2'd0, obj_base + { 2'd0, obj_size4 } + { 4'd0, obj_size4[23:2] } }),
+	// the stream ends after the sound board's ROMs: snd_base (where the
+	// sprite spread ends) + the sound program's 0x40000 + the samples'
+	// 0x400000 (build_mra's SND_CPU and SND_PCM)
+	.length({ 2'd0, obj_base + { 1'b0, obj_size4, 1'b0 } + 26'h440000 }),
 	.start(ldr_start), .busy(ldr_busy),
 	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
 	.ddr_valid(ldr_ddr_valid), .ddr_rdata(ldr_ddr_rdata),
@@ -228,6 +258,20 @@ wire [19:0] rom_addr;
 wire [63:0] rom_data;
 wire [23:0] tile_rom_addr;
 wire [22:0] obj_rom_addr, obj_pf_addr;
+// the sound board's SDRAM client (gx_sound, below)
+wire        snd_cs, snd_ok, snd_inval, snd_wreq, snd_wbusy;
+wire [22:0] snd_maddr;
+wire [63:0] snd_mdata;
+wire [25:0] snd_waddr;
+wire [15:0] snd_wdata;
+wire        snd_we16;
+// the DSP's RAM (gx_tms57002 through gx_sound)
+wire        dsp_cs, dsp_ok, dsp_inval;
+wire [14:0] dsp_addr;
+wire [63:0] dsp_data;
+wire        gfx_cs, gfx_ok;
+wire [22:0] gfx_addr;
+wire [63:0] gfx_data;
 wire        obj_pf_cs;
 wire [39:0] tile_rom_data, obj_rom_data;
 
@@ -243,7 +287,11 @@ gx_sdram_top u_mem (
 	// video benches' ROM models); each is one granule
 	.tile_cs(tile_rom_cs), .tile_addr(tile_rom_addr[20:0]), .tile_ok(tile_rom_ok), .tile_data(tile_rom_data),
 	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[19:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data),
-	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[19:0])
+	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[19:0]),
+	.gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
+	.snd_cs, .snd_addr(snd_maddr), .snd_ok, .snd_data(snd_mdata), .snd_inval,
+	.snd_wreq, .snd_waddr, .snd_wdata, .snd_we16, .snd_wbusy,
+	.dsp_cs, .dsp_addr, .dsp_ok, .dsp_data, .dsp_inval
 );
 
 ///////////////////////   INPUTS   ///////////////////////////////
@@ -303,8 +351,40 @@ wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, pxl_cen, unsupported, dbg_access;
 reg         lvbl_q = 1;
 always @(posedge clk_vid) lvbl_q <= vid_lvbl;
+// The sound board. Stub: gx_snd_stub, answering Daisu-Kiss's power-on test.
+// 68000: the K056800 with the sound CPU behind it running the real program
+// (Phase 3a), held in reset until the main CPU releases it.
+wire        snd_real = status[66];
+wire        snd_run;
+wire  [7:0] stub_din, k8_host;
 gx_snd_stub u_snd ( .clk(clk_vid), .rst(rst_vid), .frame(lvbl_q & ~vid_lvbl),
-                    .wr(snd_wr), .rd(snd_rd), .addr(snd_addr), .din(snd_dout), .dout(snd_din) );
+                    .wr(snd_wr && !snd_real), .rd(snd_rd && !snd_real), .addr(snd_addr),
+                    .din(snd_dout), .dout(stub_din) );
+assign snd_din = snd_real ? k8_host : stub_din;
+
+wire        k8_wr, k8_rd, k8_irq;
+wire  [2:0] k8_addr;
+wire  [7:0] k8_din, k8_dout;
+gx_k056800 u_k056800 (
+	.clk(clk_vid), .rst(rst_vid),
+	.h_wr(snd_wr && snd_real), .h_rd(snd_rd && snd_real), .h_addr(snd_addr[2:0]),
+	.h_din(snd_dout), .h_dout(k8_host),
+	.s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout),
+	.irq(k8_irq), .dbg(k8_dbg)
+);
+
+wire [63:0] snd_dbg, dsp_dbg;
+wire [49:0] k8_dbg;
+gx_sound u_sound (
+	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run || !snd_real),
+	// where the sprite region's spread ends (gx_sdram_top's snd_base)
+	.snd_base(obj_base + { 1'b0, obj_size4, 1'b0 }),
+	.m_cs(snd_cs), .m_addr(snd_maddr), .m_ok(snd_ok), .m_data(snd_mdata), .m_inval(snd_inval),
+	.w_req(snd_wreq), .w_addr(snd_waddr), .w_data(snd_wdata), .w_we16(snd_we16), .w_busy(snd_wbusy),
+	.x_cs(dsp_cs), .x_addr(dsp_addr), .x_ok(dsp_ok), .x_data(dsp_data), .x_inval(dsp_inval),
+	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
+	.dbg(snd_dbg), .dsp_dbg
+);
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
 wire [63:0] dbg_ee, dbg_irq;
 wire [95:0] dbg_esc_st;
@@ -326,6 +406,18 @@ wire [31:0] mem_src  = 32'd0;
 `endif
 wire [87:0] dbg_mem;
 
+// Pause: joystick bit 12, the position the conf string's button list and the
+// .mra's <buttons> give Pause (bit 4 + its index). It toggles, either pad,
+// and holds the 68020 where it is; the video keeps running, so the picture
+// stays up.
+wire pause_btn = joystick_0[12] | joystick_1[12];
+reg  pause_btn_d = 1'b0, pause_cpu = 1'b0;
+always @(posedge clk_sys) begin
+	pause_btn_d <= pause_btn;
+	if (reset)                         pause_cpu <= 1'b0;
+	else if (pause_btn & ~pause_btn_d) pause_cpu <= ~pause_cpu;
+end
+
 gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
@@ -339,7 +431,8 @@ gx_main u_board (
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
 	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_mix(dbg_mix), .dbg_rom(dbg_rom),
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
-	.rom_top(tile_base),
+	.rom_top(tile_base), .pause_cpu(pause_cpu), .snd_run,
+	.tile_base, .obj_base, .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
 	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem)
 );
 
@@ -411,6 +504,19 @@ issp_probe #(.INSTANCE_ID("M"), .PROBE_W(84), .SOURCE_W(32)) u_issp_rom (
 issp_probe #(.INSTANCE_ID("N"), .PROBE_W(88), .SOURCE_W(32)) u_issp_mem (
 	.clk(clk_vid), .probe(dbg_mem), .source(mem_src)
 );
+// Instance S, 116 bits: the sound board (Phase 3a) -- whether the 68000 is
+// selected and released, where it is, how many accesses it has made, its
+// interrupts, and the K056800's six registers (fields_S). The stub mimics
+// the real program's heartbeat, so from the main CPU's side the two cannot
+// be told apart; this can.
+issp_probe #(.INSTANCE_ID("S"), .PROBE_W(116), .SOURCE_W(8)) u_issp_snd (
+	.clk(clk_vid), .probe({ snd_real, snd_run, k8_dbg, snd_dbg }), .source()
+);
+// Instance D, 64 bits: the TMS57002 (fields_D) -- whether a sample's
+// program fits its 1000 clocks with SDRAM behind it
+issp_probe #(.INSTANCE_ID("D"), .PROBE_W(64), .SOURCE_W(8)) u_issp_dsp (
+	.clk(clk_vid), .probe(dsp_dbg), .source()
+);
 issp_probe #(.INSTANCE_ID("L"), .PROBE_W(112), .SOURCE_W(8)) u_issp_mix (
 	.clk(clk_vid), .probe(dbg_mix), .source()
 );
@@ -446,5 +552,52 @@ arcade_video #(.WIDTH(288), .DW(24), .GAMMA(1)) arcade_video
 	.forced_scandoubler(forced_scandoubler),
 	.gamma_bus(gamma_bus)
 );
+
+// ---------------------------------------------------------- HDMI rotation
+// screen_rotate_two taps the video output into DDR3 for the HPS
+// framebuffer, which the scaler then reads turned or flipped; the analog
+// output is untouched and keeps the native raster. This is a display
+// option, not the game's own flip-screen bit (gx_tilemap flags that on
+// `unsupported`, and no set has set it in anything run so far).
+wire        rot_DDRAM_CLK, rot_DDRAM_WE, rot_DDRAM_RD;
+wire  [7:0] rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
+wire [28:0] rot_DDRAM_ADDR;
+wire [63:0] rot_DDRAM_DIN;
+
+screen_rotate_two u_rotate (
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_HS(VGA_HS), .VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
+
+	.rotate_ccw(rotate_ccw),
+	.no_rotate(~rotate_en),
+	.flip(flip_180),
+	.two_screen(1'b0),
+	.video_rotated(),
+
+	.FB_EN(FB_EN), .FB_FORMAT(FB_FORMAT),
+	.FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT),
+	.FB_BASE(FB_BASE), .FB_STRIDE(FB_STRIDE),
+	.FB_VBL(FB_VBL), .FB_LL(FB_LL),
+
+	// held off the bus while the ROM loader has it
+	.DDRAM_CLK(rot_DDRAM_CLK),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy),
+	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(rot_DDRAM_ADDR),
+	.DDRAM_DIN(rot_DDRAM_DIN),
+	.DDRAM_BE(rot_DDRAM_BE),
+	.DDRAM_WE(rot_DDRAM_WE),
+	.DDRAM_RD(rot_DDRAM_RD)
+);
+
+assign DDRAM_CLK      = ldr_busy ? clk_sys            : rot_DDRAM_CLK;
+assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_RD       = ldr_busy ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 
 endmodule

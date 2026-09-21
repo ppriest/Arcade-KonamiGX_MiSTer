@@ -33,6 +33,15 @@
             <part name="533a13.28g" crc="58f1fc38" map="2100"/>
         </interleave>
         <part name="533a11.30g" length="0x100000"/>  <!-- the chip reads this much -->
+        <!-- soundcpu: MAME's region as it is -->
+        <part repeat="3145728">00</part>
+        <interleave output="16">
+            <part name="533a08.9c" crc="06d14cff" map="01"/>
+            <part name="533a09.7c" crc="a93c6f0b" map="10"/>
+        </interleave>
+        <!-- k054539: MAME's region as it is -->
+        <part name="533a22.9g" crc="97233814"/>
+        <part name="533a23.7g" crc="1bb7552b"/>
     </rom>
 
     <switches default="FE,FF">

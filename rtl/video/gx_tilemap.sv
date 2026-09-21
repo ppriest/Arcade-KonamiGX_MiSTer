@@ -65,6 +65,9 @@ module gx_tilemap (
     output              busy,
     output reg          unsupported,
     output      [15:0]  dbg_regs5,   // register 0x0a (line-scroll modes), for the probe
+    // the bank the CPU's ROM readback window reads through (k056832's
+    // m_cur_gfx_banks: registers 0x1a and 0x1b)
+    output      [31:0]  gfx_bank,
 
     // tile ROM, one 5-byte pixel row per address: row = code * 8 + y
     output reg  [23:0]  rom_addr,
@@ -110,6 +113,7 @@ wire [15:0] r_flipen = regs[1];
 wire [15:0] r_attr   = regs[3];
 wire [15:0] r_scroll = regs[5];           // 0x0a: two bits a layer
 assign dbg_regs5 = r_scroll;
+assign gfx_bank  = { regs[27], regs[26] };
 wire [15:0] r_lsbank = regs[24];          // 0x30: the line-scroll VRAM page
 
 
@@ -293,9 +297,11 @@ always @(posedge clk) begin
             y       <= line_y;
             layer   <= 2'd0;
             st      <= SETUP;
-            // mode 1 is "unused/unknown" in the chip's own documentation
-            if (r_scroll[1:0] == 2'd1 || r_scroll[3:2] == 2'd1 || r_scroll[5:4] == 2'd1
-                || r_scroll[7:6] == 2'd1 || r_ctrl[5:4] != 2'd0) unsupported <= 1'b1;
+            // Mode 1 is "unused/unknown" in the chip's documentation, but Crazy
+            // Cross sets it on all four layers, and MAME's switch takes 1 and 3
+            // through the same default case: no line scroll, the layer's own
+            // X/Y scroll registers. ls_on already reads it that way.
+            if (r_ctrl[5:4] != 2'd0) unsupported <= 1'b1;
         end
         SETUP: begin
             rowstart <= l_rows[4:3];

@@ -1,0 +1,3 @@
+rtl/video/gx_sdpram.sv
+rtl/sound/gx_tms57002.sv
+sim/gx_tms57002_tb/tb_gx_tms57002.sv

@@ -33,6 +33,15 @@
             <part name="321b10.28g" crc="ea9f8c48" map="2100"/>
         </interleave>
         <part name="321b09.30g" crc="94add237"/>
+        <!-- soundcpu: MAME's region as it is -->
+        <part repeat="3145728">00</part>
+        <interleave output="16">
+            <part name="321b06.9c" crc="da810554" map="01"/>
+            <part name="321b07.7c" crc="c47634c0" map="10"/>
+        </interleave>
+        <!-- k054539: MAME's region as it is -->
+        <part name="321b17.9g" crc="b3e8d5d8"/>
+        <part name="321b18.7g" crc="2c561ad0"/>
     </rom>
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->

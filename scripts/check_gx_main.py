@@ -125,6 +125,53 @@ def compare_shots(game, n, near, out):
     np.save(out / f"shot_best_f{n}.npy", best[2])
 
 
+def write_sound_image(game):
+    """The sound board's memory as the bench models it (gx_sound's offsets
+    from snd_base 0): the program, the samples at 0x40000, the K054539s'
+    RAM at 0x440000; 64-bit little-endian granules, one a line."""
+    import build_rom_image as bri
+    img = bytearray(0x450000)
+    prog = bri.build(game, "soundcpu")
+    pcm = bri.build(game, "k054539")
+    img[:len(prog)] = prog
+    img[0x40000:0x40000 + len(pcm)] = pcm
+    out = OUT / "snd_image.hex"
+    with open(out, "w") as f:
+        for g in range(len(img) // 8):
+            f.write(f"{int.from_bytes(img[8 * g:8 * g + 8], 'little'):016x}\n")
+    return out
+
+
+def layout_args(game):
+    """The set's SDRAM layout, for the bench's ROM readback port."""
+    import build_mra
+    lo = build_mra.rtl_arm(build_mra.SETS.index(game))
+    return [f"+TILE_BASE={lo['tile_base']:x}", f"+OBJ_BASE={lo['obj_base']:x}"]
+
+
+def write_set_roms(game):
+    """The set's graphics ROMs as the video benches' rom.hex holds them --
+    tile rows of five bytes, sprite half-rows of four then the fifth -- over
+    the capture's (daiskiss's). Returns the tile counts the bench wraps at."""
+    for region in ("k056832", "k055673"):
+        f = REPO / "debug" / f"{game}-rom" / f"{region}.bin"
+        if not f.exists():
+            import build_rom_image as bri
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(bri.build(game, region))
+    trom = np.frombuffer((REPO / "debug" / f"{game}-rom" / "k056832.bin").read_bytes(), dtype=np.uint8)
+    rows = trom[:len(trom) // 40 * 40].reshape(-1, 5)
+    (check_gx_tilemap.OUT / "rom.hex").write_text("".join(r.tobytes().hex() + "\n" for r in rows))
+    orom = np.frombuffer((REPO / "debug" / f"{game}-rom" / "k055673.bin").read_bytes(), dtype=np.uint8)
+    size4 = (len(orom) // 0x100000) // 5 * 0x400000
+    four = orom[:size4].reshape(-1, 4)
+    one = orom[size4:size4 + size4 // 4].reshape(-1, 1)
+    n = size4 // 128
+    halves = np.concatenate([four, one], axis=1).reshape(-1)[:n * 160].reshape(-1, 5)
+    (check_gx_obj.OUT / "rom.hex").write_text("".join(h.tobytes().hex() + "\n" for h in halves))
+    return len(rows) // 8, n
+
+
 # rtl/gx_board_cfg.sv's per-set values the bench needs: the ESC's list and the
 # K055673's x offset less daiskiss's -26 (konamigx.cpp's machine configs).
 ESC = {"daiskiss": (1, 0xc00000, 0x100), "mtwinbee": (1, 0xc00000, 0x100),
@@ -156,6 +203,11 @@ def main():
                     help="save the simulation at RTL frame FRAME to SNAP/boot_FRAME, then stop")
     ap.add_argument("--from", dest="start", type=int, metavar="FRAME",
                     help="start from SNAP/boot_FRAME instead of reset")
+    ap.add_argument("--snd-real", action="store_true",
+                    help="answer the main CPU with the real sound board (the sound 68000 running the "
+                         "set's own sound program) instead of MAME's replies replayed by time")
+    ap.add_argument("--plus", action="append", default=[],
+                    help="extra +PLUSARG=value for the bench (+ROM_JUNK_FROM, +ROM_TOP)")
     ap.add_argument("--rom-wait", type=int, default=10,
                     help="the bench ROM's clocks per miss (+ROM_WAIT); odd values catch clock-phase faults")
     a = ap.parse_args()
@@ -202,9 +254,14 @@ def main():
         cap = rm.Capture(REPO / "debug" / "daiskiss-f6000")
         tn = check_gx_tilemap.write_vectors(cap)
         on = check_gx_obj.write_vectors(cap)
+        # the capture only seeds the video state; the graphics ROMs are the
+        # set's own, so what the drawing and the ROM readback read is right
+        tn, on = write_set_roms(a.game)
         args = [f"+FRAMES={a.frames}", f"+TNTILES={tn}", f"+ONTILES={on}", f"+OUT={a.out}/", f"+ROM_WAIT={a.rom_wait}",
                 f"+SND_TIME_FROM={SND_TIME_FROM}", f"+SND_OFFSET={SND_OFFSET}",
-                f"+SET={a.game}"] + board_cfg(a.game)
+                f"+SET={a.game}"] + board_cfg(a.game) + layout_args(a.game) + a.plus
+        if a.snd_real:
+            args += ["+SND_REAL=1", f"+SND_ROM={write_sound_image(a.game).relative_to(REPO)}"]
         # the frames to record, one window per --shot
         (out / "shot_frames.hex").write_text("".join(
             f"{f:x}\n" for n in shots for f in range(shots[n] - margin, shots[n] + margin + 1) if f > 0))

@@ -35,6 +35,15 @@
         <part repeat="2097152">00</part>
         <part name="535a11.30g" crc="2b176b0f"/>
         <part repeat="524288">00</part>
+        <!-- soundcpu: MAME's region as it is -->
+        <part repeat="3145728">00</part>
+        <interleave output="16">
+            <part name="535a08.9c" crc="449416a7" map="01"/>
+            <part name="535a09.7c" crc="8ec57ab4" map="10"/>
+        </interleave>
+        <!-- k054539: MAME's region as it is -->
+        <part name="535a22.9g" crc="7ee59acb"/>
+        <part repeat="2097152">00</part>
     </rom>
 
     <switches default="FE,FF">

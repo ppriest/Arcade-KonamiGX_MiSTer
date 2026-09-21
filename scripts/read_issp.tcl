@@ -105,6 +105,47 @@ set fields_L {
 }
 
 # INSTANCE M, 84 bits: the CPU ROM cache's last SDRAM fetch (gx_romcache).
+# INSTANCE S, 116 bits: the sound board. snd_dbg [63:0] = { 9'd0,
+# accesses, irq2, irq1, in reset, 4'd0, sctrl, address }, then the K056800's
+# { h2s0-3, s2h0-1, int_en, int_pend } [113:64], snd_run [114], snd_real [115]
+set fields_S {
+    {snd_addr          0  23 hex}
+    {sctrl            24  31 hex}
+    {in_reset         36  36 bit}
+    {irq1             37  37 bit}
+    {irq2             38  38 bit}
+    {snd_accesses     39  54 dec}
+    {int_pend         64  64 bit}
+    {int_en           65  65 bit}
+    {s2h1             66  73 hex}
+    {s2h0             74  81 hex}
+    {h2s3             82  89 hex}
+    {h2s2             90  97 hex}
+    {h2s1             98 105 hex}
+    {h2s0            106 113 hex}
+    {snd_run         114 114 bit}
+    {snd_real        115 115 bit}
+}
+
+# INSTANCE D, 64 bits: gx_tms57002's dbg
+set fields_D {
+    {pc                0   7 hex}
+    {upd_head          8  11 dec}
+    {upd_tail         12  15 dec}
+    {x_req            16  16 bit}
+    {x_wr             17  17 bit}
+    {x_rd             18  18 bit}
+    {host_full        19  19 bit}
+    {idle             20  20 bit}
+    {in_reset         21  21 bit}
+    {cload            22  22 bit}
+    {pload            23  23 bit}
+    {state            24  25 dec}
+    {longest_sample   26  37 dec}
+    {overruns         38  49 dec}
+    {samples          50  63 dec}
+}
+
 set fields_M {
     {gran_data_lo     0  31 hex}
     {gran_data_hi    32  63 hex}
@@ -194,6 +235,8 @@ switch -- $inst_id {
     L       { set fields $fields_L }
     M       { set fields $fields_M }
     N       { set fields $fields_N }
+    S       { set fields $fields_S }
+    D       { set fields $fields_D }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1

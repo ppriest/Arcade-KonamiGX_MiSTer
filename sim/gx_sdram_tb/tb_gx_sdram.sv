@@ -55,8 +55,17 @@ gx_sdram_top dut (
     .tile_base, .obj_base, .tile_size4, .obj_size4,
     .cpu_cs, .cpu_addr, .cpu_ok, .cpu_data,
     .tile_cs, .tile_addr, .tile_ok, .tile_data,
-    .obj_cs, .obj_addr, .obj_ok, .obj_data
+    .obj_cs, .obj_addr, .obj_ok, .obj_data,
+    .obj_pf_cs(1'b0), .obj_pf_addr(20'd0),
+    .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data
 );
+
+// the absolute-address port the ROM readback windows use: here it checks the
+// sound board's ROMs, which nothing else reads yet
+reg         gfx_cs = 0;
+reg  [22:0] gfx_addr = 0;
+wire        gfx_ok;
+wire [63:0] gfx_data;
 
 sdram_chip_model_wide u_chip (
     .clk(SDRAM_CLK), .SDRAM_DQ, .SDRAM_A, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS
@@ -86,6 +95,8 @@ int         nruns = 0;
 reg  [19:0] cpu_a [0:MAXR-1];   reg [63:0] cpu_d [0:MAXR-1];   int ncpu = 0;
 reg  [23:0] tile_a [0:MAXR-1];  reg [39:0] tile_d [0:MAXR-1];  int ntile = 0;
 reg  [23:0] obj_a [0:MAXR-1];   reg [39:0] obj_d [0:MAXR-1];   int nobj = 0;
+reg  [22:0] snd_a [0:MAXR-1];   reg [63:0] snd_d [0:MAXR-1];   int nsnd = 0;
+int  bads = 0;
 
 int bad = 0, checked = 0, badc = 0, badt = 0, bado = 0;
 
@@ -220,6 +231,11 @@ initial begin
     fd = $fopen({D, "tile.hex"}, "r");
     while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, w) == 2) begin tile_a[ntile] = a; tile_d[ntile] = w; ntile++; end
     $fclose(fd);
+    fd = $fopen({D, "snd.hex"}, "r");
+    if (fd != 0) begin
+        while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, v) == 2) begin snd_a[nsnd] = a; snd_d[nsnd] = v; nsnd++; end
+        $fclose(fd);
+    end
     fd = $fopen({D, "obj.hex"}, "r");
     while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, w) == 2) begin obj_a[nobj] = a; obj_d[nobj] = w; nobj++; end
     $fclose(fd);
@@ -301,7 +317,22 @@ initial begin
         repeat (16) @(posedge clk);
     end
 
-    $display("  total checked %0d, mismatches %0d (cpu %0d, tiles %0d, sprites %0d)", checked, bad, badc, badt, bado);
+    // the sound board's ROMs, by absolute granule
+    for (k = 0; k < nsnd; k++) begin
+        @(posedge clk) begin gfx_addr <= snd_a[k]; gfx_cs <= 1; end
+        do @(posedge clk); while (!gfx_ok);
+        got = gfx_data;
+        @(posedge clk) gfx_cs <= 0;
+        @(posedge clk);
+        checked++;
+        if (got !== snd_d[k]) begin
+            if (bads < 8) $display("  sound granule %06x: got %016x want %016x", snd_a[k], got, snd_d[k]);
+            bad++; bads++;
+        end
+    end
+    if (nsnd != 0) $display("  sound   %0d granules checked", nsnd);
+
+    $display("  total checked %0d, mismatches %0d (cpu %0d, tiles %0d, sprites %0d, sound %0d)", checked, bad, badc, badt, bado, bads);
     if (checked == 0 || bad != 0) $display("FAIL: %0d readbacks disagree with MAME's images", bad);
     else $display("PASS: every region reads back as MAME's image");
     $finish;
