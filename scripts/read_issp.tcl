@@ -84,6 +84,23 @@ set fields_J {
     {dma_during_esc  88  95 dec}
 }
 
+# INSTANCE T, 132 bits: line time (gx_video dbg_line). The *_frm fields are
+# the last whole frame, latched at VBlank's start; busy counts are clocks of
+# the 48 MHz clock (3072 a line) between one line start and the next.
+# `src 1` turns gx_tilemap's blank-row skip off, `src 0` back on.
+set fields_T {
+    {frames           0  11 dec}
+    {tm_late_total   12  23 dec}
+    {tm_late_frm     24  35 dec}
+    {tm_busy_max_frm 36  47 dec}
+    {tm_busy_max     48  59 dec}
+    {obj_busy_max_frm 60 71 dec}
+    {obj_busy_max    72  83 dec}
+    {tile_fetch_frm  84  99 dec}
+    {tile_blank_frm 100 115 dec}
+    {tile_skip_frm  116 131 dec}
+}
+
 # INSTANCE K, 64 bits: the ROM load (KonamiGX.sv). The cycle counts are
 # clk_sys (96 MHz): divide by 96,000 for milliseconds.
 set fields_K {
@@ -221,7 +238,7 @@ foreach i $insts { puts "instance: $i" }
 set want ""
 if {[llength $argv] > 0} {
     set a0 [lindex $argv 0]
-    if {$a0 ne "clear" && $a0 ne "peek" && $a0 ne "dump"} { set want $a0 }
+    if {$a0 ne "clear" && $a0 ne "peek" && $a0 ne "dump" && $a0 ne "src"} { set want $a0 }
 }
 set idx [lindex [lindex $insts 0] 0]
 set inst_id [lindex [lindex $insts 0] 3]
@@ -255,6 +272,7 @@ switch -- $inst_id {
     N       { set fields $fields_N }
     S       { set fields $fields_S }
     D       { set fields $fields_D }
+    T       { set fields $fields_T }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1
@@ -338,6 +356,14 @@ if {$pk >= 0} {
         set hi [bits_to_int $r 32 63]
         puts [format "  peek %05X -> %08X%08X%s" $ga $hi $lo               [expr {$ga == $g ? "" : [format "   (asked for %05X)" $g]}]]
     }
+}
+# src <hex>: set the instance's source bits
+set sp [lsearch -exact $argv "src"]
+if {$sp >= 0} {
+    scan [lindex $argv [expr {$sp + 1}]] %x sv
+    write_src $idx $sv
+    puts [format "
+source set to %X" $sv]
 }
 if {$do_clear} {
     write_src $idx 1

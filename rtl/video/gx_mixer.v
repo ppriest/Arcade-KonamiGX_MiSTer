@@ -53,10 +53,13 @@ module gx_mixer (
     input             bg_grad,          // wrport1_0 bit 5: 1 = K055555 gradient
     input             pri_c_le2,        // primode -1 (le2): layer C at PRIINP_3 + 0x20
 
-    // palette RAM, xRGB_888 by pen, one write enable per colour byte
+    // palette RAM, xRGB_888 by pen, one write enable per colour byte; the
+    // CPU reads its colour bytes back from here (pal_q, a clock after
+    // pal_addr), so the board keeps only the x byte
     input      [ 2:0] pal_we,           // { R, G, B }
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
+    output     [23:0] pal_q,
 
     // this pixel, in MAME bitmap coordinates
     input      [ 9:0] bx,
@@ -251,15 +254,15 @@ reg  [ 1:0] code1;
 reg  [23:0] ct, cs, cb;
 reg         en;
 
-gx_sdpram #(.AW(13), .DW(8)) u_pal_r (
-    .clk ( clk ), .we ( pal_we[2] ), .wa ( pal_addr ), .d ( pal_din[23:16] ),
-    .ra  ( ra ), .q ( rq[23:16] ) );
-gx_sdpram #(.AW(13), .DW(8)) u_pal_g (
-    .clk ( clk ), .we ( pal_we[1] ), .wa ( pal_addr ), .d ( pal_din[15:8] ),
-    .ra  ( ra ), .q ( rq[15:8] ) );
-gx_sdpram #(.AW(13), .DW(8)) u_pal_b (
-    .clk ( clk ), .we ( pal_we[0] ), .wa ( pal_addr ), .d ( pal_din[7:0] ),
-    .ra  ( ra ), .q ( rq[7:0] ) );
+gx_tdpram #(.AW(13), .DW(8)) u_pal_r (
+    .clk ( clk ), .we_a ( pal_we[2] ), .a ( pal_addr ), .d ( pal_din[23:16] ), .qa ( pal_q[23:16] ),
+    .b ( ra ), .qb ( rq[23:16] ) );
+gx_tdpram #(.AW(13), .DW(8)) u_pal_g (
+    .clk ( clk ), .we_a ( pal_we[1] ), .a ( pal_addr ), .d ( pal_din[15:8] ), .qa ( pal_q[15:8] ),
+    .b ( ra ), .qb ( rq[15:8] ) );
+gx_tdpram #(.AW(13), .DW(8)) u_pal_b (
+    .clk ( clk ), .we_a ( pal_we[0] ), .a ( pal_addr ), .d ( pal_din[7:0] ), .qa ( pal_q[7:0] ),
+    .b ( ra ), .qb ( rq[7:0] ) );
 
 // MAME's shadow table: the colour is cut to 5 bits a channel, re-expanded
 // with pal5bit, and offset by the K054338 delta, clipped unless CLIPSL.

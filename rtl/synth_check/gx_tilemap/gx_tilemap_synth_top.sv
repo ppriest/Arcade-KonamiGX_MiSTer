@@ -55,7 +55,7 @@ module gx_tilemap_synth_top (
         .tbank_we, .tbank_addr, .tbank_din,
         .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be, .vram_dout,
         .offs_x, .offs_y,
-        .line_start, .line_y, .busy, .unsupported,
+        .line_start, .line_y, .busy, .unsupported, .dbg_ev(), .blank_skip(1'b1),
         .rom_addr, .rom_cs, .rom_ok, .rom_data,
         .rd_x, .rd_pix
     );

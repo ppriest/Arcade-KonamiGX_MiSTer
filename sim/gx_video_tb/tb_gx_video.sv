@@ -103,7 +103,7 @@ gx_video dut (
     .rmrd_addr(), .tile_gfx_bank(),
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pal_we, .pal_addr, .pal_din,
-    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy()
+    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy(), .tm_blank_skip(1'b1), .dbg_line()
 );
 
 // ----------------------------------------------------------- vectors, ROMs

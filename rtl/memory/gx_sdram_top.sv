@@ -227,6 +227,8 @@ logic        p_wrl  [0:2], p_wrh [0:2], p_req [0:2];
 logic [15:0] p_din  [0:2];
 wire  [63:0] p_dout [0:2];
 wire         p_ack  [0:2];
+wire         p_dbl0;                    // port 0's double read (the sprite port, DBL)
+wire  [63:0] p_dout0b;
 
 sdram u_sdram (
     .SDRAM_DQ(SDRAM_DQ), .SDRAM_A(SDRAM_A), .SDRAM_DQML(SDRAM_DQML),
@@ -235,7 +237,7 @@ sdram u_sdram (
     .SDRAM_CLK(SDRAM_CLK), .SDRAM_CKE(SDRAM_CKE),
     .init(init), .clk(clk_mem),
     .addr0(p_addr[0]), .wrl0(p_wrl[0]), .wrh0(p_wrh[0]), .din0(p_din[0]),
-    .dout0(p_dout[0]), .req0(p_req[0]), .ack0(p_ack[0]),
+    .dout0(p_dout[0]), .req0(p_req[0]), .ack0(p_ack[0]), .dbl0(p_dbl0), .dout0b(p_dout0b),
     .addr1(p_addr[1]), .wrl1(p_wrl[1]), .wrh1(p_wrh[1]), .din1(p_din[1]),
     .dout1(p_dout[1]), .req1(p_req[1]), .ack1(p_ack[1]),
     .addr2(p_addr[2]), .wrl2(p_wrl[2]), .wrh2(p_wrh[2]), .din2(p_din[2]),
@@ -257,49 +259,51 @@ sdram_arbiter #(.N(4)) u_arb1 (
     .port_din(p_din[1]), .port_dout(p_dout[1]),
     .port_req(p_req[1]), .port_ack(p_ack[1]),
     .c_req(arb1_req), .c_addr(arb1_addr), .c_valid(arb1_valid), .c_rdata(arb1_rdata),
+    .c_dbl(4'd0), .c_rdata2(), .port_dout2(64'd0), .port_dbl(),
     // the arbiter's write path, idle on this port since the download uses
     // port 2, carries the sound board's RAM writes
     .dl_req(snd_wreq), .dl_addr(snd_waddr), .dl_data(snd_wdata), .dl_we16(snd_we16),
     .dl_busy(snd_wbusy)
 );
 
-gx_rom_port #(.AW(23)) u_gfx (
+gx_rom_port #(.AW(23), .SYNC(1)) u_gfx (
     .clk, .clk_mem, .rst(reset),
     .cs(gfx_cs), .addr(gfx_addr), .ok(gfx_ok), .data(gfx_data),
     .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(1'b0),
     .base(26'd0),
-    .c_req(arb1_req[0]), .c_addr(arb1_addr[25:0]), .c_valid(arb1_valid[0]), .c_rdata(arb1_rdata)
+    .c_req(arb1_req[0]), .c_addr(arb1_addr[25:0]), .c_valid(arb1_valid[0]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
-gx_rom_port #(.AW(23)) u_snd (
+gx_rom_port #(.AW(23), .SYNC(1)) u_snd (
     .clk, .clk_mem, .rst(reset),
     .cs(snd_cs), .addr(snd_addr), .ok(snd_ok), .data(snd_data),
     .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(snd_inval),
     .base(26'd0),
-    .c_req(arb1_req[1]), .c_addr(arb1_addr[51:26]), .c_valid(arb1_valid[1]), .c_rdata(arb1_rdata)
+    .c_req(arb1_req[1]), .c_addr(arb1_addr[51:26]), .c_valid(arb1_valid[1]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
-gx_rom_port #(.AW(15)) u_dsp (
+gx_rom_port #(.AW(15), .SYNC(1)) u_dsp (
     .clk, .clk_mem, .rst(reset),
     .cs(dsp_cs), .addr(dsp_addr), .ok(dsp_ok), .data(dsp_data),
     .hint_cs(1'b0), .hint_addr(15'd0), .halfsel(1'b0), .inval(dsp_inval),
     .base(snd_base + 26'h050000 + { 2'd0, snd_pcm }),
-    .c_req(arb1_req[2]), .c_addr(arb1_addr[77:52]), .c_valid(arb1_valid[2]), .c_rdata(arb1_rdata)
+    .c_req(arb1_req[2]), .c_addr(arb1_addr[77:52]), .c_valid(arb1_valid[2]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
 // the voices keep a granule per channel themselves (gx_k054539), so one here
-gx_rom_port #(.AW(21), .NS(1)) u_pcm (
+gx_rom_port #(.AW(21), .NS(1), .SYNC(1)) u_pcm (
     .clk, .clk_mem, .rst(reset),
     .cs(pcm_cs), .addr(pcm_addr), .ok(pcm_ok), .data(pcm_data),
     .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(pcm_inval),
     .base(snd_base + 26'h040000),
-    .c_req(arb1_req[3]), .c_addr(arb1_addr[103:78]), .c_valid(arb1_valid[3]), .c_rdata(arb1_rdata)
+    .c_req(arb1_req[3]), .c_addr(arb1_addr[103:78]), .c_valid(arb1_valid[3]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
 // ------------------------------------------------------------ port 0: graphics
 wire [1:0]  arb0_req, arb0_valid;
 wire [51:0] arb0_addr;
-wire [63:0] arb0_rdata;
+wire [63:0] arb0_rdata, arb0_rdata2;
+wire [1:0]  arb0_dbl;
 wire [63:0] tile_g, obj_g;
 
 sdram_arbiter #(.N(2)) u_arb0 (
@@ -309,6 +313,7 @@ sdram_arbiter #(.N(2)) u_arb0 (
     .port_req(p_req[0]), .port_ack(p_ack[0]),
     .c_req(arb0_req), .c_addr(arb0_addr),
     .c_valid(arb0_valid), .c_rdata(arb0_rdata),
+    .c_dbl(arb0_dbl), .c_rdata2(arb0_rdata2), .port_dout2(p_dout0b), .port_dbl(p_dbl0),
     .dl_req(1'b0), .dl_addr(26'd0), .dl_data(16'd0), .dl_we16(1'b0), .dl_busy()
 );
 
@@ -317,14 +322,14 @@ gx_rom_port #(.AW(21)) u_tile (
     .cs(tile_cs), .addr(tile_addr), .ok(tile_ok), .data(tile_g),
     .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(1'b0),
     .base(tile_base),
-    .c_req(arb0_req[0]), .c_addr(arb0_addr[25:0]), .c_valid(arb0_valid[0]), .c_rdata(arb0_rdata)
+    .c_req(arb0_req[0]), .c_addr(arb0_addr[25:0]), .c_valid(arb0_valid[0]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[0]), .c_rdata2(arb0_rdata2)
 );
-gx_rom_port #(.AW(22), .PAIR(1)) u_obj (
+gx_rom_port #(.AW(22), .PAIR(1), .DBL(1)) u_obj (
     .clk, .clk_mem, .rst(reset),
     .cs(obj_cs), .addr(obj_addr), .ok(obj_ok), .data(obj_g),
     .hint_cs(obj_pf_cs), .hint_addr(obj_pf_addr), .inval(1'b0), .halfsel(obj_layout == 2'd1),
     .base(obj_base),
-    .c_req(arb0_req[1]), .c_addr(arb0_addr[51:26]), .c_valid(arb0_valid[1]), .c_rdata(arb0_rdata)
+    .c_req(arb0_req[1]), .c_addr(arb0_addr[51:26]), .c_valid(arb0_valid[1]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[1]), .c_rdata2(arb0_rdata2)
 );
 // a row's five bytes, in the order the benches' rom.hex holds them
 assign tile_data = { tile_g[7:0], tile_g[15:8], tile_g[23:16], tile_g[31:24],
@@ -344,6 +349,7 @@ sdram_arbiter #(.N(1)) u_arb2 (
     .port_req(p_req[2]), .port_ack(p_ack[2]),
     .c_req(arb2_req), .c_addr(arb2_addr),
     .c_valid(arb2_valid), .c_rdata(arb2_rdata),
+    .c_dbl(1'b0), .c_rdata2(), .port_dout2(64'd0), .port_dbl(),
     .dl_req(dl_req), .dl_addr(dl_addr), .dl_data(dl_data), .dl_we16(dl_we16), .dl_busy(dl_busy)
 );
 
@@ -352,7 +358,7 @@ gx_rom_port #(.AW(20)) u_cpu (
     .cs(cpu_cs), .addr(cpu_addr), .ok(cpu_ok), .data(cpu_data),
     .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
     .base(BASE_MAINCPU),
-    .c_req(arb2_req[0]), .c_addr(arb2_addr), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata)
+    .c_req(arb2_req[0]), .c_addr(arb2_addr), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
 endmodule

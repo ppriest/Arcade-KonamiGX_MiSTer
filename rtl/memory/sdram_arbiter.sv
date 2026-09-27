@@ -24,13 +24,17 @@ module sdram_arbiter #(
 	output logic        port_wrh,
 	output logic [15:0] port_din,
 	input  logic [63:0] port_dout,
+	input  logic [63:0] port_dout2,         // the second granule of a double read
+	output logic        port_dbl,
 	output logic        port_req,
 	input  logic        port_ack,
 
 	input  logic [N-1:0]      c_req,
 	input  logic [26*N-1:0]   c_addr,
+	input  logic [N-1:0]      c_dbl,       // with c_req: two granules from a 16-byte-aligned c_addr
 	output logic [N-1:0]      c_valid,
 	output logic [63:0]       c_rdata,     // shared; capture it on your own valid
+	output logic [63:0]       c_rdata2,    // a double read's second granule
 
 	// download write path
 	input  logic         dl_req,
@@ -74,13 +78,15 @@ module sdram_arbiter #(
 			if (k == int'(pick)) pick_addr = c_addr[26*k +: 26];
 	end
 
-	logic [63:0] rdata_l;
-	assign c_rdata = rdata_l;
+	logic [63:0] rdata_l, rdata2_l;
+	assign c_rdata  = rdata_l;
+	assign c_rdata2 = rdata2_l;
 
 	always_ff @(posedge clk or posedge reset) begin
 		if (reset) begin
 			st       <= S_IDLE;
 			port_req <= 1'b0;
+			port_dbl <= 1'b0;
 			c_valid  <= '0;
 			dl_busy  <= 1'b0;
 			rr_ptr   <= '0;
@@ -101,6 +107,7 @@ module sdram_arbiter #(
 					port_wrl  <= dl_we16 || !dl_addr[0];
 					port_wrh  <= dl_we16 ||  dl_addr[0];
 					port_din  <= dl_we16 ? dl_data : {dl_data[7:0], dl_data[7:0]};
+					port_dbl  <= 1'b0;
 					port_req  <= ~port_req;
 					dl_busy   <= 1'b1;
 					st        <= S_WRITE;
@@ -108,6 +115,7 @@ module sdram_arbiter #(
 					port_addr <= pick_addr[25:1];
 					port_wrl  <= 1'b0;
 					port_wrh  <= 1'b0;
+					port_dbl  <= c_dbl[pick];
 					port_req  <= ~port_req;
 					serving   <= pick;
 					pend      <= (pend | (c_req & ~c_req_d)) & ~(N'(1) << pick);
@@ -117,7 +125,8 @@ module sdram_arbiter #(
 
 			S_READ: begin
 				if (port_ack == port_req) begin
-					rdata_l <= port_dout;
+					rdata_l  <= port_dout;
+					rdata2_l <= port_dout2;
 					c_valid[serving] <= 1'b1;
 					rr_ptr <= (int'(serving) == N-1) ? '0
 					                                 : $bits(rr_ptr)'(int'(serving) + 1);

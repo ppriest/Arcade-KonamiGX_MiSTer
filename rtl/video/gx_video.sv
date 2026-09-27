@@ -128,6 +128,7 @@ module gx_video #(
     input      [ 2:0] pal_we,          // { R, G, B }
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
+    output     [23:0] pal_q,           // the CPU's read of { R, G, B } at pal_addr
 
     // ---- video out: rgb and the K053252's blanking and syncs, aligned
     output     [23:0] rgb,
@@ -137,7 +138,9 @@ module gx_video #(
     output reg        vid_vs,
     output            unsupported,
     output            obj_dma_busy,
-    output            obj_ln_short        // the sprite scan did not finish a line (probe)
+    output            obj_ln_short,       // the sprite scan did not finish a line (probe)
+    input             tm_blank_skip,      // gx_tilemap's blank-row skip on
+    output reg [131:0] dbg_line           // line time, tilemap and sprites (probe T)
 );
 
 // ------------------------------------------------------------ K053252
@@ -240,6 +243,8 @@ end
 always @(posedge clk) spri_min <= spri_min_c;   // registers the CPU writes: one clock late is nothing
 
 // ------------------------------------------------------------ tilemap
+wire       tm_busy, o_start, o_busy;
+wire [2:0] tm_ev;
 reg        line_start;
 reg  [9:0] line_y;
 wire [13:0] tm_pix [4];
@@ -258,7 +263,7 @@ gx_tilemap u_tm (
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be, .vram_dout,
     .offs_x, .offs_y, .dbg_regs5(tm_regs5), .gfx_bank(tile_gfx_bank),
-    .line_start, .line_y, .busy(), .unsupported(),
+    .line_start, .line_y, .busy(tm_busy), .unsupported(), .dbg_ev(tm_ev), .blank_skip(tm_blank_skip),
     .tile_bpp, .rom_addr(tile_rom_addr), .rom_cs(tile_rom_cs), .rom_ok(tile_rom_ok), .rom_data(tile_rom_data),
     .vis_x0, .vis_w,
     .rd_x( 9'(bx - vis_x0) ), .rd_pix(tm_pix)
@@ -283,7 +288,8 @@ gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs), .rmrd_out(rmrd_addr),
     .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
     .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
-    .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short)
+    .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short),
+    .ln_start(o_start), .ln_busy(o_busy)
 );
 
 // ------------------------------------------------------------ mixer
@@ -291,12 +297,57 @@ gx_mixer u_mix (
     .rst, .clk, .pxl_cen,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pri_c_le2(primode == 4'hf),
-    .pal_we, .pal_addr, .pal_din,
+    .pal_we, .pal_addr, .pal_din, .pal_q,
     .bx, .by,
     .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]),
     .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx),
     .shd_valid(h_valid), .shd_code(h_code), .shd_pri(h_pri), .shd_z(h_z), .shd_idx(h_idx),
     .rgb, .unsupported
 );
+
+// ------------------------------------------------------------ line time
+// For probe T, per frame (latched at VBlank's start): the busiest line of
+// the tilemap and of the sprite path, in clocks busy between one line start
+// and the next (3072 a line); tilemap lines that began while the one before
+// was still rendering (the renderer skips them); tile rows fetched, fetched
+// transparent, and answered by the blank-row skip. Counts saturate; `frames`
+// and the totals wrap.
+function [11:0] inc12( input [11:0] v ); inc12 = &v ? v : v + 12'd1; endfunction
+function [15:0] inc16( input [15:0] v ); inc16 = &v ? v : v + 16'd1; endfunction
+function [11:0] max12( input [11:0] a, input [11:0] b ); max12 = a > b ? a : b; endfunction
+
+reg [11:0] frames = 0, tm_late_all = 0, tm_late_f = 0, tm_late_l = 0;
+reg [11:0] tm_cnt = 0, tm_max_f = 0, tm_max_l = 0, tm_max_all = 0;
+reg [11:0] ob_cnt = 0, ob_max_f = 0, ob_max_l = 0, ob_max_all = 0;
+reg [15:0] fe_f = 0, fe_l = 0, bl_f = 0, bl_l = 0, sk_f = 0, sk_l = 0;
+reg        lvbl_d = 0;
+
+always @(posedge clk) begin
+    lvbl_d <= vid_lvbl;
+    if( line_start ) begin
+        tm_max_f <= max12(tm_max_f, tm_cnt);
+        tm_cnt   <= 12'd0;
+        if( tm_busy ) begin tm_late_all <= inc12(tm_late_all); tm_late_f <= inc12(tm_late_f); end
+    end else if( tm_busy ) tm_cnt <= inc12(tm_cnt);
+    if( o_start ) begin
+        ob_max_f <= max12(ob_max_f, ob_cnt);
+        ob_cnt   <= 12'd0;
+    end else if( o_busy ) ob_cnt <= inc12(ob_cnt);
+    if( tm_ev[0] ) fe_f <= inc16(fe_f);
+    if( tm_ev[1] ) bl_f <= inc16(bl_f);
+    if( tm_ev[2] ) sk_f <= inc16(sk_f);
+    if( lvbl_d && !vid_lvbl ) begin
+        frames     <= frames + 12'd1;
+        tm_late_l  <= tm_late_f;   tm_late_f <= 12'd0;
+        tm_max_l   <= tm_max_f;    tm_max_f  <= 12'd0;
+        tm_max_all <= max12(tm_max_all, tm_max_f);
+        ob_max_l   <= max12(ob_max_f, ob_cnt);  ob_max_f <= 12'd0;  ob_cnt <= 12'd0;
+        ob_max_all <= max12(ob_max_all, max12(ob_max_f, ob_cnt));
+        fe_l <= fe_f; fe_f <= 16'd0;
+        bl_l <= bl_f; bl_f <= 16'd0;
+        sk_l <= sk_f; sk_f <= 16'd0;
+    end
+    dbg_line <= { sk_l, bl_l, fe_l, ob_max_all, ob_max_l, tm_max_all, tm_max_l, tm_late_l, tm_late_all, frames };
+end
 
 endmodule

@@ -515,7 +515,7 @@ gx_main dut (
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
-    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
+    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
     // sets it larger to get the behaviour before gx_main bounded it, when a
     // read above the image's length returned what follows it in SDRAM --

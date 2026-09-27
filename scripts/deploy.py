@@ -204,13 +204,15 @@ def check_build(rbf, log, sta, allow_timing_miss=False):
 # KonamiGX_*.rbf in the cores folder, so every deploy leaves the previous
 # builds in place as fallbacks: rename the newest to .held (any name that no
 # longer ends in .rbf) and the one before it is what the .mra launches. The
-# counter starts at 10000001 and is read back from the device, .held files
-# included, so a held build's number is never reused. A plain KonamiGX.rbf
-# from before this convention is moved aside to .held rather than left to
-# compete with the numbered ones.
+# counter starts at 30000001, above any dated release (KonamiGX_YYYYMMDD.rbf,
+# which sorts with the numbers), and is read back from the device, .held
+# files included, so a held build's number is never reused; numbers below
+# the start (the old 10000001 series, dated releases) are ignored. A plain
+# KonamiGX.rbf from before this convention is moved aside to .held rather
+# than left to compete with the numbered ones.
 # ---------------------------------------------------------------------------
 RBF_STEM = "KonamiGX"
-RBF_FIRST = 10000001
+RBF_FIRST = 30000001
 
 
 def next_rbf_name(m):
@@ -218,7 +220,8 @@ def next_rbf_name(m):
         return f"{RBF_STEM}_{RBF_FIRST}.rbf"   # a dry run never asks the device
     listing = m.run(f"ls -1 {REMOTE_CORES} 2>/dev/null; true")
     numbers = [int(n) for n in
-               re.findall(rf"^{RBF_STEM}_(\d+)\.rbf(?:\.held)?$", listing, re.M)]
+               re.findall(rf"^{RBF_STEM}_(\d+)\.rbf(?:\.held)?$", listing, re.M)
+               if int(n) >= RBF_FIRST]
     plain = f"{RBF_STEM}.rbf"
     if plain in listing.split():
         print(f"    {plain} -> {plain}.held  (pre-numbering build, moved aside)")

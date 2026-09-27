@@ -75,26 +75,8 @@ module sdram_chip_model_wide (
 
 		driving <= 1'b0;
 
-		unique case (cmd)
-			CMD_ACTIVE:    open_row[SDRAM_BA] <= SDRAM_A;
-			CMD_LOAD_MODE: mode_reg <= SDRAM_A;
-			CMD_WRITE: begin
-				widx = addr_of(SDRAM_BA, open_row[SDRAM_BA], SDRAM_A[8:0]);
-				if (!SDRAM_A[11]) mem[widx][7:0]  <= SDRAM_DQ[7:0];
-				if (!SDRAM_A[12]) mem[widx][15:8] <= SDRAM_DQ[15:8];
-			end
-			CMD_READ: begin
-				rstate      <= R_WAIT_CAS;
-				rcount      <= int'(cas_latency_field) - 2;
-				rcol        <= SDRAM_A[8:0];
-				rbank       <= SDRAM_BA;
-				rburst_left <= int'(burst_words);
-			end
-			default: ; // NOP / PRECHARGE / AUTO_REFRESH: nothing to model
-		endcase
-
 		unique case (rstate)
-			R_IDLE: ; // handled by CMD_READ above
+			R_IDLE: ; // started by CMD_READ below
 			R_WAIT_CAS: begin
 				if (rcount <= 0) begin
 					rstate      <= R_DRIVE;
@@ -118,6 +100,27 @@ module sdram_chip_model_wide (
 					rstate <= R_IDLE;
 				end
 			end
+		endcase
+
+		// after the burst in progress: a READ during a burst starts the new one
+		// (a read-to-read at the burst's end, sdram.sv's double read, runs on
+		// without a gap), so its column and length must win
+		unique case (cmd)
+			CMD_ACTIVE:    open_row[SDRAM_BA] <= SDRAM_A;
+			CMD_LOAD_MODE: mode_reg <= SDRAM_A;
+			CMD_WRITE: begin
+				widx = addr_of(SDRAM_BA, open_row[SDRAM_BA], SDRAM_A[8:0]);
+				if (!SDRAM_A[11]) mem[widx][7:0]  <= SDRAM_DQ[7:0];
+				if (!SDRAM_A[12]) mem[widx][15:8] <= SDRAM_DQ[15:8];
+			end
+			CMD_READ: begin
+				rstate      <= R_WAIT_CAS;
+				rcount      <= int'(cas_latency_field) - 2;
+				rcol        <= SDRAM_A[8:0];
+				rbank       <= SDRAM_BA;
+				rburst_left <= int'(burst_words);
+			end
+			default: ; // NOP / PRECHARGE / AUTO_REFRESH: nothing to model
 		endcase
 	end
 

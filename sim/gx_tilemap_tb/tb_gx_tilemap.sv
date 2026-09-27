@@ -44,7 +44,7 @@ gx_tilemap dut (
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be(2'b11), .vram_dout,
     .offs_x, .offs_y,
-    .line_start, .line_y, .busy, .unsupported,
+    .line_start, .line_y, .busy, .unsupported, .dbg_ev(), .blank_skip(1'b1),
     .tile_bpp(2'(tile_bpp)), .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .vis_x0(10'(vis_x0)), .vis_w(9'(vis_w)),
     .rd_x, .rd_pix

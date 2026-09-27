@@ -102,6 +102,9 @@ module gx_main (
     input             ee_load_we,
     input      [ 5:0] ee_load_addr,
     input      [15:0] ee_load_data,
+    input      [ 5:0] ee_rd_addr,           // the NVRAM save reads the 93C46 back
+    output     [15:0] ee_rd_data,
+    output            ee_written,           // the game changed it (a save is due)
 
     // per-game K056832 layer offsets
     input  signed [7:0] offs_x [4],
@@ -132,6 +135,7 @@ module gx_main (
     output     [23:0] rgb,
     output            vid_lhbl, vid_lvbl, vid_hs, vid_vs,
     output            pxl_cen_o,            // the dot clock enable, for the video output
+    output     [ 3:0] pxl_div_o,            // clk a pixel: 8, 6, 4 or 3 (CRT Adjust)
     output            unsupported,
 
     // observation for the bench
@@ -150,6 +154,8 @@ module gx_main (
     output reg [63:0] dbg_k338,              // the last write to K054338 register 14's high byte (probe O)
     output    [135:0] dbg_shd,               // gx_obj's shadow-code-1 tile probe (probe O)
     output    [111:0] dbg_mix,               // the mixer's registers (probe L)
+    output    [131:0] dbg_line,              // line time, tilemap and sprites (probe T)
+    input             tm_blank_skip,         // gx_tilemap's blank-row skip on
     output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
     input             peek_t,                // JTAG: read one granule of the packed image
     input      [19:0] peek_addr,
@@ -185,6 +191,7 @@ wire [3:0] pdiv_n = wrport2[1:0] == 2'd0 ? 4'd8 :    // 6 MHz
                     wrport2[1:0] == 2'd1 ? 4'd6 :    // 8 MHz
                     wrport2[1:0] == 2'd2 ? 4'd4 : 4'd3;
 assign pxl_cen_o = pxl_cen;
+assign pxl_div_o = pdiv_n;
 // control_w (0xd58000) bits 23:16 are wrport2; bit 22 releases the sound CPU
 // and DSP from reset (konamigx.cpp control_w)
 assign snd_run = wrport2[6];
@@ -259,18 +266,20 @@ wire [ 7:0] wr_qh, wr_ql;
 gx_sdpram #(.AW(16), .DW(8)) u_wram_h ( .clk, .we(wr_we_h), .wa(wr_a), .d(wr_d[15:8]), .ra(wr_a), .q(wr_qh) );
 gx_sdpram #(.AW(16), .DW(8)) u_wram_l ( .clk, .we(wr_we_l), .wa(wr_a), .d(wr_d[ 7:0]), .ra(wr_a), .q(wr_ql) );
 
-// palette, 0xd90000-0xd97fff: the CPU's copy, 8K x 32 in four byte lanes
-// (the x byte is RAM too, and the RAM test checks it); colour bytes are
-// forwarded to gx_mixer's palette as they are written
+// palette, 0xd90000-0xd97fff: 8K x 32 in four byte lanes. The colour bytes
+// live in gx_mixer's palette, which the CPU writes and reads back through
+// gx_video (pal_q); the x byte is RAM too (the RAM test checks it) and is
+// kept here.
 reg  [3:0]  pl_we;                          // { x, R, G, B }
 reg  [12:0] pl_a;
 reg  [15:0] pl_d;
 wire [7:0]  pl_q [4];
-genvar gl;
-generate for( gl=0; gl<4; gl=gl+1 ) begin : g_pal
-    gx_sdpram #(.AW(13), .DW(8)) u_lane ( .clk, .we(pl_we[gl]), .wa(pl_a),
-        .d( gl[0] ? pl_d[15:8] : pl_d[7:0] ), .ra(pl_a), .q(pl_q[gl]) );   // x, G: high byte
-end endgenerate
+wire [23:0] pal_q;
+gx_sdpram #(.AW(13), .DW(8)) u_pal_x ( .clk, .we(pl_we[3]), .wa(pl_a),
+    .d(pl_d[15:8]), .ra(pl_a), .q(pl_q[3]) );                           // x: high byte
+assign pl_q[2] = pal_q[23:16];
+assign pl_q[1] = pal_q[15:8];
+assign pl_q[0] = pal_q[7:0];
 
 // ------------------------------------------------------------ video
 reg         tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs;
@@ -284,7 +293,6 @@ reg  [15:0] vram_addr;
 reg  [13:1] spr_ram_addr;
 reg  [ 3:0] k46_addr, k338_addr, crtc_addr;
 reg  [ 5:0] k55_addr;
-reg  [ 2:0] pal_fwd_we;
 wire [15:0] vram_dout, spr_ram_dout;
 wire        int1, int2, obj_dma_busy, obj_ln_short;
 reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
@@ -305,12 +313,12 @@ gx_video u_video (
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj,
-    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd,
+    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .rmrd_addr, .tile_gfx_bank,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
-    .pal_we(pal_fwd_we), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }),
+    .pal_we(pl_we[2:0]), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }), .pal_q,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short
 );
 
@@ -318,7 +326,8 @@ gx_video u_video (
 wire ee_do;
 gx_eeprom93c46 u_ee (
     .rst, .clk, .blank(ee_blank), .cs(wrport1_0[1]), .sk(wrport1_0[2]), .di(wrport1_0[0]), .dout(ee_do), .dbg(dbg_ee),
-    .load_we(ee_load_we), .load_addr(ee_load_addr), .load_data(ee_load_data)
+    .load_we(ee_load_we), .load_addr(ee_load_addr), .load_data(ee_load_data),
+    .rd_addr(ee_rd_addr), .rd_data(ee_rd_data), .written(ee_written)
 );
 
 // ------------------------------------------------------------ ESC
@@ -572,7 +581,7 @@ always @(posedge clk) begin
     { tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs } <= 0;
     k47_we <= 0; k338_we <= 0;
     { wr_we_h, wr_we_l } <= 0;
-    pl_we <= 0; pal_fwd_we <= 0;
+    pl_we <= 0;
     snd_wr <= 0; snd_rd <= 0;
     spr_ram_we <= 0;
     if( rst ) begin
@@ -721,7 +730,6 @@ always @(posedge clk) begin
                 if( uwe ) begin
                     // word 0 of the entry: x (UDS), R (LDS); word 1: G, B
                     pl_we      <= ua[1] ? { 2'b00, ube } : { ube, 2'b00 };
-                    pal_fwd_we <= ua[1] ? { 1'b0, ube } : { ube[0], 2'b00 };
                 end
                 usrc <= R_PAL; ucnt <= 3'd2;
             end else if( ub >= 24'hda0000 && ub < 24'hda4000 ) begin

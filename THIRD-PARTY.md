@@ -131,6 +131,14 @@ Do not edit `sys/`. Framework updates overwrite it, and this project has no reas
 upstream. Build-time behaviour changes go in the `.qsf` as `VERILOG_MACRO` settings, which is a
 project decision rather than a modification of `sys/`.
 
+### rmonic79's CRT Adjust — GPL-3.0-or-later — **in the tree**
+
+Umberto Parisi (rmonic79). `rtl/video/crt/crt_adjust.sv` (from `Arcade-Raiden_MiSTer`) and
+`rtl/video/crt/crt_vsize.sv` (from <https://github.com/rmonic79/MiSTer-CRT-Adjust>, commit `c682de9`),
+both copied from `Arcade-Psikyo_MiSTer`, whose one fix to `crt_adjust.sv` (a signed `?:`) they
+keep. `crt_vsize.sv` has one more, marked `LOCAL FIX`: a line exactly `LINE_PX` pixels wide lost
+its last pixel. The glue, `rtl/video/gx_crt_chain.sv`, is this project's.
+
 ### ijor/fx68k — GPLv3 — *planned*
 
 <https://github.com/ijor/fx68k>, Copyright (c) 2018, 2021 Jorge Cwik. The cycle-accurate 68000 for

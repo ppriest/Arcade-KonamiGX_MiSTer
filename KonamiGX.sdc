@@ -6,10 +6,16 @@ derive_clock_uncertainty
 # degrees), clk_vid 48 MHz, clk_cpu 24 MHz, all at phase 0 except the SDRAM
 # pin's. derive_pll_clocks makes them related clocks, so every path between
 # the board (clk_vid), the 68EC020 (clk_cpu) and the memory (clk_sys) is
-# timed at the two clocks' closest edges. No exception is needed and none is
-# made: rtl/gx_main.sv's cpu_cen and rtl/memory/gx_rom_port.sv are written
-# for related clocks, not for asynchronous ones.
+# timed at the two clocks' closest edges: rtl/gx_main.sv's cpu_cen and
+# rtl/memory/gx_rom_port.sv are written for related clocks, not for
+# asynchronous ones. One exception, below.
 # ---------------------------------------------------------------------------
+
+# gx_rom_port with SYNC=1 (the sound board's ports and the ROM readback)
+# brings its done toggle back through two clk_vid registers; the first is a
+# synchroniser, and its hold against clk_sys is what failed when the fitter
+# put done_t and it side by side (gx_rom_port.sv, SYNC)
+set_false_path -from [get_registers {*|gx_rom_port:*|done_t}] -to [get_registers {*|gx_rom_port:*|done_s1}]
 
 # The game selector is static: the .mra mod byte, latched during the download
 set_false_path -from [get_registers {*mod_byte*}]

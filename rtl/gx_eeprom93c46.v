@@ -19,14 +19,22 @@
  * bits 00 LOCK, 01 WRITEALL, 10 ERASEALL, 11 UNLOCK. Writes and erases are
  * refused while locked; the part powers up locked, as MAME's does.
  *
- * NOT MODELLED: the write/erase busy time. MAME's ready() is modelled as
- * always true. Unverified against MAME's timing parameters.
+ * BUSY, as MAME's eeprom_base_device: a WRITE, ERASE, WRITEALL or ERASEALL
+ * that goes through holds the part busy for MAME's default times (the
+ * driver sets none): 1.75 ms, 1 ms, 8 ms and 8 ms. While busy, DO reads 0 in
+ * WAIT_FOR_START (MAME's do_read gives ready there) and a start bit is
+ * ignored. The model answered ready at once before. This did not fix Dragoon
+ * Might's settings save ("EEPROM CHECKSUM ERROR", README known issues).
  *
  * The contents are the 128-byte image MAME saves in nvram/<set>/eeprom, big
- * endian words; load_we/load_addr/load_data write it (the ioctl path later).
+ * endian words: load_we/load_addr/load_data write it (the .mra's default
+ * image, then the saved .nvm), rd_addr/rd_data read it back for the save,
+ * and `written` pulses when a command changes it.
  */
 
-module gx_eeprom93c46 (
+module gx_eeprom93c46 #(
+    parameter CLK_KHZ = 48000       // clk, for the busy times
+) (
     input             rst,
     input             blank,         // sweep the array to all ones
     input             clk,
@@ -38,7 +46,10 @@ module gx_eeprom93c46 (
     output     [63:0] dbg,           // { mem[63], mem[1], mem[0], 6'b0, sweep, locked, st }: the probe
     input             load_we,   // image load, one word
     input      [ 5:0] load_addr,
-    input      [15:0] load_data
+    input      [15:0] load_data,
+    input      [ 5:0] rd_addr,       // the save's read port
+    output     [15:0] rd_data,
+    output reg        written        // a WRITE, ERASE, WRITEALL or ERASEALL changed the array
 );
 
 localparam [2:0] S_RESET = 0, S_START = 1, S_CMD = 2, S_READ = 3, S_DATA = 4, S_DONE = 5;
@@ -61,15 +72,21 @@ reg  [ 4:0] nbits;
 reg  [31:0] shreg;
 reg  [ 5:0] addr;
 reg  [ 1:0] op;           // 0 read, 1 write, 2 writeall
+localparam [19:0] T_WRITE = CLK_KHZ * 1750 / 1000, T_ERASE = CLK_KHZ * 1, T_ALL = CLK_KHZ * 8;
+reg  [19:0] busy;         // clocks until ready
+wire        ready = busy == 20'd0;
 
-assign dout = st == S_READ ? shreg[31] : 1'b1;
+assign dout = st == S_READ ? shreg[31] : st == S_START ? ready : 1'b1;
 
 wire cs_rise = cs && !cs_l, cs_fall = !cs && cs_l;
 wire sk_rise = sk && !sk_l;
 wire [7:0] cmd_n = { cmd[6:0], di };
 
 integer i;
+assign rd_data = mem[rd_addr];
 always @(posedge clk) begin
+    written <= 1'b0;
+    if( !ready ) busy <= busy - 20'd1;
     if( blank ) begin
         sweep <= sweep + 6'd1;
         mem[sweep] <= 16'hffff;
@@ -80,6 +97,7 @@ always @(posedge clk) begin
         cs_l   <= 0;
         sk_l   <= 0;
         locked <= 1;
+        busy   <= 20'd0;
     end else begin
         cs_l <= cs;
         sk_l <= sk;
@@ -87,7 +105,7 @@ always @(posedge clk) begin
         else case( st )
             S_RESET: if( cs_rise ) st <= S_START;
             // MAME ignores a CLK edge at the same moment as the CS rise
-            S_START: if( sk_rise && di && !cs_rise ) begin
+            S_START: if( sk_rise && di && !cs_rise && ready ) begin
                 cmd <= 0; nbits <= 0; st <= S_CMD;
             end
             S_CMD: if( sk_rise ) begin
@@ -100,14 +118,18 @@ always @(posedge clk) begin
                         2'b10: begin shreg <= 0; st <= S_READ; end          // READ
                         2'b01: begin shreg <= 0; op <= 1; st <= S_DATA; end // WRITE
                         2'b11: begin                                          // ERASE
-                            if( !locked ) mem[cmd_n[5:0]] <= 16'hffff;
+                            if( !locked ) begin mem[cmd_n[5:0]] <= 16'hffff; written <= 1'b1; busy <= T_ERASE; end
                             st <= locked ? S_RESET : S_DONE;
                         end
                         default: case( cmd_n[5:4] )
                             2'b00: begin locked <= 1; st <= S_DONE; end       // LOCK
                             2'b01: begin shreg <= 0; op <= 2; st <= S_DATA; end // WRITEALL
                             2'b10: begin                                      // ERASEALL
-                                if( !locked ) for( i=0; i<64; i=i+1 ) mem[i] <= 16'hffff;
+                                if( !locked ) begin
+                                    for( i=0; i<64; i=i+1 ) mem[i] <= 16'hffff;
+                                    written <= 1'b1;
+                                    busy    <= T_ALL;
+                                end
                                 st <= locked ? S_RESET : S_DONE;
                             end
                             default: begin locked <= 0; st <= S_DONE; end     // UNLOCK
@@ -126,6 +148,8 @@ always @(posedge clk) begin
                     if( !locked ) begin
                         if( op == 2'd2 ) for( i=0; i<64; i=i+1 ) mem[i] <= { shreg[14:0], di };
                         else mem[addr] <= { shreg[14:0], di };
+                        written <= 1'b1;
+                        busy    <= op == 2'd2 ? T_ALL : T_WRITE;
                     end
                     st <= locked ? S_RESET : S_DONE;
                 end

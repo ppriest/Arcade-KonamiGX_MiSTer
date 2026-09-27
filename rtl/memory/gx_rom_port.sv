@@ -35,7 +35,21 @@
 module gx_rom_port #(
     parameter AW = 21,              // granule (8-byte) address bits from the client
     parameter PAIR = 0,             // 1: fetch a row's other half, and take hints
-    parameter NS = 4                // granules held
+    parameter NS = 4,               // granules held
+    // 1: the done toggle comes back through two clk registers, for a client
+    // whose fetches can take a clock more. The clocks are phase aligned but
+    // clk's tree arrives ~1 ns after clk_mem's, and when the fitter packs
+    // done_t and done_s into one LAB (a 0.6 ns hop) done_s catches the
+    // toggle on the edge it changes and the fetch is never seen done: seeds
+    // 4, 5 and 3 of the CRT Adjust build, u_snd, hold -0.18 to -0.71 ns. With
+    // SYNC the first stage is a synchroniser (KonamiGX.sdc false-paths it)
+    // and done is decided wholly in clk.
+    parameter SYNC = 0,
+    // 1: a fetch outside halfsel asks the arbiter for the granule and its
+    // pair (addr ^ 1) in one double read, and both are kept: a 5, 6 or 8 bpp
+    // sprite row is two granules, and one SDRAM access for both costs four
+    // clk_mem more than one, where two cost two round trips
+    parameter DBL = 0
 ) (
     input             clk,          // the client's, 48 MHz
     input             clk_mem,      // the arbiter's, 96 MHz
@@ -60,8 +74,10 @@ module gx_rom_port #(
     input  [25:0]     base,         // the region's byte address in SDRAM
     output reg        c_req,        // arbiter client (clk_mem)
     output reg [25:0] c_addr,
+    output reg        c_dbl,        // DBL: this request is a double read
     input             c_valid,
-    input  [63:0]     c_rdata
+    input  [63:0]     c_rdata,
+    input  [63:0]     c_rdata2      // DBL: the pair's odd granule
 );
 
 localparam VW = NS == 1 ? 1 : $clog2(NS);
@@ -98,10 +114,12 @@ reg  [AW-1:0] a_l;              // the fetch in flight
 reg           ansd;             // ok was pulsed for ans_addr, cs still high
 reg  [AW-1:0] ans_addr;
 reg  [63:0]   data_m;
-reg  [63:0]   data_f;           // halfsel: the whole granule
+reg  [63:0]   data_f;           // halfsel: the whole granule; DBL: the pair's other granule
 wire [VW-1:0] vic2 = vic==VW'(NS-1) ? {VW{1'b0}} : vic + 1'd1;
-reg           req_t = 0, done_t = 0, done_s = 0;
-wire          done   = done_t != done_s;
+reg           req_t = 0, done_t = 0, done_s = 0, done_s1 = 0;
+wire          done_c = SYNC ? done_s1 : done_t;
+wire          done   = done_c != done_s;
+always @(posedge clk) done_s1 <= done_t;
 
 wire [AW-1:0] pair_a = { ans_addr[AW-1:1], ~ans_addr[0] };
 wire          want   = cs && !(ansd && addr==ans_addr);
@@ -110,7 +128,7 @@ wire          pf_hint = PAIR==1 && hint_cs && !held(hint_addr) && !(busy && a_l=
 
 always @(posedge clk) begin
     ok     <= 0;
-    done_s <= done_t;
+    done_s <= done_c;
     if( rst ) begin
         busy <= 0; s_val <= {NS{1'b0}}; vic <= 0; ansd <= 0;
     end else begin
@@ -128,6 +146,11 @@ always @(posedge clk) begin
                 if( halfsel && NS > 1 ) begin
                     s_addr[vic2] <= { a_l[AW-1:1], ~a_l[0] };
                     s_data[vic2] <= a_l[0] ? { 32'd0, data_f[31:0] } : { 32'd0, data_f[63:32] };
+                    s_val[vic2]  <= 1'b1;
+                    vic          <= vic2==VW'(NS-1) ? {VW{1'b0}} : vic2 + 1'd1;
+                end else if( DBL && NS > 1 ) begin
+                    s_addr[vic2] <= { a_l[AW-1:1], ~a_l[0] };
+                    s_data[vic2] <= data_f;
                     s_val[vic2]  <= 1'b1;
                     vic          <= vic2==VW'(NS-1) ? {VW{1'b0}} : vic2 + 1'd1;
                 end
@@ -165,13 +188,16 @@ always @(posedge clk_mem) begin
     end else begin
         if( start ) begin
             c_req  <= 1;
-            c_addr <= base + ( halfsel ? { {(26-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }
+            c_dbl  <= DBL && !halfsel;
+            c_addr <= base + ( halfsel ? { {(26-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }         // the row's granule
+                             : DBL     ? { {(26-AW-3){1'b0}}, a_l[AW-1:1], 1'b0, 3'b000 }   // the pair's even one
                                        : { {(26-AW-3){1'b0}}, a_l, 3'b000 } );
         end
         if( c_req && c_valid ) begin
             c_req  <= 0;
-            data_m <= !halfsel ? c_rdata : a_l[0] ? { 32'd0, c_rdata[63:32] } : { 32'd0, c_rdata[31:0] };
-            data_f <= c_rdata;
+            data_m <= halfsel ? ( a_l[0] ? { 32'd0, c_rdata[63:32] } : { 32'd0, c_rdata[31:0] } ) :
+                      DBL     ? ( a_l[0] ? c_rdata2 : c_rdata ) : c_rdata;
+            data_f <= halfsel ? c_rdata : a_l[0] ? c_rdata : c_rdata2;
             done_t <= ~done_t;
         end
     end

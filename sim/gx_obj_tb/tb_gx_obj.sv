@@ -134,7 +134,8 @@ always #5.2085 clk_mem = ~clk_mem;
 wire        p_req;
 wire [25:0] p_addr;
 reg         p_valid = 0;
-reg  [63:0] p_rdata;
+reg  [63:0] p_rdata, p_rdata2;
+wire        p_dbl;
 wire        p_ok;
 wire [63:0] p_g;
 int         m_cnt = 0;
@@ -145,7 +146,7 @@ always @(posedge clk_mem) begin
     p_valid <= 0;
     p_req_l <= p_req;
     if (!p_req) m_cnt <= 0;
-    else if (m_cnt < ROM_LAT_M) m_cnt <= m_cnt + 1;
+    else if (m_cnt < ROM_LAT_M + (p_dbl ? 4 : 0)) m_cnt <= m_cnt + 1;   // a double read: four more
     else if (!p_valid) begin
         int g, h; reg [63:0] row, r1;
         g   = p_addr >> 3;
@@ -164,19 +165,23 @@ always @(posedge clk_mem) begin
         end else begin
             row = rom_v[((g >> 5) % ntiles) << 5 | g[4:0]];
             for (int k = 0; k < 8; k++) p_rdata[8*k +: 8] <= row[63 - 8*k -: 8];   // granule byte k = row byte k
+            h   = g + 1;                                                          // a double read's second
+            r1  = rom_v[((h >> 5) % ntiles) << 5 | h[4:0]];
+            for (int k = 0; k < 8; k++) p_rdata2[8*k +: 8] <= r1[63 - 8*k -: 8];
         end
         p_valid <= 1;
         m_cnt   <= 0;
     end
 end
 
-gx_rom_port #(.AW(22), .PAIR(1)) u_port (
+gx_rom_port #(.AW(22), .PAIR(1), .DBL(1)) u_port (
     .clk(clk), .clk_mem(clk_mem), .rst(rst),
     .cs(rom_cs && use_port != 0), .addr(rom_addr[21:0]), .ok(p_ok), .data(p_g),
     .hint_cs(dut.pf_cs && use_port != 0 && use_hint != 0), .hint_addr(dut.pf_addr[21:0]),
     .inval(1'b0), .halfsel(obj_layout == 1),         // as gx_sdram_top: RNG
     .base(26'd0),
-    .c_req(p_req), .c_addr(p_addr), .c_valid(p_valid), .c_rdata(p_rdata)
+    .c_req(p_req), .c_addr(p_addr), .c_valid(p_valid), .c_rdata(p_rdata),
+    .c_dbl(p_dbl), .c_rdata2(p_rdata2)
 );
 
 assign rom_ok   = use_port ? p_ok : id_ok;
@@ -216,6 +221,7 @@ end
 // the drawer, the drawer's pixel writes and its ROM waits; the worst line
 int line_stats = 0;
 initial void'($value$plusargs("LINE_STATS=%d", line_stats));
+int ls_p2 = 0, ls_zm = 0, ls_dr = 0;
 int ls_scan = 0, ls_wait = 0, ls_pix = 0, ls_rom = 0, ls_tiles = 0, ls_line = 0, ls_skip = 0, ls_rd = 0, ls_mv = 0;
 int ls_worst = 0;
 reg ls_hs = 0;
@@ -224,16 +230,20 @@ always @(posedge clk) if (line_stats != 0) begin
     if (hs && !ls_hs) begin
         if (ls_scan + ls_wait > ls_worst || ls_tiles > 100) begin
             if (ls_scan + ls_wait > ls_worst) ls_worst = ls_scan + ls_wait;
-            $display("LINE %03x tiles %0d scan %0d wait %0d pix %0d romwait %0d done %0d idle_q %0d busy %0d starved %0d",
-                     vdump, ls_tiles, ls_scan, ls_wait, ls_pix, ls_rom, dut.u_scan.u_scan.done, ls_skip, ls_rd, ls_mv);
+            $display("LINE %03x tiles %0d scan %0d wait %0d pix %0d romwait %0d done %0d idle_q %0d busy %0d starved %0d pix2 %0d zoomed %0d draws %0d",
+                     vdump, ls_tiles, ls_scan, ls_wait, ls_pix, ls_rom, dut.u_scan.u_scan.done, ls_skip, ls_rd, ls_mv, ls_p2, ls_zm, ls_dr);
         end
-        ls_scan = 0; ls_wait = 0; ls_pix = 0; ls_rom = 0; ls_tiles = 0; ls_skip = 0; ls_rd = 0; ls_mv = 0;
+        ls_p2 = 0; ls_zm = 0; ls_dr = 0; ls_scan = 0; ls_wait = 0; ls_pix = 0; ls_rom = 0; ls_tiles = 0; ls_skip = 0; ls_rd = 0; ls_mv = 0;
     end else begin
         if (!dut.u_scan.u_scan.done) begin
             if ({dut.u_scan.u_scan.indr, dut.u_scan.u_scan.scan_sub} >= 5) ls_wait++;
             else ls_scan++;
         end
         if (dut.u_draw.u_draw.buf_we) ls_pix++;
+        // pix2: pixel clocks that wrote two; zoomed: pixel clocks of a zoomed tile
+        if (dut.u_draw.u_draw.buf_we && dut.u_draw.u_draw.pair2) ls_p2++;
+        if (dut.u_draw.u_draw.buf_we && !dut.u_draw.u_draw.no_zoom) ls_zm++;
+        if (dut.u_draw.u_draw.draw && !dut.u_draw.u_draw.busy) ls_dr++;
         if (dut.u_draw.u_draw.busy && dut.u_draw.u_draw.cnt[3]) ls_rom++;
         if (dut.q_push) ls_tiles++;
         // idle_q: the drawer free with tiles queued; busy: the drawer's

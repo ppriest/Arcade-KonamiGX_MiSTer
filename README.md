@@ -7,14 +7,15 @@ DE10-nano.
 ## Contents
 
 - [History](#history)
+- [Status](#status)
 - [Games](#games)
   - [Supported](#supported)
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
+  - [CRT Adjust](#crt-adjust)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
-- [Status](#status)
   - [Todo](#todo)
   - [Resource usage](#resource-usage)
 - [AI Attestation](#ai-attestation)
@@ -25,14 +26,36 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGX_20260928**
+  * Sprites now keep up on busy lines due to various optimisations: Fixes Crazy Cross intro, Dragoon, Salamnder 2 later levels
+  * EEPROM support
+  * CRT Adjust
+
 * **Arcade-KonamiGX_20260927**
   * **Beta**
   * Sprites still run out of line time on Dragoon Might's and Winning Spike's busiest lines
   * EEPROM is not saved.
 
-**Status**: All listed games run and are playable with sound. There is some places where the drawing can't keep up e.g. Dragoon. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity.
+## Status
+
+**Status**: All listed games run and are playable with sound. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity.
 
 Graphically, they're still WIP - but MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
+
+Known issues:
+* **Dragoon Might's power-on memory check can fail 4F and 4H**, the sound DSP's RAM test: the DSP
+  has not finished it when the sound CPU gives up waiting. Resetting the core from the OSD passes
+  it.
+* **Saving settings in Dragoon Might's service menu stops on "EEPROM CHECKSUM ERROR"** and the game
+  has to be reset. The settings are written: opening the OSD saves them, and they are there on the
+  next launch. The save routine (0x243b1e) reads every word back and compares the byte sum with
+  word 0; that check fails on the core although the EEPROM it leaves passes it, and the boot, which
+  reads with the same routine, does not fail. Not yet explained; the 93C46's busy time did not fix
+  it.
+
+`docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
+`docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
+
 
 ## Games
 
@@ -174,39 +197,28 @@ To run a development build:
 * Put the MAME merged ROM sets in `games/mame`, plus `konamigx.zip` (the BIOS, which every set
   needs)
 
-## Status
-
-Known issues:
-* **Sprites drop out on busy lines**: the sprite engine can run out of line time, because a sprite
-  row costs SDRAM fetches (Dragoon Might, Winning Spike).
-* Two shadows on one pixel keep one, where MAME applies both (`docs/MAME_KLUDGES.md`).
-* **The EEPROM starts from the driver's default image** (or blank, for daiskiss and sexyparo)
-  on every boot and is not saved.
-
-`docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
-`docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
-
 ### Todo
 
-- [ ] EEPROM save/load through the `.nvm` file
-- [ ] Sprite drawing time on busy lines
+- [ ] Dragoon Might's DSP RAM test on first boot
+- [ ] Dragoon Might's settings save: the EEPROM read-back check
 - [ ] The K055673 and K056832 ROM readback windows, screen flip, `hiscore.v`
 
 ### Resource usage
 
-The release build (`KonamiGX`, commit `928b168`) on the DE10-nano's Cyclone V 5CSEBA6, speed
-grade 7, timing met on every clock:
+The release build (`KonamiGX`, commit `edd366c`, fitter seed 3) on the DE10-nano's Cyclone V
+5CSEBA6, speed grade 7, timing met on every clock:
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 28,655 (68%) | 41,910 |
-| Block memory bits | 4,217,325 (74%) | 5,662,720 |
-| RAM blocks | 530 (96%) | 553 |
-| DSP blocks | 67 (60%) | 112 |
+| Logic (ALMs) | 30,791 (73%) | 41,910 |
+| Block memory bits | 4,308,365 (76%) | 5,662,720 |
+| RAM blocks | 539 (97%) | 553 |
+| DSP blocks | 75 (67%) | 112 |
 | PLLs | 3 | 6 |
 
 The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
-reason.
+reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust's V-Size ring is
+sized to what is left (30 blocks).
 
 ## AI Attestation
 

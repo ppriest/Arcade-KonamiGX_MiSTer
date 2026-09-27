@@ -129,6 +129,8 @@ module gx_obj #(parameter
     output     [ 7:0] shd_z,
     output            dma_busy,      // the object DMA is copying (status bit, IRQ 3 at its end)
     output reg        ln_short,      // one clock: the scan had not finished the line when the next began
+    output reg        ln_start,      // one clock: a line of the checked range begins (line-time probe)
+    output            ln_busy,       // the line's scan, queue or drawer is not done
     // the first tile each frame of a sprite with shadow code 1: { rom data
     // [63:0], rom address [86:64], code18 [104:87], shadow mode [106:105],
     // solid [107], partial [108], attr_full [124:109], OBJSET1 [132:125],
@@ -187,7 +189,9 @@ always @(posedge clk) begin
     // the line is done when the scan is and the queue and the drawer are empty
     ln_short <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7
                 && !(ln_done && q_empty && !dr_busy);
+    ln_start <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7;
 end
+assign ln_busy = !(ln_done && q_empty && !dr_busy);
 wire [ 3:0] ysub;
 wire        pf_on;
 wire [15:0] pf_code;
@@ -317,38 +321,42 @@ end
 // line costs the longer of the two. The ROM hint is the queue's head, the
 // tile the drawer takes next. A new line starts with the queue emptied, as
 // the scan starts its walk again.
-localparam QD = 8;
+localparam QD = 16;
+localparam QA = 4;                      // log2(QD)
 localparam QW = 18 + 10 + 4 + 12 + 3 + 55;
+wire [3:0] obpp  = obj_layout==2'd1 ? 4'd4 : obj_layout==2'd2 ? 4'd6 :
+                   obj_layout==2'd3 ? 4'd8 : 4'd5;
+wire [7:0] shpen = 8'hff >> ( 4'd8 - obpp );          // 2^bpp - 1
 wire [54:0]   c_pal = { shd_defer[shset], shpen, zcode_e, pri, spri, obj_idx, color, solid, mode1, shmode, shset };
 (* ramstyle = "logic" *) reg [QW-1:0] q_mem [0:QD-1];
-reg  [ 2:0]   q_wp, q_rp;
-reg  [ 3:0]   q_n;
+reg  [QA-1:0] q_wp, q_rp;
+reg  [QA:0]   q_n;
 reg  [QW-1:0] q_out;                    // the tile the drawer was given, held for its latch
 reg           q_flag [0:QD-1];          // probe: the tile dbg_shd follows
 reg           qf_out, shd_arm, lvbl_d;
 reg           q_draw, draw_l;
 wire          q_push = draw && !draw_l; // dr_start is high for a cen2 period
 assign q_full  = q_n >= QD - 1;         // room for one more push in flight
-assign q_empty = q_n == 4'd0;
+assign q_empty = q_n == 0;
 wire          q_pop  = !q_empty && !dr_busy && !q_draw;
 always @(posedge clk) begin
     draw_l <= draw;
     q_draw <= 1'b0;
     if( rst || (hs && !hs_l2) ) begin
-        q_wp <= 3'd0; q_rp <= 3'd0; q_n <= 4'd0;
+        q_wp <= 0; q_rp <= 0; q_n <= 0;
     end else begin
         if( q_push ) begin
             q_mem[q_wp] <= { code18, hpos, ysub, hzoom, hz_keep, hflip, vflip, c_pal };
             q_flag[q_wp] <= shd_arm && shcode == 2'd1;
-            q_wp <= q_wp + 3'd1;
+            q_wp <= q_wp + 1'd1;
         end
         if( q_pop ) begin
             q_out  <= q_mem[q_rp];
             qf_out <= q_flag[q_rp];
-            q_rp   <= q_rp + 3'd1;
+            q_rp   <= q_rp + 1'd1;
             q_draw <= 1'b1;
         end
-        q_n <= q_n + { 3'd0, q_push } - { 3'd0, q_pop };
+        q_n <= q_n + q_push - q_pop;
     end
 end
 wire [17:0] qd_code  = q_out[QW-1 -: 18];
@@ -415,9 +423,6 @@ end
 
 // the half-row -> jtframe_draw's format (one plane per byte, leftmost pixel
 // in the LSB); the planes past the layout's depth are zero
-wire [3:0] obpp  = obj_layout==2'd1 ? 4'd4 : obj_layout==2'd2 ? 4'd6 :
-                   obj_layout==2'd3 ? 4'd8 : 4'd5;
-wire [7:0] shpen = 8'hff >> ( 4'd8 - obpp );          // 2^bpp - 1
 genvar gk, gi;
 generate for( gk=0; gk<8; gk=gk+1 ) begin : g_plane
     for( gi=0; gi<8; gi=gi+1 ) begin : g_bit

@@ -82,6 +82,14 @@ localparam CONF_STR = {
 	// is for a rotated monitor, not for the game.
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
+	// analog 15 kHz (rtl/video/gx_crt_chain.sv); HDMI follows it while On.
+	// H2: the settings, shown while CRT Adjust is On
+	"O[75],CRT Adjust,Off,On;",
+	"H2O[82:76],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[88:83],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[93:89],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[97:94],CRT V-Size,0,+1,+2,+3,+4,+5,+6,+7,-7,-6,-5,-4,-3,-2,-1;",
+	"H2O[98],CRT V-Size Mode,PVM,Cabinet;",
 	// le2's guns (H1: shown for the gun sets): MAME's crosshair where each
 	// gun points; the left stick per player -- Auto moves a pushed-full axis
 	// as the d-pad does (arcade sticks on gamepad encoders), Aim is always
@@ -121,6 +129,10 @@ wire        ioctl_wr;
 wire [26:0] ioctl_addr;
 wire  [7:0] ioctl_dout;
 wire        ioctl_wait;
+wire        ioctl_upload;
+wire [15:0] ee_rd_data;                 // the NVRAM save (below, with the EEPROM load)
+wire        ee_written;
+reg         nv_dirty = 1'b0, nv_save = 1'b0, osd_d = 1'b0;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
@@ -133,7 +145,7 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({ 14'd0, ~guns, 1'b0 }),     // H1: the gun options
+	.status_menumask({ 13'd0, ~status[75], ~guns, 1'b0 }),   // H1: the gun options; H2: CRT Adjust's
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
@@ -147,6 +159,12 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
+	// the .mra's <nvram index="4">: the EEPROM, uploaded when nv_save rises
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(nv_save),
+	.ioctl_upload_index(8'd4),
+	.ioctl_din(ioctl_addr[0] ? ee_rd_data[7:0] : ee_rd_data[15:8]),
+	.ioctl_rd(),
 
 	.ps2_key()
 );
@@ -357,21 +375,38 @@ wire  [7:0] service = ~{ 4'b0000, joystick_0[13] | joystick_1[13], guns & gun_tr
 // <rom index="2">: MAME's "eeprom" region, big-endian words, which most sets
 // ship "to prevent game booting with error") loaded a word at a time. The
 // board is in reset throughout. A later reset does not blank it, so the
-// contents survive an OSD reset. ioctl_wr is a clk_sys pulse; the write
-// enable is held two clk_sys cycles so the 48 MHz part sees it.
+// contents survive an OSD reset. The saved EEPROM, the .mra's <nvram
+// index="4">, arrives the same way after the ROM and overwrites the default.
+// ioctl_wr is a clk_sys pulse; the write enable is held two clk_sys cycles so
+// the 48 MHz part sees it.
 reg  [1:0] ee_we_s = 0;
 reg  [5:0] ee_a;
 reg  [7:0] ee_hi;
 reg [15:0] ee_d;
 always @(posedge clk_sys) begin
 	ee_we_s <= { ee_we_s[0], 1'b0 };
-	if (ioctl_wr && ioctl_index == 16'd2 && !ioctl_addr[24:7]) begin
+	if (ioctl_wr && (ioctl_index == 16'd2 || ioctl_index == 16'd4) && !ioctl_addr[24:7]) begin
 		if (!ioctl_addr[0]) ee_hi <= ioctl_dout;
 		else begin ee_we_s <= 2'b11; ee_a <= ioctl_addr[6:1]; ee_d <= { ee_hi, ioctl_dout }; end
 	end
 end
 wire ee_we = |ee_we_s;
 wire ee_blank = rst_vid & ~dl_index0_seen;
+
+// NVRAM save: the HPS reads the EEPROM back into the .mra's <nvram> file
+// (config/nvram) when asked, which is when the OSD opens after the game has
+// written it -- Arcade-JalecoMS32_MiSTer's shape. The upload reads
+// ioctl_addr's byte, big-endian words as the load. ee_written is a clk_vid
+// pulse, two clk_sys cycles.
+always @(posedge clk_sys) begin
+	osd_d   <= OSD_STATUS;
+	nv_save <= 1'b0;
+	if (ee_written) nv_dirty <= 1'b1;
+	if (OSD_STATUS && !osd_d && nv_dirty) begin
+		nv_save  <= 1'b1;
+		nv_dirty <= 1'b0;
+	end
+end
 
 // <switches> (ioctl index 254): byte 0 = SW1 (0xd5a000), byte 1 = SW2
 // (0xd5a001), as build_mra.py writes them from the driver's SYSTEM_DSW port
@@ -389,6 +424,7 @@ wire  [7:0] snd_dout, snd_din;
 
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, pxl_cen, unsupported, dbg_access;
+wire  [3:0] pxl_div;
 // The sound board: the K056800 with the sound CPU behind it running the
 // real program, held in reset until the main CPU releases it.
 wire        snd_run;
@@ -445,6 +481,7 @@ wire [95:0] dbg_obj;
 wire [63:0] dbg_k338;
 wire [135:0] dbg_shd;
 wire [111:0] dbg_mix;
+wire [131:0] dbg_line;
 wire [83:0] dbg_rom;
 wire [ 1:0] dbg_esc;
 
@@ -455,9 +492,11 @@ wire [ 1:0] dbg_esc;
 `ifdef DEBUG_ISSP
 wire [31:0] peek_src;
 wire [31:0] mem_src;
+wire  [7:0] line_src;                   // probe T: [0] turns gx_tilemap's blank-row skip off
 `else
 wire [31:0] peek_src = 32'd0;
 wire [31:0] mem_src  = 32'd0;
+wire  [7:0] line_src = 8'd0;
 `endif
 wire [87:0] dbg_mem;
 
@@ -481,11 +520,12 @@ gx_main u_board (
 	.snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din,
 	.inputs, .coins, .dsw, .service,
 	.ee_blank(ee_blank), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
+	.ee_rd_addr(ioctl_addr[6:1]), .ee_rd_data(ee_rd_data), .ee_written(ee_written),
 	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
-	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .unsupported,
+	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
-	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_rom(dbg_rom),
+	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .dbg_rom(dbg_rom),
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
 	.rom_top(tile_base), .pause_cpu(pause_cpu), .snd_run,
 	.tile_base, .obj_base, .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
@@ -588,6 +628,11 @@ issp_probe #(.INSTANCE_ID("J"), .PROBE_W(96), .SOURCE_W(8)) u_issp_obj (
 issp_probe #(.INSTANCE_ID("I"), .PROBE_W(96), .SOURCE_W(8)) u_issp_esc (
 	.clk(clk_vid), .probe(dbg_esc_st), .source()
 );
+// Instance T, 132 bits: line time per frame (gx_video dbg_line; fields_T).
+// Source bit 0 turns the blank-row skip off, to compare the same scene.
+issp_probe #(.INSTANCE_ID("T"), .PROBE_W(132), .SOURCE_W(8)) u_issp_line (
+	.clk(clk_vid), .probe(dbg_line), .source(line_src)
+);
 `endif
 
 ///////////////////////   VIDEO   ////////////////////////////////
@@ -602,15 +647,43 @@ gx_guns u_guns (
 	.rgb_in(rgb), .rgb_out(rgb_x)
 );
 
+// ---------------------------------------------------------- CRT Adjust
+// rmonic79's CRT Adjust and CRT V-Size, glued as in Arcade-Psikyo_MiSTer
+// (rtl/video/gx_crt_chain.sv says where GX differs). The OSD stores list
+// indices: H-Position's 97 entries wrap at 97, V-Size's 15 at 15, V-Shift
+// and H-Size are plain two's complement. H-Size and V-Size are held at 0
+// while the scandoubler or its effects are on.
+wire              crt_on      = status[75];
+wire              crt_scale   = ~(forced_scandoubler | |status[46:44]);
+wire        [6:0] crt_hpos_ix = status[82:76];
+wire signed [8:0] crt_hoffset = crt_hpos_ix <= 7'd48 ? $signed({ 2'b00, crt_hpos_ix })
+                                                     : $signed({ 2'b00, crt_hpos_ix }) - 9'sd97;
+wire        [3:0] crt_vsz_ix  = status[97:94];
+wire signed [3:0] crt_vsz     = crt_vsz_ix <= 4'd7 ? $signed(crt_vsz_ix) : $signed(crt_vsz_ix - 4'd15);
+
+wire       crt_ce, crt_hs, crt_vs, crt_hb, crt_vb;
+wire [7:0] crt_r, crt_g, crt_b;
+
+gx_crt_chain u_crt (
+	.clk(clk_vid), .ce_pix(pxl_cen), .pxl_div,
+	.active(crt_on), .scale_en(crt_scale),
+	.hoffset(crt_hoffset), .voffset($signed(status[88:83])), .hsize($signed(status[93:89])),
+	.vsize_step(crt_vsz), .vsize_cabinet(status[98]),
+	.r_in(rgb_x[23:16]), .g_in(rgb_x[15:8]), .b_in(rgb_x[7:0]),
+	.hs_in(vid_hs), .vs_in(vid_vs), .hb_in(~vid_lhbl), .vb_in(~vid_lvbl),
+	.ce_out(crt_ce), .r_out(crt_r), .g_out(crt_g), .b_out(crt_b),
+	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb)
+);
+
 arcade_video #(.WIDTH(384), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_vid),
-	.ce_pix(pxl_cen),
-	.RGB_in(rgb_x),
-	.HBlank(~vid_lhbl),
-	.VBlank(~vid_lvbl),
-	.HSync(vid_hs),
-	.VSync(vid_vs),
+	.ce_pix(crt_ce),
+	.RGB_in({ crt_r, crt_g, crt_b }),
+	.HBlank(crt_hb),
+	.VBlank(crt_vb),
+	.HSync(crt_hs),
+	.VSync(crt_vs),
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
 	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),

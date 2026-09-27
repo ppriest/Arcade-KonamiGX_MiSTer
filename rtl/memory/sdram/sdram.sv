@@ -56,6 +56,10 @@ module sdram
 	input             req0,
 	output reg        ack0 = 1'b0,   // see PROVENANCE.md -- simulation-fidelity fix,
 	                                  // matches ack1/ack2 and `state` below
+	// [GX] port 0 only: with dbl0, two granules -- addr0 (8-word aligned)
+	// in dout0, the next in dout0b -- by a second READ to the open row
+	input             dbl0,
+	output     [63:0] dout0b,
 
 	input      [25:1] addr1,
 	input             wrl1,
@@ -105,6 +109,13 @@ localparam STATE_READ1  = STATE_READ0+4'd1;
 localparam STATE_READ2  = STATE_READ0+4'd2;
 localparam STATE_READ3  = STATE_READ0+4'd3;
 localparam STATE_LAST   = STATE_READ3;         // last state in cycle
+// [GX] a double read: the second READ four cycles after the first, its
+// burst following the first's without a gap, and the cycle four longer
+localparam STATE_CONT2  = STATE_CONT+4'd4;
+localparam STATE_READ4  = STATE_READ0+4'd4;
+localparam STATE_READ5  = STATE_READ0+4'd5;
+localparam STATE_READ6  = STATE_READ0+4'd6;
+localparam STATE_READ7  = STATE_READ0+4'd7;
 
 reg  [3:0] state = 4'd0;   // upstream relies on Quartus's zero-power-up default for
                             // FPGA registers (real hardware); explicit here since plain
@@ -115,6 +126,7 @@ reg [22:1] a;
 reg        a25;   // byte address bit 25: column bit A9 on a 64 MB chip
 reg [15:0] data;
 reg        we;
+reg        dbl = 0;   // [GX] this access is a double read
 reg  [1:0] ba = 0;
 reg  [1:0] dqm;
 reg        active = 0;
@@ -141,9 +153,11 @@ reg        rfs = 1'b0, rfs2 = 1'b0;
 reg         init_old = 1'b0;
 
 reg [63:0] dout;
+reg [63:0] doutb;    // [GX] a double read's second granule
 reg [15:0] dq_in;    // the bus, captured once per cycle -- see the lane captures
 
 assign dout0 = dout;
+assign dout0b = doutb;
 assign dout1 = dout;
 assign dout2 = dout;
 
@@ -184,6 +198,7 @@ always @(posedge clk) begin
 			rfs2 <= 0;
 			rfs_cnt <= 0;
 			we <= 0;
+			dbl <= 0;
 			dqm <= 2'b00;
 			active <= 0;
 			state <= STATE_START;
@@ -192,6 +207,7 @@ always @(posedge clk) begin
 			{a25,ba,a} <= addr0;
 			data <= din0;
 			we <= wr[0];
+			dbl <= dbl0 && !wr[0];
 			dqm <= wr[0] ? ~{wrh0,wrl0} : 2'b00;
 			active <= 1;
 			ram_req[0] <= 1;
@@ -202,6 +218,7 @@ always @(posedge clk) begin
 			{a25,ba,a} <= addr1;
 			data <= din1;
 			we <= wr[1];
+			dbl <= 0;
 			dqm <= wr[1] ? ~{wrh1,wrl1} : 2'b00;
 			active <= 1;
 			ram_req[1] <= 1;
@@ -212,6 +229,7 @@ always @(posedge clk) begin
 			{a25,ba,a} <= addr2;
 			data <= din2;
 			we <= wr[2];
+			dbl <= 0;
 			dqm <= wr[2] ? ~{wrh2,wrl2} : 2'b00;
 			active <= 1;
 			ram_req[2] <= 1;
@@ -252,8 +270,12 @@ always @(posedge clk) begin
 	if (state == STATE_READ0 && ram_req && !we) dout[15:0]  <= dq_in;
 	if (state == STATE_READ1 && ram_req && !we) dout[31:16] <= dq_in;
 	if (state == STATE_READ2 && ram_req && !we) dout[47:32] <= dq_in;
-	if (state == STATE_READ3 && ram_req) begin
-		if (!we) dout[63:48] <= dq_in;
+	if (state == STATE_READ3 && ram_req && !we) dout[63:48] <= dq_in;
+	if (state == STATE_READ4 && ram_req && dbl) doutb[15:0]  <= dq_in;   // [GX]
+	if (state == STATE_READ5 && ram_req && dbl) doutb[31:16] <= dq_in;
+	if (state == STATE_READ6 && ram_req && dbl) doutb[47:32] <= dq_in;
+	if (state == STATE_READ7 && ram_req && dbl) doutb[63:48] <= dq_in;
+	if (state == (dbl ? STATE_READ7 : STATE_READ3) && ram_req) begin
 		active <= 0;
 		ram_req <= 0;
 		if (ram_req[0]) ack0 <= req0;
@@ -263,7 +285,7 @@ always @(posedge clk) begin
 
 	if(mode != MODE_NORMAL || state != STATE_IDLE || reset) begin
 		state <= state + 4'd1;
-		if(state == STATE_LAST) state <= STATE_IDLE;
+		if(state == (dbl ? STATE_READ7 : STATE_LAST)) state <= STATE_IDLE;   // [GX] dbl
 	end
 end
 
@@ -317,6 +339,9 @@ always @(posedge clk) begin
 
 		                          default: {SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_NOP;
 	endcase
+	// [GX] a double read's second READ, the row still open
+	if(mode == MODE_NORMAL && state == STATE_CONT2 && active && !we && dbl)
+		{SDRAM_nRAS, SDRAM_nCAS, SDRAM_nWE} <= CMD_READ;
 
 	if(mode == MODE_NORMAL) begin
 		casex(state)
@@ -338,7 +363,10 @@ always @(posedge clk) begin
 			// on both modules. This is the 128 MB module's layout: 2 x 64 MB, the
 			// second chip selected by byte address bit 26, which this core does
 			// not use (FG-3 needs 56.5 MB).
-			STATE_CONT:  SDRAM_A <= {dqm, 1'b1, a25, a[9:1]};
+			// [GX] a double read's first READ leaves the row open (A10 low)
+			// for its second, at the next four columns, which precharges
+			STATE_CONT:  SDRAM_A <= {dqm, !dbl, a25, a[9:1]};
+			STATE_CONT2: if (dbl) SDRAM_A <= {dqm, 1'b1, a25, a[9:3], 2'b00} | 13'd4;
 		endcase
 	end
 	else if(mode == MODE_LDM && state == STATE_START) SDRAM_A <= MODE;

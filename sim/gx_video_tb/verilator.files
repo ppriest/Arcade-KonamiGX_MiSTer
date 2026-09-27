@@ -4,6 +4,7 @@ rtl/jtframe/jtframe_ff_jk.v
 rtl/video/k053252/jtk053252_mmr.v
 rtl/video/k053252/jtk053252.v
 rtl/video/gx_sdpram.sv
+rtl/video/gx_tdpram.sv
 rtl/video/gx_obj_linebuf.v
 rtl/video/gx_obj.v
 rtl/video/k055673/jt053246.sv

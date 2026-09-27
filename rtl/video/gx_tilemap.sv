@@ -65,6 +65,10 @@ module gx_tilemap (
     output              busy,
     output reg          unsupported,
     output      [15:0]  dbg_regs5,   // register 0x0a (line-scroll modes), for the probe
+    // a clock per tile row: { skipped, fetched and transparent, fetched }
+    // (the line-time probe)
+    output reg  [ 2:0]  dbg_ev,
+    input               blank_skip,  // answer a repeat of the last transparent row without the ROM
     // the bank the CPU's ROM readback window reads through (k056832's
     // m_cur_gfx_banks: registers 0x1a and 0x1b)
     output      [31:0]  gfx_bank,
@@ -301,9 +305,23 @@ end endgenerate
 
 assign busy = st != IDLE;
 
+// Blank rows. A text layer's empty area is mostly one blank tile, so each
+// layer keeps the ROM address of the last row it fetched that came back
+// transparent (every byte the depth uses 0), and a tile whose row has that
+// address skips the ROM: fewer requests on the graphics port the sprites
+// share. The row is then all zeros, which draws what the ROM's would.
+wire        row_blank = tile_bpp == 2'd2 ? rom_data == 64'd0 :
+                        tile_bpp == 2'd1 ? rom_data[63:16] == 48'd0 : rom_data[63:24] == 40'd0;
+wire [23:0] f_key     = { t_code, t_y };
+reg  [23:0] blank_key [4];
+reg  [ 3:0] blank_kv;
+wire        f_skip    = blank_skip && blank_kv[layer] && blank_key[layer] == f_key;
+
 always @(posedge clk) begin
-    lb_we <= 1'b0;
+    lb_we  <= 1'b0;
+    dbg_ev <= 3'd0;
     if (rst) begin
+        blank_kv    <= 4'd0;
         st          <= IDLE;
         fst         <= F_IDLE;
         wr_half     <= 1'b0;
@@ -374,15 +392,26 @@ always @(posedge clk) begin
                     fflip    <= t_flip;
                     fcol     <= t_col;
                     ftx      <= fmx[2:0];
-                    rom_addr <= { t_code, t_y };
-                    rom_cs   <= 1'b1;
+                    rom_addr <= f_key;
                     fmx      <= fnext == width ? 12'd0 : fnext;
                     fleft    <= fleft - 6'd1;
-                    fst      <= F_RWAIT;
+                    if (f_skip) begin
+                        frow   <= 64'd0;
+                        dbg_ev <= 3'b100;
+                        fst    <= F_HOLD;
+                    end else begin
+                        rom_cs <= 1'b1;
+                        fst    <= F_RWAIT;
+                    end
                 end
                 F_RWAIT: if (rom_ok) begin
                     frow   <= rom_data;
                     rom_cs <= 1'b0;
+                    dbg_ev <= { 1'b0, row_blank, 1'b1 };
+                    if (row_blank) begin
+                        blank_key[layer] <= rom_addr;
+                        blank_kv[layer]  <= 1'b1;
+                    end
                     fst    <= F_HOLD;
                 end
                 F_HOLD: if (nb_free) fst <= F_IDLE;

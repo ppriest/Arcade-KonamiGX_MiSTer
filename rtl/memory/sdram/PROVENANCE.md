@@ -7,7 +7,7 @@
 | Upstream | Sorgelig's `sdram.v`, GPL-3.0-or-later, taken from `MiSTer-devel/Arcade-Jackal_MiSTer/rtl/ram_rom/sdram.sv`. Kept verbatim beside it as `sdram_upstream_reference.sv` for diffing. |
 | Then | `Arcade-Psikyo_MiSTer/rtl/memory/sdram/` — extended to burst-4 reads and proved on real DE10-nano hardware. |
 | Then | `Arcade-Fuuki_MiSTer/rtl/memory/sdram/` — carried across, with the surrounding stack widened to 26-bit addresses for a 128 MB module. |
-| Here | Copied from that Fuuki tree **untouched**. Do not edit. |
+| Here | Copied from that Fuuki tree, then one change, marked `[GX]`: the double read, below. |
 
 The rest of the stack beside it (`sdram_phy.sv`, `sdram_arbiter.sv`,
 `sdram_download.sv`, `sdram_narrow_bridge.sv`, `rom_loader.sv`, `ddram_phy.sv`)
@@ -31,6 +31,19 @@ Targets the MiSTer SDRAM add-on board: an `MT48LC16M16` (16-bit data bus, 2 bank
 9-bit column, 24-bit word address = **32 MB**), reached through the DE10-nano's `SDRAM_*` pins.
 Three independent client ports, **fixed priority port0 -> port1 -> port2** when more than one is
 idle-ready — not round-robin, which matters when deciding what to put behind each one.
+
+## The double read (`[GX]`, this project)
+
+Port 0 takes `dbl0` with a request: two granules, `addr0` (8-word aligned) into `dout0` and the
+next into `dout0b`. The first READ goes out without auto-precharge (A10 low), a second READ four
+cycles later at column + 4 with it, and its burst follows the first's with no gap, so the access is
+four cycles longer than a single one instead of a second round trip. A 5, 6 or 8 bpp sprite row is
+two granules (one per half-row, adjacent, so always in one row of the chip), and one access each cost
+Crazy Cross's busiest sprite lines their line time on the board (probe J: 34 short lines a frame).
+
+`sim/common/sdram_chip_model_wide.sv` needed one change for it: a READ arriving on a burst's last
+beat must start the new burst, and the model let the old burst's bookkeeping win.
+`check_gx_sdram` passes on crzcross, le2, salmndr2 and dragoonj.
 
 ## Why it is not upstream-verbatim
 

@@ -42,7 +42,7 @@ module gx_video_synth_top (
         .vram_we(r[100]), .vram_rd(r[101]), .vram_addr(r[117:102]), .vram_din(r[133:118]),
         .vram_be(r[135:134]), .vram_dout,
         .offs_x, .offs_y,
-        .line_start(r[136]), .line_y(r[146:137]), .busy(tm_busy), .unsupported(tm_uns),
+        .line_start(r[136]), .line_y(r[146:137]), .busy(tm_busy), .unsupported(tm_uns), .dbg_ev(), .blank_skip(1'b1),
         .rom_addr(tm_rom_addr), .rom_cs(tm_rom_cs), .rom_ok(r[147]), .rom_data(r[187:148]),
         .rd_x(r[196:188]), .rd_pix(tm_pix)
     );
@@ -73,12 +73,13 @@ module gx_video_synth_top (
     // ---- mixer
     logic [23:0] rgb;
     logic        mx_uns;
+    logic [23:0] pal_q;
 
     gx_mixer u_mix (
         .rst, .clk, .pxl_cen(r[200]),
         .k55_we(r[420]), .k55_addr(r[426:421]), .k55_din(r[434:427]),
         .k338_we({2{r[435]}}), .k338_addr(r[439:436]), .k338_din(r[455:440]), .bg_grad(r[456]),
-        .pal_we({r[457], r[497], r[498]}), .pal_addr(r[470:458]), .pal_din(r[494:471]),
+        .pal_we({r[457], r[497], r[498]}), .pal_addr(r[470:458]), .pal_din(r[494:471]), .pal_q,
         .bx({1'b0, r[210:202]}), .by({1'b0, r[219:211]}),
         .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]),
         .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx),
@@ -87,6 +88,6 @@ module gx_video_synth_top (
     );
 
     always_ff @(posedge clk)
-        sig <= { ^rgb, ^vram_dout, ^ram_dout, ^tm_rom_addr, ^ob_rom_addr,
+        sig <= { ^rgb ^ ^pal_q, ^vram_dout, ^ram_dout, ^tm_rom_addr, ^ob_rom_addr,
                  tm_rom_cs ^ ob_rom_cs, tm_busy, tm_uns ^ mx_uns ^ h_full };
 endmodule

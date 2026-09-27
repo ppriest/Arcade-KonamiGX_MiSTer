@@ -29,9 +29,16 @@ set_global_assignment -name VERILOG_FILE rtl/video/k056832/jt054157_mmr.v
 set_global_assignment -name VERILOG_FILE rtl/video/k053252/jtk053252.v
 set_global_assignment -name VERILOG_FILE rtl/video/k053252/jtk053252_mmr.v
 
+# CRT Adjust: rmonic79's crt_adjust.sv and crt_vsize.sv (GPL-3, vendored by
+# way of Arcade-Psikyo_MiSTer; THIRD-PARTY.md) and this project's glue.
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt/crt_vsize.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/crt/crt_adjust.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_crt_chain.sv
+
 # This project's own video RTL. gx_obj.v is derived from jotego's
 # jtsimson_obj.v -- see rtl/video/k055673/PROVENANCE.md, "Local changes".
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_sdpram.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_tdpram.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_tilemap.sv
 set_global_assignment -name VERILOG_FILE rtl/video/gx_obj.v
 set_global_assignment -name VERILOG_FILE rtl/video/gx_obj_linebuf.v

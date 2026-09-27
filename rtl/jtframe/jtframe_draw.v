@@ -3,7 +3,7 @@
  * Date: 18-12-2022 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
  * BPP parameter (4 or 5 bits per pixel); FIRST_PX parameter; PAIR
- * parameter (two pixels a clock on unzoomed tiles).
+ * parameter (two pixels a clock, unzoomed tiles, or two zoom steps a clock).
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -71,7 +71,7 @@ reg             new_addr;   // [GX] FIRST_PX: no pixel written at buf_addr yet
 
 assign ysubf   = ysub^{4{vflip}};
 assign buf_din = { pal, pxl };
-assign buf_din2 = { pal, pxl2 };    // [GX]
+assign buf_din2 = { pal, (pair2 || readon) ? pxl2 : pxl };    // [GX]
 // [GX] one bit from each byte: bit 7 of each (hflip) or bit 0, MSB plane first
 genvar gb;
 generate for (gb = 0; gb < BPP; gb = gb + 1) begin : g_pxl
@@ -84,7 +84,16 @@ assign buf_we   = busy & ~cnt[3] & (FIRST_PX==0 || new_addr);
 // [GX] PAIR: two pixels a clock while the tile is neither zoomed nor
 // truncated -- every source pixel then lands on the next buffer address
 wire   pair2    = PAIR==1 && KEEP_OLD==0 && no_zoom && trunc==2'b00;
-assign buf_we2  = buf_we & pair2;
+// [GX] PAIR, zoomed: two zoom steps a clock. The first step writes at
+// buf_addr as ever; the second writes only if the first moved (FIRST_PX),
+// so at buf_addr + 1, and takes the next source pixel if the first read one.
+// Not when the first step reads a half's last pixel: the next half needs
+// the ROM.
+reg             readon2, moveon2;
+reg    [ZW-1:0] nx_hz2;
+wire   zpair    = PAIR==1 && KEEP_OLD==0 && ZENLARGE==1 && FIRST_PX==1 && !no_zoom
+                  && trunc==2'b00 && !(readon && cnt[2:0]==3'd7);
+assign buf_we2  = (buf_we & pair2) | (busy & ~cnt[3] & zpair & moveon);
 assign hzint    = hz_cnt[ZW-1:ZI];
 
 always @* begin
@@ -98,6 +107,14 @@ always @* begin
         readon = 1;
         { moveon, nx_hz } = {1'b1, hz_cnt}-{1'b0,hzoom};
     end
+end
+
+// [GX] the second zoom step, from the first's nx_hz
+always @* begin
+    readon2 = nx_hz[ZW-1:ZI] >= 1;
+    moveon2 = nx_hz[ZW-1:ZI] <= 1;
+    nx_hz2  = readon2 ? nx_hz - HZONE : nx_hz;
+    if( moveon2 ) nx_hz2 = nx_hz2 + hzoom;
 end
 
 always @(posedge clk) cen <= ~cen;
@@ -145,6 +162,18 @@ always @(posedge clk) begin
                 new_addr <= 1;
                 rom_lsb  <= ~hflip;
                 if( cnt[2:0]==6 && !rom_cs ) busy <= 0;    // 16 pixels
+            end else if( !cnt[3] && zpair ) begin        // [GX] two zoom steps
+                hz_cnt   <= nx_hz2;
+                cnt      <= cnt + {3'd0, readon} + {3'd0, readon2};
+                case( {1'b0, readon} + {1'b0, readon2} )
+                    2'd1:    pxl_data <= hflip ? pxl_data << 1 : pxl_data >> 1;
+                    2'd2:    pxl_data <= hflip ? pxl_data << 2 : pxl_data >> 2;
+                    default: ;
+                endcase
+                buf_addr <= buf_addr + {{AW-1{1'b0}}, moveon} + {{AW-1{1'b0}}, moveon2};
+                new_addr <= moveon2;
+                rom_lsb  <= ~hflip;
+                if( cnt[2:0] + {2'd0, readon}==3'd7 && !rom_cs && readon2 ) busy <= 0; // 16 pixels
             end else if( !cnt[3] ) begin
                 hz_cnt   <= nx_hz;
                 if( readon ) begin
