@@ -3,6 +3,7 @@
  * Date: 18-12-2022 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
  * BPP, FIRST_PX and KEYW parameters; with KEYW>0 the line buffer is gx_obj_linebuf.
+ * PAIR parameter: two pixels a clock (jtframe_draw's), into gx_obj_linebuf.
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -44,6 +45,8 @@ module jtframe_objdraw_gate #( parameter
                    // 1 if rom_data packs the 4 planes in nibbles
     BPP        =4, // [GX] 4 or 5 bits per pixel; PACKED only for 4
     FIRST_PX   =0, // [GX] see jtframe_draw
+    PAIR       =0, // [GX] 1: jtframe_draw draws unzoomed tiles two pixels a clock into
+                   // gx_obj_linebuf (KEYW>0, flip 0: the second pixel is at the next address)
     KEYW       =0  // [GX] >0: the top KEYW bits of each pixel are a key and a pixel is
                    // written only over a blank one or one with a greater key --
                    // rtl/video/gx_obj_linebuf.v replaces jtframe_obj_buffer
@@ -77,6 +80,8 @@ module jtframe_objdraw_gate #( parameter
 
     output     [PW-1:0] buf_pred,   // line buffer data to be altered and
     input      [PW-1:0] buf_din,    // then fed back through these ports
+    output     [PW-1:0] buf_pred2,  // [GX] PAIR: the second pixel, the same way
+    input      [PW-1:0] buf_din2,
 
     output     [PW-1:0] pxl
 );
@@ -94,7 +99,7 @@ reg  [ZW-1:0] dr_hzoom;
 reg           dr_hz_keep;
 
 wire [AW-1:0] buf_addr;
-wire          buf_we, we_dly;
+wire          buf_we, we_dly, buf_we2, we2_dly;
 wire [8*BPP-1:0] rom_sorted;
 
 wire          pre_bsy;
@@ -187,13 +192,14 @@ endgenerate
 generate
     if(BUFDLY==0) begin
         assign adly   = aeff,
-               we_dly = buf_we;
+               we_dly = buf_we,
+               we2_dly = buf_we2;
     end else begin
-        jtframe_sh #(.L(BUFDLY),.W(1+AW)) u_sh(
+        jtframe_sh #(.L(BUFDLY),.W(2+AW)) u_sh(
             .clk    ( clk           ),
             .clk_en ( 1'b1          ),
-            .din    ( {aeff,buf_we} ),
-            .drop   ( {adly,we_dly} )
+            .din    ( {aeff,buf_we,buf_we2} ),
+            .drop   ( {adly,we_dly,we2_dly} )
         );
     end
 endgenerate
@@ -208,7 +214,8 @@ jtframe_draw #(
     .SWAPH   ( SWAPH    ),
     .KEEP_OLD( KEEP_OLD ),
     .BPP     ( BPP      ),
-    .FIRST_PX( FIRST_PX )
+    .FIRST_PX( FIRST_PX ),
+    .PAIR    ( PAIR     )
 )u_draw(
     .rst        ( rst       ),
     .clk        ( clk       ),
@@ -230,7 +237,9 @@ jtframe_draw #(
 
     .buf_addr   ( buf_addr  ),
     .buf_we     ( buf_we    ),
-    .buf_din    ( buf_pred  )
+    .buf_din    ( buf_pred  ),
+    .buf_we2    ( buf_we2   ),
+    .buf_din2   ( buf_pred2 )
 );
 
 // [GX] with a key, the GX line buffer; otherwise jotego's, unchanged
@@ -247,6 +256,8 @@ generate if( KEYW>0 ) begin : g_keybuf
         .wr_data ( buf_din ),
         .wr_addr ( adly    ),
         .we      ( we_dly  ),
+        .wr_data2( buf_din2 ),
+        .we2     ( we2_dly ),
         .rd      ( pxl_cen ),
         .rd_addr ( hdf     ),
         .rd_data ( pxl     )

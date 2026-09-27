@@ -94,7 +94,7 @@ module gx_sound (
     // held or a lost one
     output     [63:0] dbg,
     output     [63:0] dsp_dbg,      // gx_tms57002's
-    // every bus cycle as it completes, for gx_trace: { clk count[15:0],
+    // every bus cycle as it completes, for the bench's +SND_TRACE: { clk count[15:0],
     // fc, R/W, /UDS, /LDS, irq2, irq1, address[23:0], data[15:0] }
     output reg        tr_valid,
     output reg [63:0] tr_data

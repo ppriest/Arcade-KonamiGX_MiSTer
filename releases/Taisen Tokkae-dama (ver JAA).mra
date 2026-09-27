@@ -51,7 +51,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="tokkae.zip" md5="none">
-        <part name="tokkae.nv"/>
+        <part name="tokkae.nv" crc="5a6f8da6"/>
     </rom>
 
     <switches default="FE,FF">

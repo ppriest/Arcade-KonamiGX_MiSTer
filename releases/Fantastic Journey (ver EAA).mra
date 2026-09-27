@@ -47,7 +47,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="fantjour.zip" md5="none">
-        <part name="fantjour.nv"/>
+        <part name="fantjour.nv" crc="35b7d8e1"/>
     </rom>
 
     <switches default="FE,FF">

@@ -47,7 +47,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="mtwinbee.zip|tbyahhoo.zip" md5="none">
-        <part name="mtwinbee.nv"/>
+        <part name="mtwinbee.nv" crc="942b4323"/>
     </rom>
 
     <switches default="FE,FF">

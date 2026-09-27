@@ -46,7 +46,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="puzldama.zip|crzcross.zip" md5="none">
-        <part name="puzldama.nv"/>
+        <part name="puzldama.nv" crc="bda98b84"/>
     </rom>
 
     <switches default="FE,FF">

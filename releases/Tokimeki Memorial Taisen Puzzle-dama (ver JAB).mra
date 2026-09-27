@@ -53,7 +53,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="tkmmpzdm.zip" md5="none">
-        <part name="tkmmpzdm.nv"/>
+        <part name="tkmmpzdm.nv" crc="850ab8c4"/>
     </rom>
 
     <switches default="FE,FF">

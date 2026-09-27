@@ -98,6 +98,8 @@ reg  [AW-1:0] a_l;              // the fetch in flight
 reg           ansd;             // ok was pulsed for ans_addr, cs still high
 reg  [AW-1:0] ans_addr;
 reg  [63:0]   data_m;
+reg  [63:0]   data_f;           // halfsel: the whole granule
+wire [VW-1:0] vic2 = vic==VW'(NS-1) ? {VW{1'b0}} : vic + 1'd1;
 reg           req_t = 0, done_t = 0, done_s = 0;
 wire          done   = done_t != done_s;
 
@@ -121,9 +123,24 @@ always @(posedge clk) begin
                 s_data[vic]  <= data_m;
                 s_val[vic]   <= 1'b1;
                 vic          <= vic==VW'(NS-1) ? {VW{1'b0}} : vic + 1'd1;
+                // halfsel: the granule is both halves of a row, and both are
+                // kept -- the other half would otherwise be fetched again
+                if( halfsel && NS > 1 ) begin
+                    s_addr[vic2] <= { a_l[AW-1:1], ~a_l[0] };
+                    s_data[vic2] <= a_l[0] ? { 32'd0, data_f[31:0] } : { 32'd0, data_f[63:32] };
+                    s_val[vic2]  <= 1'b1;
+                    vic          <= vic2==VW'(NS-1) ? {VW{1'b0}} : vic2 + 1'd1;
+                end
                 if( want && addr==a_l ) begin
                     ok <= 1; data <= data_m; ansd <= 1; ans_addr <= addr;
+                end else if( want && hit_v ) begin
+                    ok <= 1; data <= s_data[hit_i]; ansd <= 1; ans_addr <= addr;
                 end
+            end else if( want && hit_v ) begin
+                // a held granule is answered while a prefetch is in flight:
+                // with two pixels a clock a half-row draws in four clocks,
+                // and waiting out the next row's fetch cost more than that
+                ok <= 1; data <= s_data[hit_i]; ansd <= 1; ans_addr <= addr;
             end
         end else if( want && hit_v ) begin
             ok <= 1; data <= s_data[hit_i]; ansd <= 1; ans_addr <= addr;
@@ -154,6 +171,7 @@ always @(posedge clk_mem) begin
         if( c_req && c_valid ) begin
             c_req  <= 0;
             data_m <= !halfsel ? c_rdata : a_l[0] ? { 32'd0, c_rdata[63:32] } : { 32'd0, c_rdata[31:0] };
+            data_f <= c_rdata;
             done_t <= ~done_t;
         end
     end

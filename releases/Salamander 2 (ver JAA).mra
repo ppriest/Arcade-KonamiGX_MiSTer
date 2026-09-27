@@ -50,7 +50,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="salmndr2.zip" md5="none">
-        <part name="salmndr2.nv"/>
+        <part name="salmndr2.nv" crc="60cdea03"/>
     </rom>
 
     <switches default="FE,FF">

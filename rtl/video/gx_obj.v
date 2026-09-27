@@ -366,7 +366,7 @@ wire [QW-1:0] q_head = q_mem[q_rp];
 // The data word gx_obj_linebuf.v documents: { z, pri, spri, index, colour,
 // solid, mode1, shadow mode, shadow code, pen }, padded to PW.
 localparam PW = 75;
-wire [PW-1:0] buf_pred, buf_din, pre_pxl;
+wire [PW-1:0] buf_pred, buf_din, pre_pxl, buf_pred2, buf_din2;
 wire [24:2]   draw_addr;
 wire [63:0]   sorted;
 
@@ -425,7 +425,8 @@ generate for( gk=0; gk<8; gk=gk+1 ) begin : g_plane
     end
 end endgenerate
 
-assign buf_din = buf_pred;    // the solid/shadow split is in gx_obj_linebuf
+assign buf_din  = buf_pred;   // the solid/shadow split is in gx_obj_linebuf
+assign buf_din2 = buf_pred2;
 
 // draw_addr = { code, H, Y } -> external { code, Y, H }
 assign rom_addr = { draw_addr[24:7], draw_addr[5:2], draw_addr[6] };
@@ -451,7 +452,7 @@ assign pf_addr = !q_empty ? { qh_code, qh_ysub ^ {4{qh_vflip}}, qh_hflip }
 
 jtframe_objdraw_gate #(
     .AW(10), .CW(18), .PW(PW), .ZW(12), .ZI(6), .ZENLARGE(1),
-    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(8), .KEYW(16), .FIRST_PX(1)
+    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(8), .KEYW(16), .FIRST_PX(1), .PAIR(1)
 ) u_draw (
     .rst        ( rst            ),
     .clk        ( clk            ),
@@ -476,6 +477,8 @@ jtframe_objdraw_gate #(
     .rom_data   ( sorted         ),
     .buf_pred   ( buf_pred       ),
     .buf_din    ( buf_din        ),
+    .buf_pred2  ( buf_pred2      ),
+    .buf_din2   ( buf_din2       ),
     .pxl        ( pre_pxl        )
 );
 

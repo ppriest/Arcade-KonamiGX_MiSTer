@@ -2,7 +2,8 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  * Date: 18-12-2022 */
 /* Modified for Arcade-KonamiGX_MiSTer on 2026-09-18 (GPL-3.0 section 5(a)).
- * BPP parameter (4 or 5 bits per pixel); FIRST_PX parameter.
+ * BPP parameter (4 or 5 bits per pixel); FIRST_PX parameter; PAIR
+ * parameter (two pixels a clock on unzoomed tiles).
  * Lines changed are marked [GX]; the unmodified file is kept beside this
  * one as *_upstream_reference, and the reasons are in PROVENANCE.md. */
 
@@ -19,9 +20,11 @@ module jtframe_draw#( parameter
     SWAPH    =  0,    // swaps the two horizontal halves of the tile
     KEEP_OLD =  0,    // slows down drawing to be compatible with jtframe_obj_buffer's KEEP_OLD parameter
     BPP      =  4,    // [GX] bits per pixel, 4 or 5: one plane per byte of rom_data
-    FIRST_PX =  0     // [GX] 1: when reducing, write only the first source pixel that
+    FIRST_PX =  0,    // [GX] 1: when reducing, write only the first source pixel that
                       // lands on each buffer address, as MAME samples (x * step) >> 19;
                       // 0: write them all (the buffer keeps the last)
+    PAIR     =  0     // [GX] 1: an unzoomed, untruncated tile draws two pixels a clock,
+                      // the second at buf_addr + 1 (buf_we2, buf_din2)
 )(
     input               rst,
     input               clk,
@@ -49,7 +52,9 @@ module jtframe_draw#( parameter
 
     output reg [AW-1:0] buf_addr,
     output              buf_we,
-    output     [PW-1:0] buf_din
+    output     [PW-1:0] buf_din,
+    output              buf_we2,    // [GX] PAIR: a second pixel, at buf_addr + 1
+    output     [PW-1:0] buf_din2
 );
 
 localparam [ZW-1:0] HZONE = { {ZW-1{1'b0}},1'b1} << ZI;
@@ -58,7 +63,7 @@ reg [8*BPP-1:0] pxl_data;
 reg             rom_lsb;
 reg      [ 3:0] cnt;
 wire     [ 3:0] ysubf;
-wire [BPP-1:0]  pxl;
+wire [BPP-1:0]  pxl, pxl2;
 reg    [ZW-1:0] hz_cnt, nx_hz;
 wire  [ZW-1:ZI] hzint;
 reg             cen=0, moveon, readon, no_zoom;
@@ -66,14 +71,20 @@ reg             new_addr;   // [GX] FIRST_PX: no pixel written at buf_addr yet
 
 assign ysubf   = ysub^{4{vflip}};
 assign buf_din = { pal, pxl };
+assign buf_din2 = { pal, pxl2 };    // [GX]
 // [GX] one bit from each byte: bit 7 of each (hflip) or bit 0, MSB plane first
 genvar gb;
 generate for (gb = 0; gb < BPP; gb = gb + 1) begin : g_pxl
-    assign pxl[gb] = hflip ? pxl_data[8*gb+7] : pxl_data[8*gb];
+    assign pxl[gb]  = hflip ? pxl_data[8*gb+7] : pxl_data[8*gb];
+    assign pxl2[gb] = hflip ? pxl_data[8*gb+6] : pxl_data[8*gb+1];   // [GX] the next pixel
 end endgenerate
 
 assign rom_addr = { code, rom_lsb^SWAPH[0], ysubf[3:0] };
 assign buf_we   = busy & ~cnt[3] & (FIRST_PX==0 || new_addr);
+// [GX] PAIR: two pixels a clock while the tile is neither zoomed nor
+// truncated -- every source pixel then lands on the next buffer address
+wire   pair2    = PAIR==1 && KEEP_OLD==0 && no_zoom && trunc==2'b00;
+assign buf_we2  = buf_we & pair2;
 assign hzint    = hz_cnt[ZW-1:ZI];
 
 always @* begin
@@ -127,7 +138,14 @@ always @(posedge clk) begin
                     rom_cs <= 1;
                 end
             end
-            if( !cnt[3] ) begin
+            if( !cnt[3] && pair2 ) begin                // [GX] two pixels
+                cnt      <= cnt+2'd2;
+                pxl_data <= hflip ? pxl_data << 2 : pxl_data >> 2;
+                buf_addr <= buf_addr+2'd2;
+                new_addr <= 1;
+                rom_lsb  <= ~hflip;
+                if( cnt[2:0]==6 && !rom_cs ) busy <= 0;    // 16 pixels
+            end else if( !cnt[3] ) begin
                 hz_cnt   <= nx_hz;
                 if( readon ) begin
                     cnt      <= cnt+1'd1;

@@ -59,7 +59,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="dragoona.zip" md5="none">
-        <part name="dragoona.nv"/>
+        <part name="dragoona.nv" crc="7980ad2b"/>
     </rom>
 
     <switches default="FE,FF">

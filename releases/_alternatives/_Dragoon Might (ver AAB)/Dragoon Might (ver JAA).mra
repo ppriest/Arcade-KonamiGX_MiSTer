@@ -59,7 +59,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="dragoonj.zip|dragoona.zip" md5="none">
-        <part name="dragoonj.nv"/>
+        <part name="dragoonj.nv" crc="cbe16082"/>
     </rom>
 
     <switches default="FE,FF">

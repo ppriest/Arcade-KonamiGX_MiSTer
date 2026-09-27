@@ -986,7 +986,8 @@ a better stub would mean guessing each game's protocol.
     main CPU stays TG68K.C, a 68EC020 that fx68k does not implement.
   * Open: the sound program holds `C0` for 70 frames in the bench, where gx_snd_stub's notes
     say MAME holds it about 230. The main CPU accepts both; the difference is unexplained.
-  * Open: no sound yet -- the voices are 3b. And the OSD still defaults to the stub.
+  * The sound board is always the 68000 now; the stub and the sound trace's OSD options are
+    gone (the stub stays for the bench's +SND_STUB).
 - **3b -- audio.** The K054539s' PCM and the mix.
 - **3c -- the DASP effects.** The TMS57002, its RAM in SDRAM.
   * `rtl/sound/gx_tms57002.sv`, against MAME's tms57002 through a Python model of it

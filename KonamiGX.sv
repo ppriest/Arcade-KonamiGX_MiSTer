@@ -9,7 +9,8 @@
 // 24 MHz for the 68EC020, all at phase 0 from one PLL, so the crossings
 // between them are ordinary timed paths (gx_main.sv, gx_rom_port.sv).
 //
-// Sound: none yet (Phase 3). The K056800 mailbox is gx_snd_stub.sv.
+// Sound: the sound board (gx_sound): the 68000 running the game's sound
+// program, two K054539s and the TMS57002, behind the K056800 mailbox.
 //
 // Not yet: EEPROM persistence (the 93C46 starts blank and the game
 // initialises it).
@@ -81,13 +82,6 @@ localparam CONF_STR = {
 	// is for a rotated monitor, not for the game.
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
-	// 68000 runs the real sound program, the default: Winning Spike's and
-	// Tokimeki's power-on tests mark every RAM BAD without it. Stub is the
-	// stand-in built from Daisu-Kiss's power-on test (status bit set)
-	"O[66],Sound board,68000,Stub;",
-	// the sound 68000's bus cycles into DDR3 (rtl/gx_trace.sv), read back
-	// with scripts/snd_trace.py
-	"O[67],Sound trace,Off,On;",
 	// le2's guns (H1: shown for the gun sets): MAME's crosshair where each
 	// gun points; the left stick per player -- Auto moves a pushed-full axis
 	// as the d-pad does (arcade sticks on gamepad encoders), Aim is always
@@ -395,33 +389,24 @@ wire  [7:0] snd_dout, snd_din;
 
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, pxl_cen, unsupported, dbg_access;
-reg         lvbl_q = 1;
-always @(posedge clk_vid) lvbl_q <= vid_lvbl;
-// The sound board. Stub: gx_snd_stub, answering Daisu-Kiss's power-on test.
-// 68000: the K056800 with the sound CPU behind it running the real program
-// (Phase 3a), held in reset until the main CPU releases it.
-wire        snd_real = ~status[66];
-wire        snd_trace_en = status[67];
+// The sound board: the K056800 with the sound CPU behind it running the
+// real program, held in reset until the main CPU releases it.
 wire        snd_run;
-wire  [7:0] stub_din, k8_host;
-gx_snd_stub u_snd ( .clk(clk_vid), .rst(rst_vid), .frame(lvbl_q & ~vid_lvbl),
-                    .wr(snd_wr && !snd_real), .rd(snd_rd && !snd_real), .addr(snd_addr),
-                    .din(snd_dout), .dout(stub_din) );
-assign snd_din = snd_real ? k8_host : stub_din;
+wire  [7:0] k8_host;
+assign snd_din = k8_host;
 
 wire        k8_wr, k8_rd, k8_irq;
 wire  [2:0] k8_addr;
 wire  [7:0] k8_din, k8_dout;
 gx_k056800 u_k056800 (
 	.clk(clk_vid), .rst(rst_vid),
-	.h_wr(snd_wr && snd_real), .h_rd(snd_rd && snd_real), .h_addr(snd_addr[2:0]),
+	.h_wr(snd_wr), .h_rd(snd_rd), .h_addr(snd_addr[2:0]),
 	.h_din(snd_dout), .h_dout(k8_host),
 	.s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout),
 	.irq(k8_irq), .dbg(k8_dbg)
 );
 
-wire [63:0] snd_dbg, dsp_dbg, snd_tr_data;
-wire        snd_tr_valid;
+wire [63:0] snd_dbg, dsp_dbg;
 wire [49:0] k8_dbg;
 // the sound board's RAMs zeroed after each reset, gx_sound held meanwhile
 wire        clr_inval, clr_wreq;
@@ -441,7 +426,7 @@ assign dsp_inval = x_inval_s | clr_inval;
 assign pcm_inval = p_inval_s | clr_inval;
 
 gx_sound u_sound (
-	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run || !snd_real), .rst_chip(rst_vid || !snd_real),
+	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run), .rst_chip(rst_vid),
 	// where the sprite region's spread ends (gx_sdram_top's snd_base)
 	.snd_base(obj_base + { 1'b0, obj_size4, 1'b0 }), .snd_pcm,
 	.m_cs(snd_cs), .m_addr(snd_maddr), .m_ok(snd_ok), .m_data(snd_mdata), .m_inval(s_inval),
@@ -451,7 +436,7 @@ gx_sound u_sound (
 	.aud_l(snd_aud_l), .aud_r(snd_aud_r),
 	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
 	.dbg(snd_dbg), .dsp_dbg,
-	.tr_valid(snd_tr_valid), .tr_data(snd_tr_data)
+	.tr_valid(), .tr_data()
 );
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
 wire [63:0] dbg_ee, dbg_irq;
@@ -575,13 +560,11 @@ issp_probe #(.INSTANCE_ID("M"), .PROBE_W(84), .SOURCE_W(32)) u_issp_rom (
 issp_probe #(.INSTANCE_ID("N"), .PROBE_W(88), .SOURCE_W(32)) u_issp_mem (
 	.clk(clk_vid), .probe(dbg_mem), .source(mem_src)
 );
-// Instance S, 116 bits: the sound board (Phase 3a) -- whether the 68000 is
-// selected and released, where it is, how many accesses it has made, its
-// interrupts, and the K056800's six registers (fields_S). The stub mimics
-// the real program's heartbeat, so from the main CPU's side the two cannot
-// be told apart; this can.
+// Instance S, 116 bits: the sound board -- whether the 68000 is released
+// (bit 115, formerly "selected", is 1), where it is, how many accesses it
+// has made, its interrupts, and the K056800's six registers (fields_S).
 issp_probe #(.INSTANCE_ID("S"), .PROBE_W(116), .SOURCE_W(8)) u_issp_snd (
-	.clk(clk_vid), .probe({ snd_real, snd_run, k8_dbg, snd_dbg }), .source()
+	.clk(clk_vid), .probe({ 1'b1, snd_run, k8_dbg, snd_dbg }), .source()
 );
 // Instance D, 64 bits: the TMS57002 (fields_D) -- whether a sample's
 // program fits its 1000 clocks with SDRAM behind it
@@ -678,27 +661,12 @@ screen_rotate_two u_rotate (
 	.DDRAM_RD(rot_DDRAM_RD)
 );
 
-// ------------------------------------------------------------ sound trace
-// the sound 68000's bus cycles into DDR3 at 0x34000000, on the rotator's
-// clock (both clk_vid) and in the clocks the rotator is not writing
-wire        tr_active, tr_DDRAM_WE;
-wire [28:0] tr_DDRAM_ADDR;
-wire [63:0] tr_DDRAM_DIN;
-gx_trace u_trace (
-	.clk(clk_vid), .rst(rst_vid), .enable(snd_trace_en && snd_real && !ldr_busy),
-	.valid(snd_tr_valid), .data(snd_tr_data),
-	.active(tr_active),
-	.DDRAM_WE(tr_DDRAM_WE), .DDRAM_ADDR(tr_DDRAM_ADDR), .DDRAM_DIN(tr_DDRAM_DIN),
-	.DDRAM_BUSY(DDRAM_BUSY), .other_we(rot_DDRAM_WE)
-);
-wire tr_owns = tr_active && !rot_DDRAM_WE && !ldr_busy;
-
 assign DDRAM_CLK      = ldr_busy ? clk_sys            : rot_DDRAM_CLK;
-assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : tr_owns ? 8'd1          : rot_DDRAM_BURSTCNT;
-assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : tr_owns ? tr_DDRAM_ADDR : rot_DDRAM_ADDR;
-assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : tr_owns ? tr_DDRAM_DIN  : rot_DDRAM_DIN;
-assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : tr_owns ? 8'hFF         : rot_DDRAM_BE;
-assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : tr_owns ? tr_DDRAM_WE   : rot_DDRAM_WE;
+assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : rot_DDRAM_WE;
 assign DDRAM_RD       = ldr_busy ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 
 endmodule

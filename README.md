@@ -95,6 +95,68 @@ above are what the game programs into the CRTC.
 
 ## Screenshots
 
+### Daisu-Kiss (ver JAA)
+
+![daiskiss 20260927_021353-screen](docs/screenshots/daiskiss/20260927_021353-screen.png)
+![daiskiss 20260927_021407-screen](docs/screenshots/daiskiss/20260927_021407-screen.png)
+![daiskiss 20260927_021425-screen](docs/screenshots/daiskiss/20260927_021425-screen.png)
+![daiskiss 20260927_021428-screen](docs/screenshots/daiskiss/20260927_021428-screen.png)
+
+### Crazy Cross (ver EAA)
+
+![crzcross 20260927_021243-screen](docs/screenshots/crzcross/20260927_021243-screen.png)
+![crzcross 20260927_021227-screen](docs/screenshots/crzcross/20260927_021227-screen.png)
+![crzcross 20260927_021254-screen](docs/screenshots/crzcross/20260927_021254-screen.png)
+
+### Fantastic Journey (ver EAA)
+
+![fantjour 20260927_021034-screen](docs/screenshots/fantjour/20260927_021034-screen.png)
+![fantjour 20260927_020950-screen](docs/screenshots/fantjour/20260927_020950-screen.png)
+![fantjour 20260927_021124-screen](docs/screenshots/fantjour/20260927_021124-screen.png)
+
+### Magical Twin Bee (ver EAA)
+
+![mtwinbee 20260927_022116-screen](docs/screenshots/mtwinbee/20260927_022116-screen.png)
+![mtwinbee 20260927_022122-screen](docs/screenshots/mtwinbee/20260927_022122-screen.png)
+
+### Sexy Parodius (ver AAA)
+
+![sexyparoa 20260927_020540-screen](docs/screenshots/sexyparoa/20260927_020540-screen.png)
+![sexyparoa 20260927_020615-screen](docs/screenshots/sexyparoa/20260927_020615-screen.png)
+
+### Taisen Tokkae-dama (ver JAA)
+
+![tokkae 20260927_021856-screen](docs/screenshots/tokkae/20260927_021856-screen.png)
+![tokkae 20260927_021904-screen](docs/screenshots/tokkae/20260927_021904-screen.png)
+
+### Tokimeki Memorial Taisen Puzzle-dama (ver JAB)
+
+![tkmmpzdm 20260927_022020-screen](docs/screenshots/tkmmpzdm/20260927_022020-screen.png)
+![tkmmpzdm 20260927_022014-screen](docs/screenshots/tkmmpzdm/20260927_022014-screen.png)
+![tkmmpzdm 20260927_022027-screen](docs/screenshots/tkmmpzdm/20260927_022027-screen.png)
+
+### Dragoon Might (ver AAB)
+
+![dragoona 20260927_021538-screen](docs/screenshots/dragoona/20260927_021538-screen.png)
+![dragoona 20260927_021540-screen](docs/screenshots/dragoona/20260927_021540-screen.png)
+![dragoona 20260927_021551-screen](docs/screenshots/dragoona/20260927_021551-screen.png)
+![dragoona 20260927_021555-screen](docs/screenshots/dragoona/20260927_021555-screen.png)
+![dragoona 20260927_021602-screen](docs/screenshots/dragoona/20260927_021602-screen.png)
+
+### Salamander 2 (ver JAA)
+
+![salmndr2 20260927_020821-screen](docs/screenshots/salmndr2/20260927_020821-screen.png)
+![salmndr2 20260927_020824-screen](docs/screenshots/salmndr2/20260927_020824-screen.png)
+![salmndr2 20260927_020836-screen](docs/screenshots/salmndr2/20260927_020836-screen.png)
+![salmndr2 20260927_020840-screen](docs/screenshots/salmndr2/20260927_020840-screen.png)
+![salmndr2 20260927_020918-screen](docs/screenshots/salmndr2/20260927_020918-screen.png)
+
+### Lethal Enforcers II: Gun Fighters (ver EAA)
+
+![le2 20260927_021650-screen](docs/screenshots/le2/20260927_021650-screen.png)
+![le2 20260927_021654-screen](docs/screenshots/le2/20260927_021654-screen.png)
+![le2 20260927_021708-screen](docs/screenshots/le2/20260927_021708-screen.png)
+![le2 20260927_021739-screen](docs/screenshots/le2/20260927_021739-screen.png)
 ## Installation
 
 The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`

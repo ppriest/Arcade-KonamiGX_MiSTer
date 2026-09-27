@@ -46,7 +46,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="crzcross.zip" md5="none">
-        <part name="crzcross.nv"/>
+        <part name="crzcross.nv" crc="446f178c"/>
     </rom>
 
     <switches default="FE,FF">

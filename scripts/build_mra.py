@@ -578,12 +578,16 @@ def build(set_name, mod, gl, games, blocks, check_only):
     # the default EEPROM image, MAME's "eeprom" region (most sets: "to prevent
     # game booting with error"); the core loads ioctl index 2 into the 93C46
     ee_lines = []
-    m = re.search(r'ROM_REGION16_BE\(\s*0x80,\s*"eeprom"[^)]*\)\s*.*?ROM_LOAD\(\s*"([^"]+)"', blocks[set_name], re.S)
+    m = re.search(r'ROM_REGION16_BE\(\s*0x80,\s*"eeprom"[^)]*\)\s*.*?ROM_LOAD\(\s*"([^"]+)"[^)]*?CRC\(([0-9a-fA-F]{8})\)', blocks[set_name], re.S)
     if m:
         bri.read_file(zips, m.group(1), 0x80, set_name)          # it must exist in the zip
+        # with its CRC: a clone's image is in a subfolder of a merged set's
+        # zip (salmndr2.zip: salmndr2a/salmndr2a.nv), which MiSTer finds by
+        # CRC and not by name -- without it salmndr2a booted with no EEPROM
+        # and failed its self-test
         ee_lines = ['', '    <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->',
                     '    <rom index="2" zip="' + game_zips + '" md5="none">',
-                    f'        <part name="{m.group(1)}"/>', '    </rom>']
+                    f'        <part name="{m.group(1)}" crc="{m.group(2).lower()}"/>', '    </rom>']
     dip_lines, dflt = dips_of(g["inputs"])
     title = g["title"]
     # the program patches, at their place in the stream (the CPU window from

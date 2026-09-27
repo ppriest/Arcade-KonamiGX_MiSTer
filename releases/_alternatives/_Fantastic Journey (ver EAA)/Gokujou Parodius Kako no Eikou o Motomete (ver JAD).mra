@@ -47,7 +47,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="gokuparo.zip|fantjour.zip" md5="none">
-        <part name="gokuparo.nv"/>
+        <part name="gokuparo.nv" crc="15c0f2d9"/>
     </rom>
 
     <switches default="FE,FF">

@@ -342,8 +342,7 @@ always @(posedge clk) begin
         dsp_xclk = 0; dsp_xn = 0; dsp_run = 0; dsp_wclk = 0;
     end
 end
-// +SND_TRACE=path: the sound 68000's bus cycles, one a line, as
-// scripts/snd_trace.py prints the board's (rtl/gx_trace.sv's records)
+// +SND_TRACE=path: the sound 68000's bus cycles, one a line
 string  snd_trace_f;
 integer snd_tf = 0;
 initial if ($value$plusargs("SND_TRACE=%s", snd_trace_f)) snd_tf = $fopen(snd_trace_f, "w");

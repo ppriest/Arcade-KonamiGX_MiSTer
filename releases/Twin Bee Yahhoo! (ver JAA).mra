@@ -47,7 +47,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="tbyahhoo.zip" md5="none">
-        <part name="tbyahhoo.nv"/>
+        <part name="tbyahhoo.nv" crc="1e6fa2f8"/>
     </rom>
 
     <switches default="FE,FF">

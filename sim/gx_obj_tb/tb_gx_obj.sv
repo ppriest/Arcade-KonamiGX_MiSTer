@@ -209,7 +209,7 @@ always @(posedge clk) begin
     if (dut.dma_bsy && !dma_l) n_dma++;
     if (dut.draw) n_draw++;
     if (rom_cs && !cs_l) n_rom++;
-    if (dut.u_draw.g_keybuf.u_linebuf.h_req) n_hreq++;
+    if (dut.u_draw.g_keybuf.u_linebuf.u_even.req_h || dut.u_draw.g_keybuf.u_linebuf.u_odd.req_h) n_hreq++;
     if (dut.draw && dut.shmode != 0) n_shdraw++;
 end
 // +LINE_STATS=1: per line, clocks the scan spent reading entries, waiting on

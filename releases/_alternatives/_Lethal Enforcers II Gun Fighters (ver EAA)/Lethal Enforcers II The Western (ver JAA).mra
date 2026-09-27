@@ -54,7 +54,7 @@
 
     <!-- the default EEPROM image (the ROM_START eeprom region); the core loads it into the 93C46 -->
     <rom index="2" zip="le2j.zip|le2.zip" md5="none">
-        <part name="le2j.nv"/>
+        <part name="le2j.nv" crc="f6790425"/>
     </rom>
 
     <switches default="F7,FF">
