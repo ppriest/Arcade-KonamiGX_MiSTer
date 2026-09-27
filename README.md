@@ -137,26 +137,27 @@ above are what the game programs into the CRTC.
 
 ### Dragoon Might (ver AAB)
 
+![dragoona 20260927_021555-screen](docs/screenshots/dragoona/20260927_021555-screen.png)
 ![dragoona 20260927_021538-screen](docs/screenshots/dragoona/20260927_021538-screen.png)
 ![dragoona 20260927_021540-screen](docs/screenshots/dragoona/20260927_021540-screen.png)
 ![dragoona 20260927_021551-screen](docs/screenshots/dragoona/20260927_021551-screen.png)
-![dragoona 20260927_021555-screen](docs/screenshots/dragoona/20260927_021555-screen.png)
 ![dragoona 20260927_021602-screen](docs/screenshots/dragoona/20260927_021602-screen.png)
 
 ### Salamander 2 (ver JAA)
 
+![salmndr2 20260927_020836-screen](docs/screenshots/salmndr2/20260927_020836-screen.png)
 ![salmndr2 20260927_020821-screen](docs/screenshots/salmndr2/20260927_020821-screen.png)
 ![salmndr2 20260927_020824-screen](docs/screenshots/salmndr2/20260927_020824-screen.png)
-![salmndr2 20260927_020836-screen](docs/screenshots/salmndr2/20260927_020836-screen.png)
 ![salmndr2 20260927_020840-screen](docs/screenshots/salmndr2/20260927_020840-screen.png)
 ![salmndr2 20260927_020918-screen](docs/screenshots/salmndr2/20260927_020918-screen.png)
 
 ### Lethal Enforcers II: Gun Fighters (ver EAA)
 
+![le2 20260927_021708-screen](docs/screenshots/le2/20260927_021708-screen.png)
 ![le2 20260927_021650-screen](docs/screenshots/le2/20260927_021650-screen.png)
 ![le2 20260927_021654-screen](docs/screenshots/le2/20260927_021654-screen.png)
-![le2 20260927_021708-screen](docs/screenshots/le2/20260927_021708-screen.png)
 ![le2 20260927_021739-screen](docs/screenshots/le2/20260927_021739-screen.png)
+
 ## Installation
 
 The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`
