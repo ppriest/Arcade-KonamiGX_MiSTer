@@ -4,15 +4,11 @@ A MiSTer FPGA core for Konami's [System GX](https://en.wikipedia.org/wiki/Konami
 arcade hardware (MAME's `konami/konamigx.cpp`), built with Quartus Prime 17.0.2 Lite for the
 DE10-nano.
 
-**Status: bring-up.** Daisu-Kiss boots on the board through its power-on tests to its title
-screen; there is no sound yet. Nothing is released.
-
 ## Contents
 
 - [History](#history)
 - [Games](#games)
   - [Supported](#supported)
-  - [Not yet](#not-yet)
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
@@ -29,41 +25,36 @@ screen; there is no sound yet. Nothing is released.
 
 ## History
 
-No release yet. The first build to run on hardware (commit `970423f`) takes Daisu-Kiss from reset
-through its RAM, EEPROM and sound-board checks to the title screen.
+* **Arcade-KonamiGX_20260927**
+  * **Beta**
+  * Sprites still run out of line time on Dragoon Might's and Winning Spike's busiest lines
+  * EEPROM is not saved.
+
+**Status**: All listed games run and are playable with sound. There is some places where the drawing can't keep up e.g. Dragoon. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity.
+
+Graphically, they're still WIP - but MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
 
 ## Games
 
-The goal is the Type 2 boards of `konamigx.cpp`: one motherboard, one ROM-board type, one screen.
-Twenty-two working sets across nine machine configurations, 8 to 24 MB each, every one inside a
-32 MB SDRAM module.
+Initial goal is the Type 2 boards of `konamigx.cpp`
 
 ### Supported
 
-Sets with an `.mra` in `releases/`. Daisu-Kiss and Twin Bee Yahhoo! have run on the board; the
-other eight share their ROM formats and layout method, and their `.mra` images are proven against
-MAME's region images in simulation, but have not been launched yet.
+Every Type 2 set in `konamigx.cpp` except the bootleg.
 
-| Name | Year | Manufacturer | Tiles | Sprites | Notes |
-|-|-|-|-|-|-|
-| Daisu-Kiss | 1996 | Konami | 5bpp | 5bpp | ESC `generate_sprites`; on the board to its title |
-| Crazy Cross / Taisen Puzzle-dama | 1994 | Konami | 5bpp | 5bpp | 10 MB tile region; mixer priority mode 5 |
-| Fantastic Journey / Gokujou Parodius | 1994 | Konami | 5bpp | 5bpp | fantjour's own DMA at 0xdb0000, not written yet |
-| Twin Bee Yahhoo! / Magical Twin Bee | 1995 | Konami | 5bpp | 5bpp | tilemode 1 (layers +1); ESC `generate_sprites` |
-| Sexy Parodius | 1996 | Konami | 5bpp | 5bpp | 6 MB sprite region, 5 used; `UNEMULATED_PROTECTION` in MAME |
-
-### Not yet
-
-Type 2 sets whose graphics formats the video path does not take yet. Their `.mra` layouts wait on
-that, since the image layout is the RTL's.
-
-| Name | Why |
-|-|-|
-| Dragoon Might | 4bpp sprites, 16 MB of them |
-| Taisen Tokkae-dama, Tokimeki Memorial Taisen Puzzle-dama | 6bpp tiles; tkmmpzdm patches its ROM in MAME |
-| Salamander 2 | 6bpp tiles and 48-bit sprite rows |
-| Lethal Enforcers II | 8bpp tiles and sprites, light guns |
-| Winning Spike | 8bpp sprites |
+| Name | Year | Tiles | Sprites | Notes |
+|-|-|-|-|-|
+| Daisu-Kiss | 1996 | 5bpp | 5bpp | ESC `generate_sprites` |
+| Crazy Cross / Taisen Puzzle-dama | 1994 | 5bpp | 5bpp | |
+| Fantastic Journey / Gokujou Parodius | 1994 | 5bpp | 5bpp | Fantastic Journey's DMA at 0xdb0000 |
+| Twin Bee Yahhoo! / Magical Twin Bee | 1995 | 5bpp | 5bpp | ESC `generate_sprites` |
+| Sexy Parodius | 1996 | 5bpp | 5bpp | `UNEMULATED_PROTECTION` in MAME |
+| Taisen Tokkae-dama | 1996 | 6bpp | 5bpp | |
+| Tokimeki Memorial Taisen Puzzle-dama | 1995 | 6bpp | 5bpp | ESC `esc_alert`; MAME's ROM patch carried in the `.mra` |
+| Dragoon Might | 1995 | 5bpp | 4bpp | 16 MB of sprites; six buttons; sprites can run out of line time |
+| Winning Spike | 1997 | 8bpp | 8bpp | Type 4 Xilinx protection |
+| Salamander 2 | 1996 | 6bpp | 6bpp | ESC `esc_alert` mode 1 |
+| Lethal Enforcers II | 1994 | 8bpp | 8bpp | Light guns: stick, d-pad or mouse, button 2 reloads, crosshair option; UAA and JAA flip their own screen |
 
 ### Out of scope for now
 
@@ -80,14 +71,16 @@ that, since the image layout is the RTL's.
 |-|-|-|
 | 68EC020 @ 24 MHz | Main CPU | TG68K.C, on its own 24 MHz clock; a 16 KB ROM cache in front of the SDRAM |
 | K053252 | CRTC, interrupts | jotego's, verified against MAME's timing |
-| K054156 / K056832 | Four tilemap layers, 16 pages of VRAM | Written here (5bpp), pixel-exact against MAME on six frames |
-| K053246 / K055673 | 256 sprites, zoom, shadows, 5bpp | jotego's K053246 with GX changes and a keyed line buffer; pixel-exact against MAME |
+| K054156 / K056832 | Four tilemap layers, 16 pages of VRAM | Written here (5, 6 and 8bpp), pixel-exact against MAME on captured frames |
+| K053246 / K055673 | 256 sprites, zoom, shadows, 4 to 8bpp | jotego's K053246 with GX changes and a keyed line buffer; pixel-exact against MAME |
 | K055555 | Priority mixer | Written here from MAME's `konamigx_mixer`, pixel-exact against MAME |
 | K054338 | Alpha blending, shadows, background | Written here with the mixer |
-| ESC | Sprite-list protection | MAME's `generate_sprites` as a bus master |
+| ESC | Sprite-list protection | MAME's `generate_sprites`, `esc_alert` modes 0 and 1 and Winning Spike's Type 4 protection, as a bus master |
 | 93C46 | Serial EEPROM | Written here from MAME's `eepromser`; loaded with the set's default image from the `.mra`; not yet saved to the `.nvm` file |
-| K056800 | Sound mailbox | A stand-in that answers the power-on test (`rtl/gx_snd_stub.sv`) |
-| 68000 + K054539 ×2 + TMS57002 | Sound board | Not yet (Phase 3) |
+| K056800 | Sound mailbox | Written here from MAME's `k056800.cpp` |
+| 68000 @ 8 MHz | Sound CPU | fx68k, cycle-accurate, running the game's sound program |
+| K054539 ×2 | PCM, 8 channels each | Written here from MAME's `k054539.cpp`: 8-bit, 16-bit and DPCM samples, reverb in the chip's RAM |
+| TMS57002 | Effects DSP | Written here against MAME's `tms57002.cpp`; its 256 KB of RAM in SDRAM |
 
 ### Video timing
 
@@ -102,18 +95,13 @@ above are what the game programs into the CRTC.
 
 ## Screenshots
 
-### Daisu-Kiss
-
-![daiskiss title](docs/screenshots/daiskiss/title.png)
-
-The RAM check screen on the first build, with the ten sound-board RAMs failing because the sound
-CPU did not exist to test them:
-
-![daiskiss ram check, build 4](docs/screenshots/daiskiss/ram_check_build4.png)
-
 ## Installation
 
-There is no release yet. To run a development build:
+The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`
+and the `.mra` files from `releases/` to `_Arcade` (clones in `_alternatives`), with the MAME
+merged ROM sets and `konamigx.zip` (the BIOS, which every set needs) in `games/mame`.
+
+To run a development build:
 
 * `python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
   `scripts/deploy.py`): the core goes to `_Arcade/cores` as `KonamiGX_NNNNNNNN.rbf` (the name the
@@ -126,46 +114,40 @@ There is no release yet. To run a development build:
 ## Status
 
 Known issues:
-* **No sound.** The K056800 stand-in answers the power-on test and gives a heartbeat; the games'
-  sound drivers get nothing else.
-* **Sprites drop out on busy lines**: the sprite engine runs out of line time (20 to 118 lines a
-  frame in Daisu-Kiss's attract), because a sprite row costs two SDRAM fetches.
+* **Sprites drop out on busy lines**: the sprite engine can run out of line time, because a sprite
+  row costs SDRAM fetches (Dragoon Might, Winning Spike).
 * Two shadows on one pixel keep one, where MAME applies both (`docs/MAME_KLUDGES.md`).
 * **The EEPROM starts from the driver's default image** (or blank, for daiskiss and sexyparo)
   on every boot and is not saved.
-* Daisu-Kiss and Twin Bee Yahhoo! have been launched on the board; the other eight have not.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
 `docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
 
 ### Todo
 
-- [ ] Sound: the 68000, the K056800, the two K054539s (Phase 3)
-- [ ] The remaining Type 2 sets: 4bpp, 6bpp and 8bpp graphics paths, and their `.mra` layouts
-- [ ] Launch the nine other `.mra` sets on the board
 - [ ] EEPROM save/load through the `.nvm` file
-- [ ] fantjour's DMA, tkmmpzdm's ROM patch, the ESC `esc_alert` variants
+- [ ] Sprite drawing time on busy lines
 - [ ] The K055673 and K056832 ROM readback windows, screen flip, `hiscore.v`
 
 ### Resource usage
 
-The instrumented build (`KonamiGX_stp`, commit `970423f`) on the DE10-nano's Cyclone V 5CSEBA6,
-speed grade 7, timing met on every clock:
+The release build (`KonamiGX`, commit `928b168`) on the DE10-nano's Cyclone V 5CSEBA6, speed
+grade 7, timing met on every clock:
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 15,063 (36%) | 41,910 |
-| Block memory bits | 3,517,729 (62%) | 5,662,720 |
-| RAM blocks | 446 (81%) | 553 |
-| DSP blocks | 43 (38%) | 112 |
+| Logic (ALMs) | 28,655 (68%) | 41,910 |
+| Block memory bits | 4,217,325 (74%) | 5,662,720 |
+| RAM blocks | 530 (96%) | 553 |
+| DSP blocks | 67 (60%) | 112 |
 | PLLs | 3 | 6 |
 
-The RAM block count is the one to watch: the sound board's 64 KB RAM alone is 52 blocks.
+The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
+reason.
 
 ## AI Attestation
 
-This core is being developed with heavy use of a frontier coding assistant, in the same way as the
-author's Seta, Psikyo, Fuuki and Jaleco MS32 cores.
+This core is being developed with heavy use of a frontier coding assistant.
 
 ## Verification
 

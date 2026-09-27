@@ -32,9 +32,11 @@ wire        busy, unsupported;
 wire [23:0] rom_addr;
 wire        rom_cs;
 reg         rom_ok = 0;
-reg  [39:0] rom_data;
+reg  [63:0] rom_data;
+int         tile_bpp = 0;        // +BPP=0 (5 bpp), 1 (6), 2 (8)
+int         vis_x0 = 24, vis_w = 288;   // +VIS_X0, +VIS_W
 reg  [ 8:0] rd_x = 0;
-wire [10:0] rd_pix [4];
+wire [13:0] rd_pix [4];
 
 gx_tilemap dut (
     .clk, .rst,
@@ -43,7 +45,8 @@ gx_tilemap dut (
     .vram_we, .vram_rd, .vram_addr, .vram_din, .vram_be(2'b11), .vram_dout,
     .offs_x, .offs_y,
     .line_start, .line_y, .busy, .unsupported,
-    .rom_addr, .rom_cs, .rom_ok, .rom_data,
+    .tile_bpp(2'(tile_bpp)), .rom_addr, .rom_cs, .rom_ok, .rom_data,
+    .vis_x0(10'(vis_x0)), .vis_w(9'(vis_w)),
     .rd_x, .rd_pix
 );
 
@@ -51,7 +54,7 @@ reg [15:0] regs_v [32];
 reg [ 7:0] tbank_v [8];
 reg [15:0] vram_v [65536];
 reg [ 7:0] offs_v [8];
-reg [39:0] rom_v [];
+reg [63:0] rom_v [];
 int        ntiles;
 int        ROM_LAT = 6;          // +ROM_LAT=n overrides
 
@@ -87,6 +90,9 @@ endtask
 initial begin
     if (!$value$plusargs("NTILES=%d", ntiles)) $fatal(1, "+NTILES= missing");
     void'($value$plusargs("ROM_LAT=%d", ROM_LAT));
+    void'($value$plusargs("BPP=%d", tile_bpp));
+    void'($value$plusargs("VIS_X0=%d", vis_x0));
+    void'($value$plusargs("VIS_W=%d", vis_w));
     rom_v = new[ntiles * 8];
     $readmemh({DIR, "regs.hex"},  regs_v);
     $readmemh({DIR, "tbank.hex"}, tbank_v);
@@ -125,10 +131,10 @@ initial begin
     for (int n = 0; n < H; n++) begin
         render(Y0 + n + 1);
         for (int l = 0; l < 4; l++)
-            for (int x = 0; x < W; x++) begin
+            for (int x = 0; x < vis_w; x++) begin
                 @(posedge clk) rd_x <= x[8:0];
                 @(posedge clk);
-                @(negedge clk) $fwrite(f, "%03x\n", rd_pix[l]);
+                @(negedge clk) $fwrite(f, "%04x\n", rd_pix[l]);
             end
     end
     $fclose(f);

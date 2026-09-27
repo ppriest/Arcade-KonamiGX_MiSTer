@@ -18,10 +18,13 @@
  *   2. The top candidate and the one behind it are picked; the background is
  *      always the last.
  *   3. Palette RAM is read for the top, the second and the background.
- *   4. An alpha layer on top is blended over the second (K054338 level,
- *      MAME's inverted alpha and its additive hack); the shadow, if any,
- *      shades what is behind its key -- the second before the blend, or the
- *      result after it. Shadows go through MAME's 15-bit table arithmetic.
+ *   4. An alpha layer on top is blended over the second at its K054338
+ *      level, or added to it (MAME 5c75784's additive draw); the shadow, if
+ *      any, shades what is behind its key -- the second before the blend, or
+ *      the result after it -- or, for a code SHD PRI SEL puts under
+ *      condition 1 or 2, the result where its priority passes against the
+ *      topmost source's (see shd_gate). Shadows go through MAME's 15-bit
+ *      table arithmetic.
  *
  * LIMITS, flagged on `unsupported` rather than drawn wrong: layer brightness
  * (K55_VBRI), MIXPRI, an alpha layer directly over another alpha layer,
@@ -48,6 +51,7 @@ module gx_mixer (
     input      [ 3:0] k338_addr,
     input      [15:0] k338_din,
     input             bg_grad,          // wrport1_0 bit 5: 1 = K055555 gradient
+    input             pri_c_le2,        // primode -1 (le2): layer C at PRIINP_3 + 0x20
 
     // palette RAM, xRGB_888 by pen, one write enable per colour byte
     input      [ 2:0] pal_we,           // { R, G, B }
@@ -57,10 +61,10 @@ module gx_mixer (
     // this pixel, in MAME bitmap coordinates
     input      [ 9:0] bx,
     input      [ 9:0] by,               // < 512: the gradient index is 9 bits
-    input      [10:0] lyr_a,            // { colour[5:0], pixel[4:0] } from gx_tilemap
-    input      [10:0] lyr_b,
-    input      [10:0] lyr_c,
-    input      [10:0] lyr_d,
+    input      [13:0] lyr_a,            // { colour[5:0], pixel[7:0] } from gx_tilemap
+    input      [13:0] lyr_b,
+    input      [13:0] lyr_c,
+    input      [13:0] lyr_d,
     input             spr_valid,        // solid plane of gx_obj
     input      [12:0] spr_pen,
     input      [ 7:0] spr_pri,
@@ -87,6 +91,13 @@ always @(posedge clk) begin
 end
 
 wire [7:0] disp   = k55[45];
+// a VRAM layer whose VBRI mode picks a BRI3 level below 0xff (not handled)
+function lvl_dim( input [1:0] m, input [15:0] r11, input [15:0] r12 );
+    lvl_dim = m == 2'd1 ? r11[7:0] != 8'hff : m == 2'd2 ? r12[15:8] != 8'hff :
+              m == 2'd3 ? r12[7:0] != 8'hff : 1'b0;
+endfunction
+wire vbri_dim = lvl_dim(k55[42][1:0], k338[11], k338[12]) || lvl_dim(k55[42][3:2], k338[11], k338[12])
+             || lvl_dim(k55[42][5:4], k338[11], k338[12]) || lvl_dim(k55[42][7:6], k338[11], k338[12]);
 wire [7:0] vinmix = k55[33];
 wire [7:0] vmixon = k55[34];
 wire       kill   = k338[15][0];
@@ -120,7 +131,7 @@ endfunction
 
 // ------------------------------------------------------------ stage 0: latch
 reg  [ 9:0] bx_r, by_r;
-reg  [10:0] lyr [0:3];
+reg  [13:0] lyr [0:3];
 reg         spr_valid_r, shd_valid_r;
 reg  [12:0] spr_pen_r;
 reg  [ 7:0] spr_pri_r, spr_z_r, spr_idx_r, shd_pri_r, shd_z_r, shd_idx_r;
@@ -150,21 +161,31 @@ reg  [   2:0] t, s;          // top and second source
 reg  [KW-1:0] tk, sk;
 integer       i;
 
+// the layers' priorities, registered: from registers the CPU writes, and
+// the le2 adder in front of the sort was the critical path (build 54)
+reg  [   7:0] lpri [0:3];
+always @(posedge clk) begin
+    lpri[0] <= k55[7];
+    lpri[1] <= k55[10];
+    lpri[2] <= pri_c_le2 ? k55[10] + 8'h20 : k55[13];
+    lpri[3] <= k55[14];
+end
+
 always @* begin
     for( i=0; i<4; i=i+1 ) begin
-        key[i]   = { k55[ i==0 ? 7 : i==1 ? 10 : i==2 ? 13 : 14 ], 1'b0, 8'd0, 6'd0, i[1:0], 1'b0 };
-        cand[i]  = disp[i] && lyr[i][4:0] != 5'd0;
+        key[i]   = { lpri[i], 1'b0, 8'd0, 6'd0, i[1:0], 1'b0 };
+        cand[i]  = disp[i] && lyr[i][7:0] != 8'd0;
         // decode_vmixcolor: pal = colour[3:0] | (colour[5:4] & von) << 4 | PALBASE << 6,
         // pen = pal * 16 + pixel (K056832 colour granularity 16)
-        lpal[i]  = { k55[23+i][2:0], 6'd0 } | { 3'd0, lyr[i][10:9] & vmixon[2*i +: 2], lyr[i][8:5] };
-        pen[i]   = { lpal[i], 4'd0 } + { 8'd0, lyr[i][4:0] };
+        lpal[i]  = { k55[23+i][2:0], 6'd0 } | { 3'd0, lyr[i][13:12] & vmixon[2*i +: 2], lyr[i][11:8] };
+        pen[i]   = { lpal[i], 4'd0 } + { 5'd0, lyr[i][7:0] };
         // K055555GX_decode_vmixcolor (p.62 7.2.6): the mix code is the
         // tile's colour bits 5:4 that VMIXON does NOT pass to the palette,
         // or VINMIX's where it does -- per tile, from the same bits the
         // palette index drops. MAME computes it and throws it away (the
         // callbacks ignore the return value), drawing every mix-coded tile of
         // a layer with the last one's code instead.
-        alpha[i] = alpha_of( (lyr[i][10:9] & ~vmixon[2*i +: 2])
+        alpha[i] = alpha_of( (lyr[i][13:12] & ~vmixon[2*i +: 2])
                              | (vinmix[2*i +: 2] & vmixon[2*i +: 2]),
                              k338[13], k338[14] );
     end
@@ -203,6 +224,29 @@ reg  [ 2:0] t1, s1;
 reg  [12:0] pen_s1, bgpen1;
 reg  [ 7:0] a1;
 reg         alpha_top, add1, shd_under, shd_over;
+
+// SHD PRI SEL (K055555 p.66 7.2.8), as MAME 5c75784 draws it: a shadow
+// code under condition 1 or 2 is applied last, to what is on screen, where
+// its priority is above (1) or equal to (2) the priority code the topmost
+// screen recorded -- a layer's own, or 0xff where SHD ON keeps shadows off
+// it; the solid sprite's; 0xff for the back colour, which is never shaded.
+// A layer at alpha level 0 is not drawn, so the one behind it is topmost.
+// primode -1 (le2) replaces SHD PRI SEL with 0x3f. Conditions 0 and 3 stay
+// in the priority order, as before.
+wire [7:0] shd_sel   = pri_c_le2 ? 8'h3f : k55[41];
+wire [1:0] shd_cond  = shd_sel[{ shd_code_r, 1'b0 } +: 2];
+wire       shd_defer = shd_cond == 2'd1 || shd_cond == 2'd2;
+wire       t_unseen  = t < 3'd4 && alpha[t][8] && !alpha[t][9] && alpha[t][7:0] == 8'd0;
+wire [2:0] top_src   = t_unseen ? s : t;
+reg  [7:0] top_pri;
+always @* begin
+    case( top_src )
+        3'd0, 3'd1, 3'd2, 3'd3: top_pri = k55[40][top_src[1:0]] ? lpri[top_src[1:0]] : 8'hff;
+        3'd4:                   top_pri = spr_pri_r;
+        default:                top_pri = 8'hff;
+    endcase
+end
+wire       shd_gate  = top_pri != 8'hff && (shd_cond == 2'd2 ? shd_pri_r == top_pri : shd_pri_r > top_pri);
 reg  [ 1:0] code1;
 reg  [23:0] ct, cs, cb;
 reg         en;
@@ -290,13 +334,22 @@ always @(posedge clk) begin
                 add1 <= t < 3'd4 && alpha[t][9];
                 alpha_top <= t < 3'd4 && alpha[t][8];
                 code1     <= shd_code_r;
-                shd_over  <= shd_valid_r && disp[4] && shkey < tk;
-                shd_under <= shd_valid_r && disp[4] && t < 3'd4 && alpha[t][8]
-                             && shkey > tk && shkey < sk;
+                if( shd_defer ) begin
+                    // MAME 5c75784 gx_draw_deferred_shadows: over everything,
+                    // where the condition holds against the topmost screen
+                    shd_over  <= shd_valid_r && disp[4] && shd_gate;
+                    shd_under <= 0;
+                end else begin
+                    shd_over  <= shd_valid_r && disp[4] && shkey < tk;
+                    shd_under <= shd_valid_r && disp[4] && t < 3'd4 && alpha[t][8]
+                                 && shkey > tk && shkey < sk;
+                end
                 ra     <= pen_of(t);
                 pen_s1 <= pen_of(s);
                 bgpen1 <= bgpen;
-                if( k55[42]!=0 || mixpri || (t < 3'd4 && alpha[t][8] && s < 3'd4 && alpha[s][8]) )
+                // VBRI is flagged only where it picks a level below full (0xff):
+                // le2 and tkmmpzdm set it with all three BRI3 levels at 0xff
+                if( vbri_dim || mixpri || (t < 3'd4 && alpha[t][8] && s < 3'd4 && alpha[s][8]) )
                     unsupported <= 1;
                 // (a layer with VMIXON not 3 takes the per-tile mix path above)
             end

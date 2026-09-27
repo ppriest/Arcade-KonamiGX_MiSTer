@@ -13,10 +13,16 @@ Each of these is a place MAME's own source calls its shortcut a hack, or where t
 documentation says plainly what the hardware does. The core follows the chip; the difference from
 MAME's picture is deliberate, and each needs a PCB capture to be called settled.
 
+Per-tile mix codes and additive layers were rows here until mamedev `5c75784` (R. Belmont, Paul
+Priest) took both into MAME, along with SHD PRI SEL conditions 1 and 2 (shadows drawn last, gated
+by the topmost screen's priority) and SHD ON. The core follows that MAME; the reference captures
+named `*-f<frame>g` are from it (built from the commit, single driver, `C:/mame-gx`). Condition 0
+is still unimplemented in MAME, and there the core keeps the priority order as before.
+
 | Behaviour | MAME | This core | Would settle it |
 |---|---|---|---|
-| Which mix code a tilemap pixel blends with | `K055555GX_decode_vmixcolor` (p.62 7.2.6) computes it -- the tile's colour bits 5:4 that VMIXON does not route to the palette, or VINMIX's where it does -- and RETURNS it, but every tile callback drops the return value. `gx_draw_basic_tilemaps` then draws all of a layer's mix-coded tiles with the code of whichever tile the callback saw last (`m_last_alpha_tile_mix_code`, what the source calls a "hack"). | The decode's own answer, per pixel, from the colour bits the palette index drops (`gx_mixer.v`). | A PCB capture of Sexy Parodius's ink stage. |
-| Additive layers | `k054338_device::set_alpha_level` returns the level with an additive flag; `gx_draw_basic_tilemaps` turns an additive level `l` into alpha `~l` ("hack: ... if additive bit set, mask it out and invert alpha"), so an additive layer fades instead of adding. Sexy Parodius's ink stage (K054338 alpha 2 = 0x2000, layer B VMIXON 0) comes out faded to nothing. | Added: the layer's colour at that level is added to what is under it and clamped, so black adds nothing and stays transparent. | A PCB capture of the same stage. |
+| Sprite DMA enable (K053246 OBJSET1 bit 4) | `dmastart_callback` copies the list only when DMAEN is set, but `konamigx_mixer_init(screen, 0)` leaves `m_gx_objdma` 0 and points the mixer at the K053247 RAM, so the copy never matters: the live list is drawn whatever DMAEN says. | The same, on purpose: jt053246's DMA runs whatever DMAEN says (`GX_DMA_ALWAYS`). `tokkae` keeps DMAEN clear (OBJSET1 0x20) with its sprites on screen. | A PCB with DMAEN cleared mid-game: do its sprites freeze? |
+| Zoomed sprites | `k053247_sprites_draw_common` places each 16x16 tile of a sprite on its own -- start `o + ((zoom * t + 2048) >> 12)`, `zoom = (0x400000 + s/2) / s` -- and `zdrawgfxzoom32GP` samples it with stride `(16 << 19) / width`, so rounding restarts at every tile edge. | jt053246_scan and jtframe_draw step one accumulator across the whole sprite, which is closer to the chip. Zoomed sprites land a pixel or a row from MAME's (le2 attract, winspike f3000, salmndr2 f2400). | A PCB capture of a zoomed sprite. |
 | The ESC's timing against the sprite DMA | The ESC protection runs in no time, so the K053246's copy never sees a half-written sprite list. | The ESC reads the list from SDRAM and takes real time; the copy is held off until it finishes (`jt053246_dma`'s `dma_hold`), so a frame gets a whole list a little late. | Whether the board's ESC can finish within a frame's vblank at all. |
 
 | Kludge | MAME | Model | Would settle it |

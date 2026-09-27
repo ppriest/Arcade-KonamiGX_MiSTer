@@ -39,24 +39,26 @@ wire        ioctl_wait;
 
 reg  [25:0] tile_base, obj_base;
 reg  [23:0] tile_size4, obj_size4;
+reg  [ 1:0] tile_bpp = 0, obj_layout = 0;
 reg         cpu_cs = 0, tile_cs = 0, obj_cs = 0;
 reg         go_hammer = 0;
-reg  [19:0] cpu_addr = 0, obj_addr = 0;
+reg  [19:0] cpu_addr = 0;
+reg  [21:0] obj_addr = 0;
 reg  [20:0] tile_addr = 0;
 wire        cpu_ok, tile_ok, obj_ok;
 wire [63:0] cpu_data;
-wire [39:0] tile_data, obj_data;
+wire [63:0] tile_data, obj_data;
 
 gx_sdram_top dut (
     .clk, .clk_mem, .reset, .init(~pll_locked),
     .SDRAM_A, .SDRAM_DQ, .SDRAM_DQML, .SDRAM_DQMH, .SDRAM_BA, .SDRAM_nCS,
     .SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS, .SDRAM_CKE, .SDRAM_CLK,
     .ioctl_download, .ioctl_index, .ioctl_wr, .ioctl_addr, .ioctl_dout, .ioctl_wait,
-    .tile_base, .obj_base, .tile_size4, .obj_size4,
+    .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm(24'h400000), .tile_bpp, .obj_layout,
     .cpu_cs, .cpu_addr, .cpu_ok, .cpu_data,
     .tile_cs, .tile_addr, .tile_ok, .tile_data,
     .obj_cs, .obj_addr, .obj_ok, .obj_data,
-    .obj_pf_cs(1'b0), .obj_pf_addr(20'd0),
+    .obj_pf_cs(1'b0), .obj_pf_addr(22'd0),
     .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data
 );
 
@@ -88,13 +90,13 @@ always @(posedge clk_mem) begin
 end
 
 // ------------------------------------------------------------ fixtures
-localparam int MAXB = 1 << 24, MAXR = 1 << 15;
+localparam int MAXB = 1 << 25, MAXR = 1 << 15;   // tokkae streams 17 MB of non-zero runs
 reg   [7:0] stream [0:MAXB-1];
 reg  [27:0] run_s [0:255], run_n [0:255], run_o [0:255];
 int         nruns = 0;
 reg  [19:0] cpu_a [0:MAXR-1];   reg [63:0] cpu_d [0:MAXR-1];   int ncpu = 0;
-reg  [23:0] tile_a [0:MAXR-1];  reg [39:0] tile_d [0:MAXR-1];  int ntile = 0;
-reg  [23:0] obj_a [0:MAXR-1];   reg [39:0] obj_d [0:MAXR-1];   int nobj = 0;
+reg  [23:0] tile_a [0:MAXR-1];  reg [63:0] tile_d [0:MAXR-1];  int ntile = 0;
+reg  [23:0] obj_a [0:MAXR-1];   reg [63:0] obj_d [0:MAXR-1];   int nobj = 0;
 reg  [22:0] snd_a [0:MAXR-1];   reg [63:0] snd_d [0:MAXR-1];   int nsnd = 0;
 int  bads = 0;
 
@@ -204,14 +206,14 @@ task automatic read_cpu(input [19:0] a, output [63:0] d);
     d = cpu_data; cpu_cs <= 0;
 endtask
 
-task automatic read_tile(input [20:0] a, output [39:0] d);
+task automatic read_tile(input [20:0] a, output [63:0] d);
     @(posedge clk); tile_addr <= a; tile_cs <= 1;
     do @(posedge clk); while (!tile_ok);
     d = tile_data; tile_cs <= 0;
 endtask
 
 // cs held across reads: only the address moves
-task automatic read_obj_held(input [19:0] a, output [39:0] d);
+task automatic read_obj_held(input [21:0] a, output [63:0] d);
     @(posedge clk); obj_addr <= a; obj_cs <= 1;
     do @(posedge clk); while (!obj_ok);
     d = obj_data;
@@ -229,7 +231,7 @@ initial begin
     while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, v) == 2) begin cpu_a[ncpu] = a; cpu_d[ncpu] = v; ncpu++; end
     $fclose(fd);
     fd = $fopen({D, "tile.hex"}, "r");
-    while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, w) == 2) begin tile_a[ntile] = a; tile_d[ntile] = w; ntile++; end
+    while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, v) == 2) begin tile_a[ntile] = a; tile_d[ntile] = v; ntile++; end
     $fclose(fd);
     fd = $fopen({D, "snd.hex"}, "r");
     if (fd != 0) begin
@@ -237,10 +239,10 @@ initial begin
         $fclose(fd);
     end
     fd = $fopen({D, "obj.hex"}, "r");
-    while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, w) == 2) begin obj_a[nobj] = a; obj_d[nobj] = w; nobj++; end
+    while (!$feof(fd)) if ($fscanf(fd, "%h %h\n", a, v) == 2) begin obj_a[nobj] = a; obj_d[nobj] = v; nobj++; end
     $fclose(fd);
     fd = $fopen({D, "cfg.hex"}, "r");
-    void'($fscanf(fd, "%h\n%h\n%h\n%h\n", tile_base, obj_base, tile_size4, obj_size4));
+    void'($fscanf(fd, "%h\n%h\n%h\n%h\n%h\n%h\n", tile_base, obj_base, tile_size4, obj_size4, tile_bpp, obj_layout));
     $fclose(fd);
     $display("=== gx_sdram_top: %0d stream runs, %0d CPU granules, %0d tile rows, %0d sprite half-rows; bases %07x %07x size4 %06x %06x",
              nruns, ncpu, ntile, nobj, tile_base, obj_base, tile_size4, obj_size4);
@@ -277,10 +279,10 @@ initial begin
 
     // tile rows, cs dropped between reads
     for (k = 0; k < ntile; k++) begin
-        read_tile(tile_a[k][20:0], got40);
+        read_tile(tile_a[k][20:0], got);
         checked++;
-        if (got40 !== tile_d[k]) begin
-            if (badt < 8) $display("  tile row %06x: got %010x want %010x", tile_a[k], got40, tile_d[k]);
+        if (got !== tile_d[k]) begin
+            if (badt < 8) $display("  tile row %06x: got %016x want %016x", tile_a[k], got, tile_d[k]);
             bad++; badt++;
         end
     end
@@ -288,10 +290,10 @@ initial begin
 
     // sprite half-rows, cs held
     for (k = 0; k < nobj; k++) begin
-        read_obj_held(obj_a[k][19:0], got40);
+        read_obj_held(obj_a[k][21:0], got);
         checked++;
-        if (got40 !== obj_d[k]) begin
-            if (bado < 8) $display("  sprite half-row %06x: got %010x want %010x", obj_a[k], got40, obj_d[k]);
+        if (got !== obj_d[k]) begin
+            if (bado < 8) $display("  sprite half-row %06x: got %016x want %016x", obj_a[k], got, obj_d[k]);
             bad++; bado++;
         end
     end

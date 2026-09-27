@@ -38,6 +38,7 @@ def main():
     ap.add_argument("capture")
     ap.add_argument("--sim", choices=["verilator", "modelsim"], default="verilator")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--plus", nargs="*", default=[], help="extra plusargs, with the +")
     a = ap.parse_args()
     cap = rm.Capture(REPO / "debug" / a.capture)
 
@@ -50,7 +51,12 @@ def main():
         runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
         r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_video_tb",
                             f"+TNTILES={tn}", f"+ONTILES={on}",
-                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}"],
+                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}",
+                            f"+BPP={ {5: 0, 6: 1, 8: 2}[rm.TILE_BPP.get(cap.set, 5)] }",
+                            f"+LAYOUT={ {'GX': 0, 'RNG': 1, 'GX6': 2, 'LE2': 3}[rm.OBJ_LAYOUT.get(cap.set, 'GX')] }",
+                            f"+PRI_RAW={rm.OBJ_PRI_RAW.get(cap.set, 0)}",
+                            f"+VIS_X0={rm.VIS_X0}", f"+VIS_W={rm.VIS_W}",
+                            f"+VMIRROR={int(cap.set in rm.ORIENT_FLIPY)}"] + a.plus,
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "video_sim.log").write_text(log)

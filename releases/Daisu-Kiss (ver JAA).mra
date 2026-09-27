@@ -2,6 +2,7 @@
     <name>Daisu-Kiss (ver JAA)</name>
     <setname>daiskiss</setname>
     <rbf>KonamiGX</rbf>
+    <mameversion>0289</mameversion>
     <year>1996</year>
     <manufacturer>Konami</manufacturer>
     <category>Arcade</category>
@@ -20,11 +21,11 @@
             <part name="535jaa02.31b" crc="e5b3e0e5" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
-        <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
+        <!-- k056832: the four-byte part of each 5-byte row, then the last 1 byte of each (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
         <part name="535a19.17h" crc="fa1c59d1"/>  <!-- four-byte part -->
         <part repeat="2097152">00</part>
-        <part name="535a18.13g" crc="d02e5103"/>  <!-- fifth bytes -->
+        <part name="535a18.13g" crc="d02e5103"/>  <!-- second part -->
         <part repeat="524288">00</part>
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="3145728">00</part>
@@ -43,7 +44,6 @@
         </interleave>
         <!-- k054539: MAME's region as it is -->
         <part name="535a22.9g" crc="7ee59acb"/>
-        <part repeat="2097152">00</part>
     </rom>
 
     <switches default="FE,FF">
@@ -51,5 +51,5 @@
         <dip name="Flip Screen" bits="1" ids="On,Off"/>
     </switches>
 
-    <buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>
+    <buttons names="1,2,3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>
 </misterromdescription>

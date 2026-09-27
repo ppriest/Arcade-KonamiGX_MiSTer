@@ -31,8 +31,8 @@ identifiable:
 3. **K056832 colour depths above the K054157's.** jotego's `jt05415x` is the K054156/K054157 pair;
    its own README says that pair reaches 5 bpp where K054156/K056832 reaches 8. GX uses 4, 5, 6 and
    8 bpp across the game list.
-4. **The K054539**, which is a port rather than a piece of design work, on a licence assumption
-   recorded in [`THIRD-PARTY.md`](../THIRD-PARTY.md) rather than on a grant from its author.
+4. **The K054539**, written from MAME's `sound/k054539.cpp`: furrtek's HDL is GPL-2.0-only as far
+   as this project can tell ([`THIRD-PARTY.md`](../THIRD-PARTY.md)) and is not used.
 5. **The TMS57002 "DASP" effects DSP.** Phase 0 measured that all 22 in-scope sets load programs
    into it, so it is required, and no FPGA implementation exists. It was a measure-first item until
    the survey ran; see "Sound".
@@ -694,7 +694,7 @@ here yet.
 | **K053246/K055673 sprites** | **Port `jt053246.sv` + `jt053246_mmr.v` + `jt053246_scan.sv` + `jtsimson_obj.v`**, extend the graphics side to 5/6/8 bpp. **Not `jt053246_dma.v`'s slot-per-z-code sort**, which loses most of `daiskiss`'s sprites: RAM-order scan and a z-compared line buffer instead (see "Progress") | `jotego/jtcores/cores/simson/hdl/`, as wired by `cores/rungun` (which drives a real K055673), GPL-3.0-or-later |
 | **K054338 alpha blender** | **Port `jt054338.v`**, which already has the `ALPHA_INV` parameter GX's `set_alpha_invert(1)` needs | `jotego/jtcores/cores/moo/hdl/jt054338.v`, GPL-3.0-or-later |
 | **K055555 mixer** | **From scratch.** MAME's `konamigx_mixer()` transcribed literally; furrtek's register notes as the explanation. `jtmoo_colmix.v` is the shape of the surrounding wiring even though its priority chip is the earlier K053251 | `konamigx_v.cpp`, `k055555.cpp/.h`, furrtek `Konami/055555/README.md` |
-| **K054539 ×2 PCM** | **Port furrtek's Verilog**, on the licence assumption in [`THIRD-PARTY.md`](../THIRD-PARTY.md) | [furrtek/SiliconRE `Konami/054539/hdl/`](https://github.com/furrtek/SiliconRE/tree/master/Konami/054539) (41 KB of Verilog plus ROM contents dumped from the die). jotego's `jt539` is used by `moo`, `xmen` and `rungun` but is a **private submodule** and 404s |
+| **K054539 ×2 PCM** | **From scratch** against MAME's `k054539.cpp` (`rtl/sound/gx_k054539.sv`); furrtek's HDL is not used ([`THIRD-PARTY.md`](../THIRD-PARTY.md)) | [furrtek/SiliconRE `Konami/054539/hdl/`](https://github.com/furrtek/SiliconRE/tree/master/Konami/054539) (41 KB of Verilog plus ROM contents dumped from the die). jotego's `jt539` is used by `moo`, `xmen` and `rungun` but is a **private submodule** and 404s |
 | **K056800 sound comms** | Small. `jt054321.v` is the same family and is a starting point | `jotego/jtcores/cores/riders/hdl/jt054321.v`; MAME `sound/k056800.cpp` |
 | **ESC protection** | **From scratch**, as a bus-mastering microsequencer reproducing MAME's C | `konamigx.cpp:generate_sprites`, `esc_w`, and `konamigx_m.cpp:konamigx_esc_alert` |
 | **EEPROM 93C46** | `jt5911.sv`, or the pattern from the sibling cores | `jotego/jteeprom`, GPL-3.0 |
@@ -942,8 +942,8 @@ without it the games with one have no sprites. Exit criteria: three Type 2 sets 
 
 **Phase 3 — Sound.**
 
-68000 + K056800 + two K054539s, the PCM chip ported from furrtek's Verilog on the licence
-assumption in [`THIRD-PARTY.md`](../THIRD-PARTY.md). Exit criteria: register-write traces captured from MAME reproduce
+68000 + K056800 + two K054539s, the PCM chip written from MAME's `k054539.cpp`
+([`THIRD-PARTY.md`](../THIRD-PARTY.md)). Exit criteria: register-write traces captured from MAME reproduce
 correct audio, verified by ear and by a decoded capture against MAME's own output.
 
 Split so that the part that unblocks games comes first. Crazy Cross's power-on check, and
@@ -1006,6 +1006,35 @@ The remaining nineteen sets, every clone's `.mra`, the LE2 light guns, the four 
 `salmndr2`'s and `dragoonj`'s ESC variants, `sexyparo`'s `UNEMULATED_PROTECTION`, the alpha tile
 callback, screen flip. `docs/MAME_KLUDGES.md` is the deliverable that says what is still not right
 and what would settle it.
+
+Phase 4 progress (by set, what each needs):
+
+| Set | Tiles | Sprites | Other | State |
+|---|---|---|---|---|
+| tokkae | BPP_6 | GX (5 bpp) | primode 5; OPSET bit 4 z inversion; DMAEN clear | benches pixel-exact on 3 captures; main bench and board open |
+| tkmmpzdm | BPP_6 | GX | ESC: `konamigx_esc_alert` mode 0 copy; layer brightness (VBRI, all levels 0xff so far); MAME patches two ROM words (checksum, planes B-D) | f2400 and f4000 pixel-exact in gx_video; the patch question open |
+| dragoona/j | BPP_5, TILE_WORD only | RNG (4 bpp, 4 bytes a half-row) | own sprite callback, layer offsets +1, ESC copy at 0x5c00; 384 x 224 at bitmap x 40 | in: model exact on 3 frames; gx_video f1500/f3000 identical to MAME at 384 wide; f4500's sprites overrun the line (126 tiles) |
+| salmndr2(a) | BPP_6 (two TILE_WORDS2) | GX6 (6 bytes a half-row, `_48_WORD`) | ESC `konamigx_esc_alert` mode 1 (0x1c8c, 0x172) as gx_esc's gen_sal2; sprite callback pri = attr[9:4]; readback BPP66 (`k_6bpp_rom_long_r`); VMIXON 0x3f (layer D's colour bits 5:4 are its mix code) | model exact on 5 frames; gx_video 4 of 5 identical, f2400 differs in the zoomed dragon only; main bench and board open |
+| winspike(a/j) | BPP_8 | LE2 (8 bytes a half-row) | K056832 layer association off (djmain_hack 2); 384 x 224 at bitmap x 39; type 4 protection (0xd1c copy c01000 -> c01400, 0x57a input-buffer copies; command word at 0xcc0004, run on the falling edge of 0xcc0000 bit 9) | model exact on 6 frames (the K053252 at 24 + 15); protection as gx_esc's `p4` commands; main bench and board open |
+| le2(u/j) | BPP_8 | LE2 | primode -1, light guns (gx_guns, as Seta's Zombie Raid: held aim moved by the stick absolutely, the d-pad, or the mouse; per-player stick mode Auto/Aim/D-pad; button 2 or right-click reloads; crosshair option), le2u/le2j flip their own screen in Y and MAME turns it back (ORIENTATION_FLIP_Y): tilemaps drawn unflipped, sprite plane mirrored (gx_obj vmirror), gun Y reversed | all three in: model exact on le2 x3, le2u x2; RTL le2/le2u f1200 exact, f2400 differ only in zoomed sprites; guns untested on the board |
+
+Zoomed sprites: MAME maps each 16x16 tile on its own -- its screen width zw from the rounded tile
+positions, and destination pixel x sampling source column (x * floor((16 << 19) / zw)) >> 19 --
+where jtframe_draw steps one zoom accumulator across the sprite. le2's attract zooms heavily and ~11%
+of its frames' pixels come out a column to the side of MAME's; unzoomed sprites match. winspike f3000
+and salmndr2 f2400 differ the same way. Decided: the core keeps the continuous accumulator, which
+is closer to the hardware than MAME's per-tile placement (the user's call); these differences are
+MAME's, listed in docs/MAME_KLUDGES.md, and a bench frame that differs only in zoomed sprites passes.
+
+dragoonj and winspike run 384 x 224 (MAME resizes the screen from the CRTC; wrport DOTSEL 8 MHz).
+The video path takes the line total from the CRTC and the window from gx_board_cfg (vis_x0, vis_w).
+
+Sprite drawing time: the heaviest lines carry more sprite pixels than a line has clocks -- dragoonj
+f4500 126 tiles (2016 pixels), sexyparo play2400 159 (2544), against 3072 clocks a line at either
+dot clock -- and gx_obj_tb reports the scan unfinished there. Drawing faster than a pixel a clock
+(two a clock, or the drawer at 96 MHz) is what would settle it.
+
+Each sprite half-row fits a granule for every layout: GX6 and LE2 spread to 8 bytes as the 5 bpp regions are, RNG stored as it comes (a whole 8-byte row a granule, the half choosing the four bytes) -- spread, dragoonj's 16 MB region would be 32 MB. gx_obj decodes by layout, with the pen at colour x 2^bpp and the shadow pen 2^bpp - 1. Whether dragoonj's image fits the 32 MB module with its sound RAMs is to be checked by build_mra.
 
 **Phase 5 — Type 3/4, or not.** A decision with evidence rather than a default: what one video
 output should show for a two-monitor game, and whether `rushhero`'s 59.38 MB justifies requiring a
@@ -1074,7 +1103,10 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
 
 ## Open items
 
-- **The K054539's licence is assumed, not established.** furrtek's `SiliconRE` repository carries a
+- **The K054539's licence: settled against using furrtek's HDL.** SiliconRE#40 was closed without a
+  grant and the project owner assumes strictly GPL-2.0, so the chip is written from scratch against
+  MAME's `sound/k054539.cpp` (Phase 3b). What follows is the earlier state of the question.
+  furrtek's `SiliconRE` repository carries a
   GPL-2.0 `LICENSE` file and `Konami/054539/hdl/054539.v` has no SPDX header of its own, so whether
   the grant is GPL-2.0-only (incompatible with the GPL-3 modules here) or GPL-2.0-or-later
   (compatible) is not stated upstream. **The project owner has decided to proceed as though it is
@@ -1260,8 +1292,11 @@ Conventions, all carried over and all described in [`WORKFLOW.md`](WORKFLOW.md):
        300 and the capture is frame 1800, so that comparison proves nothing on its own. The
        reference trace is built (`debug/fantjour-sys`, 5.9M accesses) and the write-stream
        comparison to frame 1820 is the measurement that settles it.
-     * **Sexy Parodius runs slow.** Unmeasured. Slow means the CPU is starved, which on this board
-       has meant the ESC holding the bus (probe I: `esc_busy`, `count2`) or the CPU port losing
-       SDRAM time; `cpu_accesses` per frame from probe F against daiskiss's is the first number to
-       take.
+     * **Sexy Parodius runs slow.** Not the ESC in simulation: the main bench (+ESC_LOG, to frame
+       1174) has one command a frame holding the CPU at most 4,244 clocks (88 us, under 0.5% of a
+       frame; median 2,308), and the RTL keeps MAME's pace (RTL frame = MAME frame - 32, as on the
+       other sets; all 1,638,241 POST writes identical). What is slow on the board is still
+       unmeasured: `cpu_accesses` per frame from probe F against daiskiss's is the next number,
+       and whether the board's SDRAM latency (the bench's ROM model answers in 10 clocks) is
+       what differs.
    - Stacked shadows (MAME_KLUDGES), the other `.mra` sets on the board, the `.nvm` EEPROM save.

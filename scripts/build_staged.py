@@ -72,10 +72,12 @@ def run(cmd, **kw):
 
 
 def read_slacks(summary):
-    """Print every clock's setup slack; return the ones that fail.
+    """Print every clock's setup slack; return the setup, hold, recovery and
+    removal slacks that fail.
 
     All of them, not clk_sys alone: a violation on any clock is a violation,
-    and scripts/build.sh gates on exactly the same rule.
+    and scripts/build.sh gates on exactly the same rule. Hold counts too:
+    build 57 met setup and failed hold by 18 ps, which deploy.py refused.
     """
     out = []
     if not os.path.exists(summary):
@@ -83,18 +85,20 @@ def read_slacks(summary):
         return out
     lines = open(summary, errors="replace").read().splitlines()
     for i, ln in enumerate(lines):
-        if not ln.startswith("Type  : Setup ") or i + 2 >= len(lines):
+        kind = next((k for k in ("Setup", "Hold", "Recovery", "Removal")
+                     if ln.startswith("Type  : %s " % k)), None)
+        if kind is None or i + 2 >= len(lines):
             continue
-        clk = ln.split("Setup ", 1)[1].strip().strip("'")
+        clk = ln.split(kind + " ", 1)[1].strip().strip("'")
         try:
             slack = float(lines[i + 1].split(":", 1)[1])
         except (IndexError, ValueError):
             continue
         tns = lines[i + 2].split(":", 1)[1].strip()
-        if "emu|pll" in clk:
+        if "emu|pll" in clk and kind == "Setup":
             print("worst clk_sys setup: Slack : %.3f / TNS   : %s" % (slack, tns))
         if slack < 0:
-            out.append((clk[-58:], slack, tns))
+            out.append(("%s %s" % (kind.lower(), clk[-52:]), slack, tns))
     return out
 
 

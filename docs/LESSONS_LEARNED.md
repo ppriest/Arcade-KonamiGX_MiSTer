@@ -690,6 +690,27 @@ Three things follow:
   holding a value its own equation could not produce from its inputs. That
   is worth checking before anything about the logic it feeds.
 
+### [GX] A bench that instantiates a module itself cannot see the top level's wiring of it
+
+`gx_board_cfg.esc_copy` was added and connected in `tb_gx_main.sv`, which builds its own
+`gx_board_cfg`, but never in `KonamiGX.sv`. `gx_main`'s input was left unconnected -- 0 in Quartus
+-- so on the board tkmmpzdm and dragoonj would run `generate_sprites` where MAME copies, while every
+bench passed. Found by reading `KonamiGX.sv` while adding the next output. When a per-set output is
+added to `gx_board_cfg`, grep `KonamiGX.sv` for it as well as the bench.
+
+### [GX] A MAME clock hack during a power-on test points at a cache the core does not model
+
+Twin Bee, Crazy Cross, Dragoon Might and Tokimeki failed their self-tests on the board with
+the real sound 68000 and passed with the stub. MAME underclocks their 68020 to 2/3 for twelve
+seconds (`init_posthack`: "the 68020 instruction cache is disabled during POST ... wait loops
+timeout far too quickly"). MAME's CACR, logged per frame from Lua (`cpu.state["CACR"]`), showed
+each game keeping the instruction cache off through its power-on test and switching it on
+after; Lethal Enforcers II, the one that passed, switched it on at frame 3. The core's ROM
+cache ignored CACR, so the tests ran far faster than the board and gave up on the sound CPU.
+Modelling the cache-off fetch time (gx_main `rom_uncached`) fixed Twin Bee in the bench. When a
+driver scales a CPU's clock for a while, read what the game has switched off during that
+window before copying the hack.
+
 ## Timing closure
 
 ### Open the STA summary before believing any hardware-vs-simulation divergence
@@ -2381,3 +2402,25 @@ decoded. The first layout took rows = bytes / 5 (right for the K056832, whose re
 5-byte rows) and put the fifth bytes 0xcccc rows off; every sampled sprite row disagreed. The
 `.mra` clips the file to what the chip reads. The check that found it was the composed memory
 bench run on a second set: one set cannot show a formula that happens to agree on its own sizes.
+
+### [GX] Two devices on the halves of a word both see a word access
+
+`konamigx.cpp` maps the two K054539s on one address range with `umask16(0xff00)` and
+`umask16(0x00ff)`: a word write calls both handlers. `gx_sound` picked one chip from the byte
+strobes and served only #1 when both were set. The sound program enables the chips with a single
+word write to 0x22f, so #2 never started, and nothing else showed it -- the power-on tests passed
+and #1 played. It was found by replaying the bench's register writes through a model of the chip
+and seeing #2's key-ons produce silence in both. When MAME maps devices with `umask`, decode a
+word access as an access to each.
+
+### [GX] A register with no reset is whatever Quartus chooses; the simulators say 0
+
+gx_obj kept its own copy of OBJSET1 (K053246 register 5) with no reset and no initial value. The
+MiSTer template sets `ALLOW_POWER_UP_DONT_CARE ON`, and Quartus powered the copy up with bit 2
+set. That bit selected an 8-bit addressing path (jt053246_mmr's guess for other boards) that
+gx_main never exercises, so the copy froze at 0x04 and never took the game's writes; bit 5
+clear drew every shadow-code-1 sprite as a whole shadow, across Tokimeki and Tokkae-dama. Every
+bench starts registers at 0, and every bench -- the whole-machine one included -- drew those
+screens correctly; the fault was found by reading the sprite chip's own copy on the board
+(probe O). Power-up don't care is now off for both revisions, so an unreset register powers up
+at 0 as in simulation, and a register that decides behaviour gets a reset.

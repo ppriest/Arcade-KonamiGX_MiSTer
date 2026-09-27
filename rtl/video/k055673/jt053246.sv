@@ -74,7 +74,8 @@ module jt053246(    // sprite logic
     output     [ 7:0] st_dout
 );
 parameter       K55673=0, K55673_DESC_SORT=0, EDGE_TRIGGER=0,
-                GX_ORDER=0;            // [GX] see jt053246_dma
+                GX_ORDER=0,            // [GX] see jt053246_dma
+                GX_DMA_ALWAYS=0;       // [GX] copy whatever OBJSET1's DMA enable says
 parameter [9:0] HOFFSET   = 10'd62,
                 HADJ      = 10'h008;   // [GX] see jt053246_scan
 
@@ -97,7 +98,7 @@ assign ghf       = cfg[0]; // global flip
 assign gvf       = cfg[1];
 assign mode8     = cfg[2]; // guess, use it for 8-bit access on 46/47 pair
 assign cpu_bsy   = cfg[3];
-assign dma_en    = cfg[4];
+assign dma_en    = cfg[4] || GX_DMA_ALWAYS!=0;   // [GX] MAME's GX mixer draws sprite RAM live
 
 jt053246_scan #(.HOFFSET(HOFFSET),.HADJ(HADJ),.SCAN_START(SCAN_START)) u_scan(
     .rst       ( rst        ),

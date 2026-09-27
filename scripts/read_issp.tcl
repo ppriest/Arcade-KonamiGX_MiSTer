@@ -104,6 +104,23 @@ set fields_L {
     {scroll_modes    96 111 hex}
 }
 
+# INSTANCE O, 136 bits: the first tile each frame of a sprite with shadow
+# code 1 (gx_obj dbg_shd): what the scan decided, and the first granule the
+# drawer was answered with for it
+set fields_O {
+    {data_lo          0  31 hex}
+    {data_hi         32  63 hex}
+    {rom_addr        64  86 hex}
+    {code18          87 104 hex}
+    {shmode         105 106 dec}
+    {solid          107 107 bit}
+    {partial        108 108 bit}
+    {attr_full      109 124 hex}
+    {objset1        125 132 hex}
+    {captured       133 133 bit}
+    {data_seen      134 134 bit}
+}
+
 # INSTANCE M, 84 bits: the CPU ROM cache's last SDRAM fetch (gx_romcache).
 # INSTANCE S, 116 bits: the sound board. snd_dbg [63:0] = { 9'd0,
 # accesses, irq2, irq1, in reset, 4'd0, sctrl, address }, then the K056800's
@@ -232,6 +249,7 @@ switch -- $inst_id {
     I       { set fields $fields_I }
     J       { set fields $fields_J }
     K       { set fields $fields_K }
+    O       { set fields $fields_O }
     L       { set fields $fields_L }
     M       { set fields $fields_M }
     N       { set fields $fields_N }

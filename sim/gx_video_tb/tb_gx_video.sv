@@ -17,8 +17,14 @@
 
 module tb_gx_video;
 // +OBJ_HADJ=n: the set's K055673 dx less daiskiss's -26 (gx_board_cfg obj_hadj)
-int obj_hadj = 0;
+int obj_hadj = 0, tile_bpp = 0, obj_layout = 0, obj_pri_raw = 0, vis_x0 = 24, vis_w = 288, vmirror = 0;
+initial void'($value$plusargs("VMIRROR=%d", vmirror));
 initial void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
+initial void'($value$plusargs("BPP=%d", tile_bpp));
+initial void'($value$plusargs("LAYOUT=%d", obj_layout));
+initial void'($value$plusargs("PRI_RAW=%d", obj_pri_raw));
+initial void'($value$plusargs("VIS_X0=%d", vis_x0));
+initial void'($value$plusargs("VIS_W=%d", vis_w));
 
 localparam string TD = "debug/gx_tilemap_tb/";
 localparam string OD = "debug/gx_obj_tb/";
@@ -28,12 +34,15 @@ reg clk = 0, rst = 1;
 always #10.417 clk = ~clk;
 
 // ----------------------------------------------------------- clock enables
+// the dot clock wrport2 & 3 selects (gx_main's divider): 6 MHz a pixel
+// every eight clocks, 8 MHz (dragoonj, winspike) every six
 reg  [2:0] cen_cnt = 0;
 reg        pxl_cen = 0, pxl2_cen = 0;
+wire [2:0] cen_last = wrport2[1:0] == 2'd1 ? 3'd5 : 3'd7;
 always @(posedge clk) begin
-    cen_cnt  <= cen_cnt + 3'd1;
+    cen_cnt  <= cen_cnt == cen_last ? 3'd0 : cen_cnt + 3'd1;
     pxl_cen  <= cen_cnt == 0;
-    pxl2_cen <= cen_cnt == 0 || cen_cnt == 4;
+    pxl2_cen <= cen_cnt == 0 || cen_cnt == { 1'b0, cen_last[2:1] } + 3'd1;
 end
 
 // ----------------------------------------------------------- DUT
@@ -51,7 +60,7 @@ reg  signed [7:0] offs_x [4], offs_y [4];
 wire [23:0] tile_rom_addr;
 wire        tile_rom_cs;
 reg         tile_rom_ok = 0;
-reg  [39:0] tile_rom_data;
+reg  [63:0] tile_rom_data;
 
 reg         spr_ram_cs = 0, k46_cs = 0, k46_we = 0;
 reg  [ 1:0] k47_we = 0;
@@ -65,7 +74,7 @@ reg  [ 3:0] primode;
 wire [22:0] obj_rom_addr;
 wire        obj_rom_cs;
 reg         obj_rom_ok = 0;
-reg  [39:0] obj_rom_data;
+reg  [63:0] obj_rom_data;
 
 reg         k55_we = 0, bg_grad;
 reg  [ 1:0] k338_we = 0;
@@ -85,11 +94,11 @@ gx_video dut (
     .tm_reg_we, .tm_reg_addr, .tm_reg_din, .tm_reg_be(2'b11),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd(1'b0), .vram_addr, .vram_din, .vram_be(2'b11), .vram_dout(),
-    .offs_x, .offs_y,
+    .offs_x, .offs_y, .vis_x0(10'(vis_x0)), .vis_w(9'(vis_w)),
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din, .spr_ram_dout(),
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,
-    .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .obj_hadj(10'(obj_hadj)), .obj_dma_trig(1'b0), .obj_dma_hold(1'b0),
+    .k47_we, .k47_addr, .k47_din, .wrport2, .primode, .tile_bpp(2'(tile_bpp)), .obj_layout(2'(obj_layout)), .obj_pri_raw(2'(obj_pri_raw)), .obj_vmirror(vmirror != 0), .obj_hadj(10'(obj_hadj)), .obj_dma_trig(1'b0), .obj_dma_hold(1'b0),
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
     .rmrd_addr(), .tile_gfx_bank(),
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
@@ -102,12 +111,12 @@ reg [15:0] tregs_v [32];
 reg [ 7:0] tbank_v [8];
 reg [15:0] vram_v  [65536];
 reg [ 7:0] offs_v  [8];
-reg [39:0] trom_v  [1 << 21];     // K056832 5 bpp rows (fantjour's region is the largest)
+reg [63:0] trom_v  [1 << 21];     // K056832 rows of 5, 6 or 8 bytes, byte 0 in [63:56]
 reg [15:0] spr_v   [2048];
 reg [ 7:0] k46_v   [8];
 reg [15:0] k47_v   [8];
 reg [ 7:0] omisc_v [16];
-reg [39:0] orom_v  [1 << 21];     // K055673 half rows
+reg [63:0] orom_v  [1 << 22];     // K055673 half rows, byte 0 in [63:56]
 reg [ 7:0] k55_v   [64];
 reg [15:0] k338_v  [16];
 reg [23:0] pal_v   [8192];
@@ -199,12 +208,14 @@ initial begin
     for (int i = 0; i < 2048; i++)
         @(posedge clk) begin spr_ram_cs <= 1; spr_ram_we <= 2'b11; spr_ram_addr <= i[11:0]; spr_ram_din <= spr_v[i]; end
     @(posedge clk) begin spr_ram_cs <= 0; spr_ram_we <= 0; end
-    for (int i = 0; i < 64; i++)
-        @(posedge clk) begin k55_we <= 1; k55_addr <= i[5:0]; k55_din <= k55_v[i]; end
-    @(posedge clk) k55_we <= 0;
+    // the K054338 before the K055555: the mixer's unsupported flag is sticky,
+    // and VBRI read against brightness levels not yet loaded (zero) is flagged
     for (int i = 0; i < 16; i++)
         @(posedge clk) begin k338_we <= 2'b11; k338_addr <= i[3:0]; k338_din <= k338_v[i]; end
     @(posedge clk) k338_we <= 0;
+    for (int i = 0; i < 64; i++)
+        @(posedge clk) begin k55_we <= 1; k55_addr <= i[5:0]; k55_din <= k55_v[i]; end
+    @(posedge clk) k55_we <= 0;
     for (int i = 0; i < 8192; i++)
         @(posedge clk) begin pal_we <= 3'b111; pal_addr <= i[12:0]; pal_din <= pal_v[i]; end
     @(posedge clk) pal_we <= 0;

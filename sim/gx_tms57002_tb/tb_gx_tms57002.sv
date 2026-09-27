@@ -52,6 +52,14 @@ gx_tms57002 dut (
 // external memory: 256 KB, answers LAT clocks after a request
 reg [7:0] xram [0:262143];
 integer lat = 12, lc = 0;
+// +XLOG=n: the first n external-memory transactions, as tb_gx_main's
+int xlog = 0;
+initial void'($value$plusargs("XLOG=%d", xlog));
+always @(posedge clk) if (xlog > 0 && x_ack) begin
+    if (x_we) $display("XLOG W %05x %02x %016x", {x_addr, 3'd0}, x_wmask, x_wdata);
+    else      $display("XLOG R %05x %016x", {x_addr, 3'd0}, x_rdata);
+    xlog--;
+end
 always @(posedge clk) begin
     x_ack <= 0;
     if( x_req && !x_ack ) begin

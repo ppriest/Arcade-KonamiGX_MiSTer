@@ -7,11 +7,18 @@
  * rtl/video/k055673/. What differs from it, and why, is in
  * rtl/video/k055673/PROVENANCE.md, "Local changes". In short:
  *
+ *   - jt053246 runs with GX_DMA_ALWAYS=1: the DMA copies the list at every
+ *     start whether or not OBJSET1 bit 4 (DMAEN) is set. MAME's GX mixer has
+ *     no copy at all -- konamigx_mixer_init(screen, 0) points it at the
+ *     K053247 RAM -- so it draws the live list whatever DMAEN says, and
+ *     tokkae runs with DMAEN clear (OBJSET1 0x20) and its sprites on screen
+ *     (docs/MAME_KLUDGES.md).
  *   - jt053246 runs with GX_ORDER=1: the DMA copies sprites in RAM order,
  *     and which sprite is in front is decided per pixel in the line buffer
  *     on the key {z-code, priority} -- lowest wins, first written wins a tie
  *     (MAME's konamigx_mixer order; docs/MAME_KLUDGES.md).
- *   - 5 bpp pixels (K055673_LAYOUT_GX) through jtframe_draw's BPP=5.
+ *   - pixels of 4, 5, 6 or 8 bits (obj_layout: K055673_LAYOUT_RNG, GX, GX6,
+ *     LE2) through jtframe_draw at BPP=8, the planes a layout lacks zero.
  *   - the colour and priority come from GX's type2_sprite_callback, which
  *     routes the attribute through the K055555's OBJ palette and priority
  *     fields; the code gets the K055673's VRC bank bits.
@@ -26,12 +33,15 @@
  *   - konamigx_mixer's primode 4 "Daisukiss bad shadow filter".
  *
  * ROM: one request per 8 pixels, rom_addr = { code[17:0], row[3:0], half },
- * rom_data = the 5 bytes of that half-row as K055673_LAYOUT_GX assembles
- * them (byte 0 in [39:32]; within a byte the leftmost pixel is the MSB; the
- * pixel is b4<<4 | b3<<3 | b2<<2 | b1<<1 | b0).
+ * rom_data = that half-row's bytes (byte 0 in [63:56]; within a byte the
+ * leftmost pixel is the MSB). In every K055673 layout byte k of a half-row
+ * is plane k: GX { 32, 24, 16, 8, 0 }, RNG { 24, 16, 8, 0 }, GX6 { 40, 32,
+ * 24, 16, 8, 0 }, LE2 { 56, 48, 40, 32, 24, 16, 8, 0 } -- 5, 4, 6 and 8
+ * bytes of the half-row, MSB plane first.
  *
- * OUTPUT per pixel, solid plane: valid (pen != 0), pen = colour * 32 +
- * pixel (13 bits, K055673 colour granularity 32), pri (the K055555 input
+ * OUTPUT per pixel, solid plane: valid (pen != 0), pen = (colour <<
+ * bpp) + pixel, 13 bits (MAME: colour % (8192 >> bpp) times the layout's
+ * granularity 2^bpp), pri (the K055555 input
  * priority), zcode, index. Shadow plane: valid, every-pen mode, code (which
  * K054338 shadow set), index, shadow priority, zcode. The index and zcode
  * are what the mixer needs to rank a sprite against a shadow as MAME does.
@@ -84,12 +94,17 @@ module gx_obj #(parameter
     input      [ 7:0] shdpri1,     // K55_SHAD2_PRI
     input      [ 7:0] shdpri2,     // K55_SHAD3_PRI
     input      [ 7:0] spri_min,    // highest priority of a layer SHD_ON leaves unshadowed
+    input      [ 1:0] obj_layout,  // K055673 set_config layout: 0 GX, 1 RNG, 2 GX6, 3 LE2
+    input             vmirror,     // le2u/le2j: the sprite plane turned over its visible rows
+    input      [ 2:0] shd_defer,   // shadow codes SHD PRI SEL defers (gx_mixer): the line buffer keeps others first
+    input      [ 1:0] obj_pri_raw, // 1 dragoonj_sprite_callback: pri = attr bit 9 ? 4 : attr[7:4];
+                                   // 2 salmndr2_sprite_callback: pri = attr[9:4]
 
     // sprite ROM
     output     [22:0] rom_addr,
     output            rom_cs,
     input             rom_ok,
-    input      [39:0] rom_data,
+    input      [63:0] rom_data,
     // the row the scan will draw next, for the port to fetch ahead of the
     // drawer: a fetch takes longer than the eight pixels the drawer has to
     // spare, so without this every row waits for memory before its first
@@ -113,22 +128,31 @@ module gx_obj #(parameter
     output     [ 7:0] shd_pri,
     output     [ 7:0] shd_z,
     output            dma_busy,      // the object DMA is copying (status bit, IRQ 3 at its end)
-    output reg        ln_short       // one clock: the scan had not finished the line when the next began
+    output reg        ln_short,      // one clock: the scan had not finished the line when the next began
+    // the first tile each frame of a sprite with shadow code 1: { rom data
+    // [63:0], rom address [86:64], code18 [104:87], shadow mode [106:105],
+    // solid [107], partial [108], attr_full [124:109], OBJSET1 [132:125],
+    // captured [133], data seen [134] } (probe O)
+    output reg [135:0] dbg_shd
 );
 
 // ------------------------------------------------------------ registers
 reg  [15:0] kx47 [0:7];
 reg  [ 7:0] objset1;        // K053246 register 5, as jt053246_mmr also holds it
 
+// OBJSET1 is reset: it had no reset or initial value, and Quartus powered
+// it up with bit 2 set. That bit switched this copy to jt053246_mmr's 8-bit
+// addressing (register 5 at an odd address), which gx_main never presents,
+// so the copy froze at 0x04 and the game's 0x20/0x30 never reached it; with
+// bit 5 clear every shadow-code-1 sprite drew as a whole shadow (tkmmpzdm,
+// tokkae, on the board only -- the benches start it at 0). The 8-bit path
+// is gone: GX's registers are written a word at a time through gx_main.
 always @(posedge clk) begin
     if( k47_we[1] ) kx47[k47_addr][15:8] <= k47_din[15:8];
     if( k47_we[0] ) kx47[k47_addr][ 7:0] <= k47_din[ 7:0];
-    if( reg_cs && mmr_we ) begin
-        if( objset1[2] ) begin
-            if( mmr_addr[2:0]==5 ) objset1 <= mmr_din[7:0];
-        end else if( mmr_addr[2:1]==2 && !mmr_dsn[0] )
-            objset1 <= mmr_din[7:0];
-    end
+    if( rst ) objset1 <= 8'd0;
+    else if( reg_cs && mmr_we && mmr_addr[2:1]==2 && !mmr_dsn[0] )
+        objset1 <= mmr_din[7:0];
 end
 
 // konamigx_precache_registers
@@ -151,6 +175,7 @@ wire [ 9:0] attr, hpos;
 wire [15:0] attr_full;
 wire [ 7:0] zcode, obj_idx;
 wire        hflip, vflip, hz_keep, dr_start, dr_busy, dma_bsy;
+wire        q_full, q_empty;            // the draw queue, below
 assign dma_busy = dma_bsy;
 
 // jt053246_scan's own test ("Obj scan did not finish"), for the board's probe:
@@ -159,7 +184,9 @@ wire ln_done;
 reg  hs_l2;
 always @(posedge clk) begin
     hs_l2    <= hs;
-    ln_short <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7 && !ln_done;
+    // the line is done when the scan is and the queue and the drawer are empty
+    ln_short <= hs && !hs_l2 && vdump > 9'h10D && vdump <= 9'h1F7
+                && !(ln_done && q_empty && !dr_busy);
 end
 wire [ 3:0] ysub;
 wire        pf_on;
@@ -174,6 +201,7 @@ assign rmrd_out = rmrd_addr;
 jt053246 #(
     .K55673   ( 0       ),
     .GX_ORDER ( 1       ),
+    .GX_DMA_ALWAYS ( 1  ),
     .HOFFSET  ( HOFFSET ),
     .HADJ     ( HADJ    )
 ) u_scan (
@@ -204,7 +232,7 @@ jt053246 #(
     .attr_full  ( attr_full ),
     .obj_idx    ( obj_idx   ),
     .hdump      ( hdump     ),
-    .vdump      ( vdump     ),
+    .vdump      ( vmirror ? 9'h2fb - vdump : vdump ),
     .voffset    ( voffset   ),
     .hoff_adj   ( hoff_adj  ),
     .dma_trig   ( dma_trig  ),
@@ -214,7 +242,7 @@ jt053246 #(
     .pxl        ( 9'd0      ),
     .shd        ( pre_shd   ),
     .dr_start   ( dr_start  ),
-    .dr_busy    ( dr_busy   ),
+    .dr_busy    ( q_full    ),
     .pf_on      ( pf_on     ),
     .pf_code    ( pf_code   ),
     .debug_bus  ( 8'd0      ),
@@ -249,7 +277,8 @@ always @* begin
     ocb    = { 3'd0, ocblk[2:0], 10'd0 } & ~opon;
     csh    = (ocb | (c18 & opon)) >> coregshift;
     color  = csh[7:0];
-    pri    = (c18[15:8] & ~oinprion) | (opri & oinprion);
+    pri    = ((obj_pri_raw == 2'd1 ? (attr[9] ? 8'd4 : { 4'd0, attr[7:4] }) :
+               obj_pri_raw == 2'd2 ? { 2'd0, attr[9:4] } : c18[15:8]) & ~oinprion) | (opri & oinprion);
     case( code[15:14] )    // m_k053247_vrcbk
         2'd0: code18 = { kx47[4][ 3:0], code[13:0] };
         2'd1: code18 = { kx47[4][11:8], code[13:0] };
@@ -269,19 +298,77 @@ wire [1:0] shmode   = !shcode ? 2'd0 :
                                 ( shadowon[0]     ? 2'd2 : 2'd0 );
 wire       filtered = primode==4 && (attr_full[13:12]!=0 || attr_full==16'h0800);
 wire       draw     = dr_start && !filtered && ( solid || shmode!=0 );
+// konamigx_mixer: "invert z-order when opset_pri is set (see p.51 OPSET PRI)"
+// -- OPSET bit 4 (tokkae and tkmmpzdm run with it set)
+wire [7:0] zcode_e  = opset[4] ? 8'hff - zcode : zcode;
 reg  [7:0] spri;
 always @* begin
     spri = opset[5] ? pri : shset==2'd0 ? shdpri0 : shset==2'd1 ? shdpri1 : shdpri2;
     if( (primode==4 || primode==5) && spri < spri_min ) spri = spri_min;
 end
 
+// ------------------------------------------------------------ draw queue
+// The scan used to wait for the drawer to finish each tile before going on,
+// so a line cost the scan's walk of the table plus the drawing: dragoonj's
+// busiest lines (112 tiles, gx_obj_tb +LINE_STATS) spent 1039 clocks reading
+// entries and 2032 waiting, 3071 of the line's 3072, and the heavier ones ran
+// out. Tiles now go into a queue, with everything the drawer latches from
+// the scan and the callback, so the walk goes on while they are drawn and a
+// line costs the longer of the two. The ROM hint is the queue's head, the
+// tile the drawer takes next. A new line starts with the queue emptied, as
+// the scan starts its walk again.
+localparam QD = 8;
+localparam QW = 18 + 10 + 4 + 12 + 3 + 55;
+wire [54:0]   c_pal = { shd_defer[shset], shpen, zcode_e, pri, spri, obj_idx, color, solid, mode1, shmode, shset };
+(* ramstyle = "logic" *) reg [QW-1:0] q_mem [0:QD-1];
+reg  [ 2:0]   q_wp, q_rp;
+reg  [ 3:0]   q_n;
+reg  [QW-1:0] q_out;                    // the tile the drawer was given, held for its latch
+reg           q_flag [0:QD-1];          // probe: the tile dbg_shd follows
+reg           qf_out, shd_arm, lvbl_d;
+reg           q_draw, draw_l;
+wire          q_push = draw && !draw_l; // dr_start is high for a cen2 period
+assign q_full  = q_n >= QD - 1;         // room for one more push in flight
+assign q_empty = q_n == 4'd0;
+wire          q_pop  = !q_empty && !dr_busy && !q_draw;
+always @(posedge clk) begin
+    draw_l <= draw;
+    q_draw <= 1'b0;
+    if( rst || (hs && !hs_l2) ) begin
+        q_wp <= 3'd0; q_rp <= 3'd0; q_n <= 4'd0;
+    end else begin
+        if( q_push ) begin
+            q_mem[q_wp] <= { code18, hpos, ysub, hzoom, hz_keep, hflip, vflip, c_pal };
+            q_flag[q_wp] <= shd_arm && shcode == 2'd1;
+            q_wp <= q_wp + 3'd1;
+        end
+        if( q_pop ) begin
+            q_out  <= q_mem[q_rp];
+            qf_out <= q_flag[q_rp];
+            q_rp   <= q_rp + 3'd1;
+            q_draw <= 1'b1;
+        end
+        q_n <= q_n + { 3'd0, q_push } - { 3'd0, q_pop };
+    end
+end
+wire [17:0] qd_code  = q_out[QW-1 -: 18];
+wire [ 9:0] qd_hpos  = q_out[QW-19 -: 10];
+wire [ 3:0] qd_ysub  = q_out[QW-29 -: 4];
+wire [11:0] qd_hzoom = q_out[QW-33 -: 12];
+wire        qd_hzk   = q_out[57];
+wire        qd_hflip = q_out[56];
+wire        qd_vflip = q_out[55];
+wire [54:0] qd_pal   = q_out[54:0];
+// the head, for the ROM hint
+wire [QW-1:0] q_head = q_mem[q_rp];
+
 // ------------------------------------------------------------ draw
 // The data word gx_obj_linebuf.v documents: { z, pri, spri, index, colour,
 // solid, mode1, shadow mode, shadow code, pen }, padded to PW.
-localparam PW = 72;
+localparam PW = 75;
 wire [PW-1:0] buf_pred, buf_din, pre_pxl;
 wire [24:2]   draw_addr;
-wire [39:0]   sorted;
+wire [63:0]   sorted;
 
 // The ROM port answers a fetch with one clock of ok and does not fetch the
 // same address again while cs stays high. jtframe_draw keeps cs high across
@@ -295,7 +382,7 @@ wire [39:0]   sorted;
 // drawer showed the clock before the pulse), until the drawer takes it or
 // moves on.
 reg  [22:0]   addr_d, ok_addr;
-reg  [39:0]   ok_data;
+reg  [63:0]   ok_data;
 reg           ok_held;
 always @(posedge clk) begin
     addr_d <= rom_addr;
@@ -304,14 +391,37 @@ always @(posedge clk) begin
 end
 wire          held_hit = ok_held && rom_cs && rom_addr == ok_addr;
 wire          drw_ok   = rom_ok || held_hit;
-wire [39:0]   drw_data = rom_ok ? rom_data : ok_data;
+wire [63:0]   drw_data = rom_ok ? rom_data : ok_data;
 
-// K055673_LAYOUT_GX half-row -> jtframe_draw's format (one plane per byte,
-// leftmost pixel in the LSB)
+// probe O: armed each vblank, it takes the first shadow-code-1 tile queued,
+// then the first granule the drawer is answered with for it
+always @(posedge clk) begin
+    lvbl_d <= lvbl;
+    if( rst ) begin shd_arm <= 1'b0; dbg_shd <= 136'd0; end
+    else begin
+        if( !lvbl && lvbl_d ) shd_arm <= 1'b1;
+        if( q_push && shd_arm && shcode == 2'd1 ) begin
+            shd_arm <= 1'b0;
+            dbg_shd[133:87] <= { 1'b1, objset1, attr_full, partial, solid, shmode, code18 };
+            dbg_shd[134]    <= 1'b0;
+        end
+        if( qf_out && drw_ok && rom_cs && !dbg_shd[134] ) begin
+            dbg_shd[63:0]  <= drw_data;
+            dbg_shd[86:64] <= rom_addr;
+            dbg_shd[134]   <= 1'b1;
+        end
+    end
+end
+
+// the half-row -> jtframe_draw's format (one plane per byte, leftmost pixel
+// in the LSB); the planes past the layout's depth are zero
+wire [3:0] obpp  = obj_layout==2'd1 ? 4'd4 : obj_layout==2'd2 ? 4'd6 :
+                   obj_layout==2'd3 ? 4'd8 : 4'd5;
+wire [7:0] shpen = 8'hff >> ( 4'd8 - obpp );          // 2^bpp - 1
 genvar gk, gi;
-generate for( gk=0; gk<5; gk=gk+1 ) begin : g_plane
+generate for( gk=0; gk<8; gk=gk+1 ) begin : g_plane
     for( gi=0; gi<8; gi=gi+1 ) begin : g_bit
-        assign sorted[8*gk+gi] = drw_data[39-8*gk-gi];   // byte k, bit 7-i
+        assign sorted[8*gk+gi] = gk < obpp && drw_data[63-8*gk-gi];   // byte k, bit 7-i
     end
 end endgenerate
 
@@ -330,12 +440,18 @@ always @* case( pf_code[15:14] )
     2'd2: pf_code18 = { kx47[5][ 3:0], pf_code[13:0] };
     2'd3: pf_code18 = { kx47[5][11:8], pf_code[13:0] };
 endcase
-assign pf_cs   = pf_on;
-assign pf_addr = { pf_code18, ysub ^ {4{vflip}}, hflip };
+// the queue's head when there is one, else the scan's next tile
+wire [17:0] qh_code  = q_head[QW-1 -: 18];
+wire [ 3:0] qh_ysub  = q_head[QW-29 -: 4];
+wire        qh_hflip = q_head[56];
+wire        qh_vflip = q_head[55];
+assign pf_cs   = !q_empty || pf_on;
+assign pf_addr = !q_empty ? { qh_code, qh_ysub ^ {4{qh_vflip}}, qh_hflip }
+                          : { pf_code18, ysub ^ {4{vflip}}, hflip };
 
 jtframe_objdraw_gate #(
     .AW(10), .CW(18), .PW(PW), .ZW(12), .ZI(6), .ZENLARGE(1),
-    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(5), .KEYW(16), .FIRST_PX(1)
+    .SWAPH(0), .LATCH(1), .FLIP_OFFSET(9'h12), .BPP(8), .KEYW(16), .FIRST_PX(1)
 ) u_draw (
     .rst        ( rst            ),
     .clk        ( clk            ),
@@ -343,17 +459,17 @@ jtframe_objdraw_gate #(
     .hs         ( hs             ),
     .flip       ( 1'b0           ),
     .hdump      ( {1'b0, hdump}  ),
-    .draw       ( draw           ),
+    .draw       ( q_draw         ),
     .busy       ( dr_busy        ),
-    .code       ( code18         ),
-    .xpos       ( hpos           ),
-    .ysub       ( ysub           ),
+    .code       ( qd_code        ),
+    .xpos       ( qd_hpos        ),
+    .ysub       ( qd_ysub        ),
     .trunc      ( 2'd0           ),
-    .hzoom      ( hzoom          ),
-    .hz_keep    ( hz_keep        ),
-    .hflip      ( hflip          ),
-    .vflip      ( vflip          ),
-    .pal        ( { 21'd0, zcode, pri, spri, obj_idx, color, solid, mode1, shmode, shset } ),
+    .hzoom      ( qd_hzoom       ),
+    .hz_keep    ( qd_hzk         ),
+    .hflip      ( qd_hflip       ),
+    .vflip      ( qd_vflip       ),
+    .pal        ( { 12'd0, qd_pal } ),
     .rom_addr   ( draw_addr      ),
     .rom_cs     ( rom_cs         ),
     .rom_ok     ( drw_ok         ),
@@ -363,16 +479,18 @@ jtframe_objdraw_gate #(
     .pxl        ( pre_pxl        )
 );
 
-assign pxl_valid = pre_pxl[4:0] != 0;
-assign pxl_pen   = { pre_pxl[12:5], pre_pxl[4:0] };
-assign pxl_idx   = pre_pxl[20:13];
-assign pxl_pri   = pre_pxl[28:21];
-assign pxl_z     = pre_pxl[36:29];
-assign shd_z     = pre_pxl[44:37];
-assign shd_pri   = pre_pxl[52:45];
-assign shd_idx   = pre_pxl[60:53];
-assign shd_code  = pre_pxl[62:61];
-assign shd_full  = pre_pxl[63];
-assign shd_valid = pre_pxl[64];
+// { colour, pen } with the colour at the layout's granularity (2^bpp)
+wire [20:0] pen_sh = { 5'd0, pre_pxl[15:8], 8'd0 } >> ( 4'd8 - obpp );
+assign pxl_valid = pre_pxl[7:0] != 0;
+assign pxl_pen   = pen_sh[12:0] | { 5'd0, pre_pxl[7:0] };
+assign pxl_idx   = pre_pxl[23:16];
+assign pxl_pri   = pre_pxl[31:24];
+assign pxl_z     = pre_pxl[39:32];
+assign shd_z     = pre_pxl[47:40];
+assign shd_pri   = pre_pxl[55:48];
+assign shd_idx   = pre_pxl[63:56];
+assign shd_code  = pre_pxl[65:64];
+assign shd_full  = pre_pxl[66];
+assign shd_valid = pre_pxl[67];
 
 endmodule

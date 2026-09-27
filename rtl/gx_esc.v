@@ -19,6 +19,34 @@
  *   byte at data+9 is set to 2 (ESTATE_END) and `irq` pulses -- gx_main
  *   raises IRQ 4 if its enable is set, as MAME does.
  *
+ *   A set whose callback is konamigx_esc_alert in mode 0 (tkmmpzdm_esc:
+ *   work RAM + 0x142 dwords, 0x100 sprites) copies instead (gen_copy):
+ *   gen_count sprites of 16 bytes from gen_src to 0xd20000, word for word.
+ *
+ *   Salamander 2 (sal2_esc: konamigx_esc_alert mode 1, gen_sal2) builds
+ *   the list from the game's own object records: the Vic Viper (three
+ *   records at 0x49c, dword layout "odd"), Lord British (three at 0x84c) and
+ *   gen_count groups of 0xc0 bytes from gen_src, each with up to 15 records
+ *   from +32; a magic dword at 0x71f0 picks a zcode/priority table, a
+ *   position correction and the y mask. One 8-word sprite per record whose
+ *   flag bit is set, word 7 left as it is; at 256 it stops, otherwise word
+ *   0 of every slot left is cleared. The K055555 blend-enable write MAME
+ *   makes for magic 0x10010011 ("TEMPORARY") is not reproduced.
+ *
+ *   Fantastic Journey's DMA (gameDefs special 9, fantjour_dma_w at 0xdb0000)
+ *   starts with `fj`: mode 0x93 copies sz2 + 1 blocks of db bytes, a dword
+ *   at a time, from sa to da, each dword XOR x; mode 0x8f fills them with
+ *   x. The game copies within the palette RAM (0xd96000 to 0xd90000-
+ *   0xd94fff) and clears sprite RAM at 0xd21000. No interrupt, as MAME.
+ *
+ *   A set with the type 4 Xilinx protection instead (winspike: gameDefs
+ *   special 7, type4_prot_w) starts it with `p4`, data[15:0] the command
+ *   word the CPU wrote to 0xcc0004: 0x0a56/0x0d96/0x0d14/0x0d1c copy 0x400
+ *   bytes from 0xc01000 to 0xc01400; 0x057a copies the dwords at 0xc00f10,
+ *   0xc00f14, 0xc00f20, 0xc00f24, 0xc00f30, 0xc00f34 to 0xc10f00, 0xc10f04,
+ *   0xc10f20, 0xc10f24, 0xc0fe00, 0xc0fe04; any other command does nothing.
+ *   Then `irq` pulses; there is no packet to mark.
+ *
  *   generate_sprites: pass 1 lists the entries at src + 0x100*i whose word
  *   +2 is non-zero and whose priority (+28) is below 256, in order. Pass 2,
  *   per entry, reads the header and walks the piece list at `set` (ROM or
@@ -36,11 +64,21 @@ module gx_esc (
 
     input             start,       // the CPU's write completed the 32-bit data
     input      [23:0] data,        // what it wrote: the command packet address
+    input             p4,          // start is a type 4 protection command, data[15:0]
+    input             fj,          // start is a fantjour DMA command, fj_* below
+    input      [ 7:0] fj_mode,
+    input      [ 7:0] fj_sz2,
+    input      [23:0] fj_sa,
+    input      [23:0] fj_da,
+    input      [15:0] fj_db,
+    input      [31:0] fj_x,
     // per set (gx_board_cfg, from konamigx.cpp's gameDefs and *_esc): whether
     // a run command generates sprites, and the list it walks
     input             gen_en,      // 0: no ESC callback -- the command only ends
     input      [23:0] gen_src,     // the first entry (entry i at gen_src + 0x100*i)
     input      [ 8:0] gen_count,   // entries (1-256)
+    input             gen_copy,    // the callback is konamigx_esc_alert mode 0: a copy
+    input             gen_sal2,    // ... mode 1 (sal2_esc)
     output reg        busy,
     output reg        irq,         // one clock, at the end of a magic command
 
@@ -66,15 +104,20 @@ reg  [7:0] list_i  [0:255];     // entry index i (adr = SRC + 0x100*i)
 reg  [7:0] list_pri[0:255];
 
 // ---------------------------------------------------------- state
-localparam [5:0]
+localparam [6:0]
     S_IDLE=0, S_OP_HI=1, S_OP_LO=2, S_SUB=3, S_P1=4, S_P2=5,
     S_L_W2=6, S_L_PRI=7,
     S_H0=8, S_H1=9, S_H2=10, S_H3=11, S_H4=12, S_H5=13, S_H6=14, S_H7=15, S_H8=16, S_H9=17,
     S_H10=18, S_H11=19, S_HDONE=20,
     S_CNT=21, S_IDX=22, S_FLIP=23, S_COL=24, S_Y=25, S_X=26, S_DIVY=27, S_DIVX=28,
     S_POS=29, S_W0=30, S_W1=31, S_W2=32, S_W3=33, S_W4=34, S_W5=35, S_W6=36, S_NEXT=37,
-    S_FILL=38, S_END=39, S_ENTRY=40, S_W7=41, S_DONE=42;
-reg  [5:0]  st;
+    S_FILL=38, S_END=39, S_ENTRY=40, S_W7=41, S_DONE=42, S_CP_RD=43, S_CP_WR=44, S_CP_NEXT=45,
+    S_CP_SEG=46,
+    S2_MG0=47, S2_MG1=48, S2_VC=49, S2_HC=50, S2_VV=51, S2_VV1=52, S2_VV2=53, S2_LB=54,
+    S2_LB1=55, S2_LB2=56, S2_G0=57, S2_G1=58, S2_GC=59, S2_GH=60, S2_GV=61, S2_GN=62,
+    S2_ORD=63, S2_OT=64, S2_OW=65, S2_ONEXT=66, S2_CLR=67, S2_CLRW=68,
+    F_RH=69, F_RL=70, F_WH=71, F_WL=72;
+reg  [6:0]  st;
 
 reg  [23:0] pkt;                 // command packet address
 reg  [31:0] op;
@@ -82,6 +125,9 @@ reg  [7:0]  sub;
 reg  [8:0]  i, ecount, e, scount;
 reg  [7:0]  pri;
 reg  [23:0] adr, set, spr;
+reg  [23:0] cp_last;             // the copy's last destination word
+reg  [1:0]  cp_seg;              // 0x057a: which of its three copies
+reg         p4_run, p4_in;       // a type 4 command; 0x057a
 reg  [15:0] w_hi, glob_x, glob_y, glob_f, zoom_x, zoom_y, v16;
 reg  [15:0] color_val, color_mask, color_set, color_rotate, count2;
 reg  flip_x, flip_y;
@@ -89,6 +135,67 @@ reg  [15:0] idx, flip, col;
 reg  signed [15:0] y, x;
 
 wire in_set = set >= 24'h200000 && set < 24'hd00000;
+
+// ---------------------------------------------------------- sal2_esc
+localparam [23:0] W = 24'hc00000;       // srcbase: the work RAM
+reg  [15:0] magic_hi, hcorr, vcorr, hoffs, voffs, vmask;
+reg  [2:0]  tbl;                         // ztable/ptable row
+reg  [15:0] ow [0:7];                    // the record, as words
+reg  [2:0]  owk, dk;
+reg  [23:0] obase, gadr;
+reg  [3:0]  ocnt;
+reg         odd;                         // EXTRACT_ODD's dword alignment
+reg  [1:0]  phase;                       // 0 Vic Viper, 1 Lord British, 2 the groups
+reg  [8:0]  g, j;                        // group; sprite slots left
+
+// fantjour_dma_w
+reg         fj_run, fj_fill;
+reg  [7:0]  fj_blk;                      // blocks left after this one
+reg  [15:0] fj_i2, fj_dbr;               // bytes done in this block; block size
+reg  [31:0] fj_xr;
+
+// konamigx_esc_alert's ztable and ptable (ptable >> 4)
+function [2:0] ztab( input [2:0] t, input [2:0] k );
+    case( t )
+        3'd1, 3'd2: case( k ) 0: ztab = 4; 1: ztab = 3; 2: ztab = 2; 3: ztab = 1;
+                              4: ztab = 0; 5: ztab = 7; 6: ztab = 6; default: ztab = 5; endcase
+        3'd3: case( k ) 0: ztab = 3; 1: ztab = 2; 2: ztab = 1; 3: ztab = 0;
+                        4: ztab = 5; 5: ztab = 7; 6: ztab = 4; default: ztab = 6; endcase
+        3'd4: case( k ) 0: ztab = 6; 1: ztab = 5; 2: ztab = 1; 3: ztab = 4;
+                        4: ztab = 3; 5: ztab = 7; 6: ztab = 0; default: ztab = 2; endcase
+        default: case( k ) 0: ztab = 5; 1: ztab = 4; 2: ztab = 3; 3: ztab = 2;
+                           4: ztab = 1; 5: ztab = 7; 6: ztab = 6; default: ztab = 0; endcase
+    endcase
+endfunction
+function [1:0] ptab( input [2:0] t, input [2:0] k );
+    case( t )
+        3'd0: case( k ) 3: ptab = 1; 4: ptab = 2; 7: ptab = 3; default: ptab = 0; endcase
+        3'd1: ptab = k == 3'd5 ? 2'd0 : 2'd2;
+        3'd2: ptab = k == 3'd3 || k == 3'd4 ? 2'd2 : 2'd0;
+        3'd3: case( k ) 0, 1, 2, 6: ptab = 1; 3: ptab = 2; default: ptab = 0; endcase
+        3'd4: case( k ) 2, 6, 7: ptab = 2; 4: ptab = 1; default: ptab = 0; endcase
+        3'd5: ptab = k == 3'd3 || k == 3'd4 || k == 3'd7 ? 2'd1 : 2'd0;
+        default: ptab = k == 3'd7 ? 2'd1 : 2'd0;
+    endcase
+endfunction
+
+// the sprite's words from the record (EXTRACT_ODD / EXTRACT_EVEN)
+wire [2:0]  rk  = odd ? ow[1][2:0] : ow[0][2:0];
+wire [2:0]  rz  = ztab( tbl, rk );
+wire [1:0]  rp  = ptab( tbl, rk );
+wire        rok = odd ? ow[1][15] : ow[0][15];
+reg  [15:0] rd_w;
+always @* begin
+    case( dk )
+        3'd0: rd_w = { (odd ? ow[1][15:8] : ow[0][15:8]), 5'd0, rz };
+        3'd1: rd_w = odd ? ow[2] : ow[1];
+        3'd2: rd_w = ((odd ? ow[3] : ow[2]) + voffs) & vmask;
+        3'd3: rd_w = (odd ? ow[4] : ow[3]) + hoffs;
+        3'd4: rd_w = odd ? ow[5] : ow[4];
+        3'd5: rd_w = odd ? ow[6] : ow[5];
+        default: rd_w = (odd ? ow[7] : ow[6]) | { 6'd0, rp, 8'd0 };
+    endcase
+end
 
 assign dbg = { count2, m_req, busy, e, set, m_addr, st };
 
@@ -147,11 +254,33 @@ always @(posedge clk) begin
     irq   <= 0;
     dv_go <= 0;
     if( rst ) begin
-        st <= S_IDLE; busy <= 0; m_req <= 0; dv_wait <= 0;
+        st <= S_IDLE; busy <= 0; m_req <= 0; dv_wait <= 0; p4_run <= 0; fj_run <= 0;
     end else begin
         if( m_ack ) m_req <= 0;
         case( st )
-        S_IDLE: if( start ) begin
+        S_IDLE: if( start && fj ) begin
+            busy <= 1; fj_run <= 1; p4_run <= 0;
+            fj_fill <= fj_mode == 8'h8f; fj_blk <= fj_sz2; fj_i2 <= 0; fj_dbr <= fj_db; fj_xr <= fj_x;
+            adr <= fj_sa; spr <= fj_da;
+            if( fj_db == 0 || (fj_mode != 8'h93 && fj_mode != 8'h8f) ) st <= S_END;
+            else if( fj_mode == 8'h93 ) begin rd( fj_sa ); st <= F_RH; end
+            else begin w_hi <= fj_x[31:16]; v16 <= fj_x[15:0]; st <= F_WH; end
+        end else if( start && p4 ) begin
+            fj_run <= 0;
+            busy <= 1; p4_run <= 1; p4_in <= data[15:0] == 16'h057a; cp_seg <= 0;
+            case( data[15:0] )
+                16'h0a56, 16'h0d96, 16'h0d14, 16'h0d1c: begin
+                    adr <= 24'hc01000; spr <= 24'hc01400; cp_last <= 24'hc017fe;
+                    rd( 24'hc01000 ); st <= S_CP_RD;
+                end
+                16'h057a: begin
+                    adr <= 24'hc00f10; spr <= 24'hc10f00; cp_last <= 24'hc10f06;
+                    rd( 24'hc00f10 ); st <= S_CP_RD;
+                end
+                default: st <= S_END;
+            endcase
+        end else if( start ) begin
+            p4_run <= 0; fj_run <= 0;
             // pkt[0]: MAME reads the packet with unaligned word reads; not modelled
             if( data != 0 && data >= 24'hc00000 && data <= 24'hc1ffff && !data[0] ) begin
                 busy <= 1; pkt <= data; rd( data ); st <= S_OP_HI;
@@ -166,10 +295,146 @@ always @(posedge clk) begin
         end
         S_SUB: if( m_ack ) begin
             sub <= m_din[15:8];                  // the byte at data+8
-            if( m_din[15:8] == 8'd1 && gen_en ) begin   // run: generate_sprites
+            if( m_din[15:8] == 8'd1 && gen_en && gen_copy ) begin   // run: esc_alert's copy
+                adr <= SRC; spr <= DST; cp_last <= DST + { 11'd0, gen_count, 4'd0 } - 24'd2;
+                rd( SRC ); st <= S_CP_RD;
+            end else if( m_din[15:8] == 8'd1 && gen_en && gen_sal2 ) begin   // run: esc_alert mode 1
+                spr <= DST; j <= 9'd256; rd( W + 24'h71f0 ); st <= S2_MG0;
+            end else if( m_din[15:8] == 8'd1 && gen_en ) begin   // run: generate_sprites
                 i <= 0; ecount <= 0; rd( SRC + 24'd2 ); st <= S_L_W2;
             end else st <= S_END;
         end
+        // ---- konamigx_esc_alert mode 0: gen_count * 8 words, as they are
+        S_CP_RD: if( m_ack ) begin v16 <= m_din; st <= S_CP_WR; end
+        S_CP_WR: if( !m_req ) begin
+            wr( spr, v16 );
+            spr <= spr + 24'd2; adr <= adr + 24'd2;
+            if( spr == cp_last ) st <= S_CP_SEG;
+            else st <= S_CP_NEXT;
+        end
+        S_CP_SEG: if( !m_req && fj_run ) begin
+            spr <= spr + 24'd4;
+            if( !fj_fill ) adr <= adr + 24'd4;
+            if( fj_i2 + 16'd4 >= fj_dbr ) begin
+                fj_i2 <= 0;
+                if( fj_blk == 0 ) st <= S_END;
+                else fj_blk <= fj_blk - 8'd1;
+            end else fj_i2 <= fj_i2 + 16'd4;
+            if( !(fj_i2 + 16'd4 >= fj_dbr && fj_blk == 0) ) begin
+                if( fj_fill ) st <= F_WH;
+                else begin rd( fj_fill ? adr : adr + 24'd4 ); st <= F_RH; end
+            end
+        end else if( !m_req ) begin
+            cp_seg <= cp_seg + 2'd1;
+            if( p4_in && cp_seg == 2'd0 ) begin
+                adr <= 24'hc00f20; spr <= 24'hc10f20; cp_last <= 24'hc10f26;
+                rd( 24'hc00f20 ); st <= S_CP_RD;
+            end else if( p4_in && cp_seg == 2'd1 ) begin
+                adr <= 24'hc00f30; spr <= 24'hc0fe00; cp_last <= 24'hc0fe06;
+                rd( 24'hc00f30 ); st <= S_CP_RD;
+            end else st <= S_END;
+        end
+        // ---- fantjour_dma_w: a dword is two words, high first
+        F_RH: if( m_ack ) begin w_hi <= m_din ^ fj_xr[31:16]; rd( adr + 24'd2 ); st <= F_RL; end
+        F_RL: if( m_ack ) begin v16 <= m_din ^ fj_xr[15:0]; st <= F_WH; end
+        F_WH: if( !m_req ) begin wr( spr, w_hi ); st <= F_WL; end
+        F_WL: if( m_ack ) begin wr( spr + 24'd2, v16 ); st <= S_CP_SEG; end
+        // ---- konamigx_esc_alert mode 1
+        S2_MG0: if( m_ack ) begin magic_hi <= m_din; rd( W + 24'h71f2 ); st <= S2_MG1; end
+        S2_MG1: if( m_ack ) begin
+            vmask <= 16'h3ff;
+            case( { magic_hi, m_din } )
+                32'h10010801: tbl <= 3'd6;
+                32'h11010010: begin tbl <= 3'd5; vmask <= 16'h1ff; end
+                32'h01111018: tbl <= 3'd4;
+                32'h10010011: tbl <= 3'd3;
+                32'h11010811: tbl <= 3'd2;
+                32'h10000010: tbl <= 3'd1;
+                default:      tbl <= 3'd0;
+            endcase
+            if( { magic_hi, m_din } == 32'h11010111 ) begin
+                hcorr <= 0; vcorr <= 0; rd( W + 24'h049c ); st <= S2_VV;
+            end else begin rd( W + 24'h26a2 ); st <= S2_VC; end
+        end
+        S2_VC: if( m_ack ) begin vcorr <= m_din; rd( W + 24'h26a4 ); st <= S2_HC; end
+        S2_HC: if( m_ack ) begin hcorr <= m_din - 16'd10; rd( W + 24'h049c ); st <= S2_VV; end
+        // the Vic Viper: srcbase[0x049c/4] & 0xffff0000
+        S2_VV: if( m_ack ) begin
+            if( m_din != 0 ) begin rd( W + 24'h0502 ); st <= S2_VV1; end
+            else begin rd( W + 24'h084a ); st <= S2_LB; end
+        end
+        S2_VV1: if( m_ack ) begin hoffs <= m_din - hcorr; rd( W + 24'h0506 ); st <= S2_VV2; end
+        S2_VV2: if( m_ack ) begin
+            voffs <= m_din - vcorr; odd <= 1; obase <= W + 24'h049c; ocnt <= 4'd3; phase <= 0;
+            owk <= 0; rd( W + 24'h049c ); st <= S2_ORD;
+        end
+        // Lord British: srcbase[0x0848/4] & 0x0000ffff
+        S2_LB: if( m_ack ) begin
+            if( m_din != 0 ) begin rd( W + 24'h08b0 ); st <= S2_LB1; end
+            else begin g <= 0; gadr <= SRC; rd( SRC ); st <= S2_G0; end
+        end
+        S2_LB1: if( m_ack ) begin hoffs <= m_din - hcorr; rd( W + 24'h08b4 ); st <= S2_LB2; end
+        S2_LB2: if( m_ack ) begin
+            voffs <= m_din - vcorr; odd <= 0; obase <= W + 24'h084c; ocnt <= 4'd3; phase <= 1;
+            owk <= 0; rd( W + 24'h084c ); st <= S2_ORD;
+        end
+        // the groups: skipped if the first dword is 0 or the count (+30) is 0
+        S2_G0: if( m_ack ) begin w_hi <= m_din; rd( gadr + 24'd2 ); st <= S2_G1; end
+        S2_G1: if( m_ack ) begin
+            if( w_hi == 0 && m_din == 0 ) st <= S2_GN;
+            else begin rd( gadr + 24'd30 ); st <= S2_GC; end
+        end
+        S2_GC: if( m_ack ) begin
+            if( m_din[3:0] == 0 ) st <= S2_GN;
+            else begin ocnt <= m_din[3:0]; rd( gadr + 24'd20 ); st <= S2_GH; end
+        end
+        S2_GH: if( m_ack ) begin hoffs <= m_din - hcorr; rd( gadr + 24'd24 ); st <= S2_GV; end
+        S2_GV: if( m_ack ) begin
+            voffs <= m_din - vcorr; odd <= 0; obase <= gadr + 24'd32; phase <= 2;
+            owk <= 0; rd( gadr + 24'd32 ); st <= S2_ORD;
+        end
+        S2_GN: begin
+            if( g == LAST ) st <= S2_CLR;
+            else begin
+                g <= g + 9'd1; gadr <= gadr + 24'hc0; rd( gadr + 24'hc0 ); st <= S2_G0;
+            end
+        end
+        // one record: eight words, then the sprite if its flag is set
+        S2_ORD: if( m_ack ) begin
+            ow[owk] <= m_din;
+            if( owk == 3'd7 ) st <= S2_OT;
+            else begin owk <= owk + 3'd1; rd( obase + { 20'd0, owk + 3'd1, 1'b0 } ); end
+        end
+        S2_OT: begin
+            dk <= 0;
+            st <= rok ? S2_OW : S2_ONEXT;
+        end
+        S2_OW: if( !m_req ) begin
+            if( dk == 3'd7 ) begin
+                spr <= spr + 24'd16; j <= j - 9'd1;
+                st <= j == 9'd1 ? S_END : S2_ONEXT;   // 256: return
+            end else begin
+                wr( spr + { 20'd0, dk, 1'b0 }, rd_w ); dk <= dk + 3'd1;
+            end
+        end
+        S2_ONEXT: if( !m_req ) begin
+            ocnt <= ocnt - 4'd1;
+            if( ocnt == 4'd1 ) begin
+                case( phase )
+                    2'd0: begin rd( W + 24'h084a ); st <= S2_LB; end
+                    2'd1: begin g <= 0; gadr <= SRC; rd( SRC ); st <= S2_G0; end
+                    default: st <= S2_GN;
+                endcase
+            end else begin
+                obase <= obase + 24'd16; owk <= 0; rd( obase + 24'd16 ); st <= S2_ORD;
+            end
+        end
+        // clear residual data: word 0 of the slots left
+        S2_CLR: if( !m_req ) begin
+            if( j == 0 ) st <= S_END;
+            else begin wr( spr, 16'd0 ); st <= S2_CLRW; end
+        end
+        S2_CLRW: if( m_ack ) begin spr <= spr + 24'd16; j <= j - 9'd1; st <= S2_CLR; end
         // ---- pass 1: the list
         S_L_W2: if( m_ack ) begin
             if( m_din != 0 ) begin rd( SRC + { 8'd0, i[7:0], 8'd28 } ); st <= S_L_PRI; end
@@ -317,7 +582,12 @@ always @(posedge clk) begin
         end
         S_W7: if( m_ack ) begin spr <= spr + 24'd16; scount <= scount + 9'd1; st <= S_FILL; end
         // ---- the byte at data+9 = ESTATE_END (2), then the interrupt
-        S_END: if( !m_req ) begin
+        S_CP_NEXT: if( !m_req ) begin rd( adr ); st <= S_CP_RD; end
+        S_END: if( !m_req && fj_run ) begin
+            busy <= 0; fj_run <= 0; st <= S_IDLE;           // no interrupt
+        end else if( !m_req && p4_run ) begin
+            irq <= 1; busy <= 0; st <= S_IDLE;
+        end else if( !m_req ) begin
             m_req <= 1; m_we <= 1; m_addr <= pkt[23:1] + 23'd4; m_be <= 2'b01;
             m_dout <= 16'h0002; st <= S_DONE;
         end

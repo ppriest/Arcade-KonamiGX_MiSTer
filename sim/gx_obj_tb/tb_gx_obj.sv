@@ -65,7 +65,9 @@ reg  [ 9:0] voffset = 0;
 wire [22:0] rom_addr;
 wire        rom_cs;
 wire        rom_ok;
-wire [39:0] rom_data;
+wire [63:0] rom_data;
+int         obj_layout = 0;      // +LAYOUT=0 GX, 1 RNG, 2 GX6, 3 LE2
+int         obj_pri_raw = 0;     // +PRI_RAW=1: dragoonj's priority callback, 2 salmndr2's
 wire        pxl_valid;
 wire [12:0] pxl_pen;
 wire [ 7:0] pxl_pri, pxl_z, pxl_idx;
@@ -79,7 +81,7 @@ gx_obj #(.HOFFSET(10'(HOFFSET)), .HADJ(10'd0)) dut (
     .reg_cs, .mmr_we, .mmr_addr, .mmr_din, .mmr_dsn,
     .k47_we, .k47_addr, .k47_din,
     .opri, .oinprion, .ocblk, .wrport2, .primode,
-    .shadowon, .shdpri0, .shdpri1, .shdpri2, .spri_min,
+    .shadowon, .shdpri0, .shdpri1, .shdpri2, .spri_min, .obj_layout(2'(obj_layout)), .vmirror(1'b0), .shd_defer(3'd0), .obj_pri_raw(2'(obj_pri_raw)),
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .pxl_valid, .pxl_pen, .pxl_pri, .pxl_z, .pxl_idx,
     .shd_valid, .shd_full, .shd_code, .shd_idx, .shd_pri, .shd_z, .dma_busy()
@@ -90,7 +92,7 @@ reg [15:0] spr_v  [2048];
 reg [ 7:0] k46_v  [8];
 reg [15:0] k47_v  [8];
 reg [ 7:0] misc_v [16];    // opri, oinprion, ocblk, wrport2, primode, shadowon, shdpri0-2, spri_min
-reg [39:0] rom_v  [1 << 20];   // fixed size: Verilator cannot $readmemh a dynamic array
+reg [63:0] rom_v  [1 << 22];   // fixed size (tokkae: 2M half-rows): Verilator cannot $readmemh a dynamic array
 int        ntiles, ROM_LAT = 6;
 
 // +PORT=0 (default): the ideal model -- every fetch answered ROM_LAT clocks
@@ -112,7 +114,7 @@ end
 reg [22:0] last_addr;
 int        lat;
 reg         id_ok = 0;
-reg  [39:0] id_data;
+reg  [63:0] id_data;
 always @(posedge clk) if (!use_port) begin
     id_ok <= 1'b0;
     if (!rom_cs) lat <= 0;
@@ -145,32 +147,47 @@ always @(posedge clk_mem) begin
     if (!p_req) m_cnt <= 0;
     else if (m_cnt < ROM_LAT_M) m_cnt <= m_cnt + 1;
     else if (!p_valid) begin
-        int g; reg [39:0] row;
+        int g, h; reg [63:0] row, r1;
         g   = p_addr >> 3;
-        row = rom_v[((g >> 5) % ntiles) << 5 | g[4:0]];
-        p_rdata <= { 24'd0, row[7:0], row[15:8], row[23:16], row[31:24], row[39:32] };
+        if (obj_layout == 1) begin
+            // RNG, as the board's port asks for it (halfsel): the granule is
+            // a whole row, the half-row the drawer asks for 2g in its low
+            // four bytes and 2g + 1 in its high four
+            h   = 2 * g;
+            row = rom_v[((h >> 5) % ntiles) << 5 | h[4:0]];
+            h   = h + 1;
+            r1  = rom_v[((h >> 5) % ntiles) << 5 | h[4:0]];
+            for (int k = 0; k < 4; k++) begin
+                p_rdata[8*k +: 8]      <= row[63 - 8*k -: 8];
+                p_rdata[32 + 8*k +: 8] <= r1[63 - 8*k -: 8];
+            end
+        end else begin
+            row = rom_v[((g >> 5) % ntiles) << 5 | g[4:0]];
+            for (int k = 0; k < 8; k++) p_rdata[8*k +: 8] <= row[63 - 8*k -: 8];   // granule byte k = row byte k
+        end
         p_valid <= 1;
         m_cnt   <= 0;
     end
 end
 
-gx_rom_port #(.AW(20), .PAIR(1)) u_port (
+gx_rom_port #(.AW(22), .PAIR(1)) u_port (
     .clk(clk), .clk_mem(clk_mem), .rst(rst),
-    .cs(rom_cs && use_port != 0), .addr(rom_addr[19:0]), .ok(p_ok), .data(p_g),
-    .hint_cs(dut.pf_cs && use_port != 0 && use_hint != 0), .hint_addr(dut.pf_addr[19:0]),
+    .cs(rom_cs && use_port != 0), .addr(rom_addr[21:0]), .ok(p_ok), .data(p_g),
+    .hint_cs(dut.pf_cs && use_port != 0 && use_hint != 0), .hint_addr(dut.pf_addr[21:0]),
+    .inval(1'b0), .halfsel(obj_layout == 1),         // as gx_sdram_top: RNG
     .base(26'd0),
     .c_req(p_req), .c_addr(p_addr), .c_valid(p_valid), .c_rdata(p_rdata)
 );
 
 assign rom_ok   = use_port ? p_ok : id_ok;
-assign rom_data = use_port ? { p_g[7:0], p_g[15:8], p_g[23:16], p_g[31:24], p_g[39:32] }
+assign rom_data = use_port ? { p_g[7:0], p_g[15:8], p_g[23:16], p_g[31:24], p_g[39:32], p_g[47:40], p_g[55:48], p_g[63:56] }
                            : id_data;
 
 // ----------------------------------------------------------- probes
 // +ROM_DUMP=n: print the first n sprite ROM answers (address, data)
 int rom_dump = 0;
 always @(posedge clk) if (rom_ok && rom_dump > 0) begin
-    $display("DUMP rom  %06x -> %010x", last_addr, rom_data);
+    $display("DUMP rom  %06x -> %016x", last_addr, rom_data);
     rom_dump--;
 end
 // +SCAN_TRACE=i+1: each tile the scan starts for table entry i -- line, code,
@@ -195,6 +212,37 @@ always @(posedge clk) begin
     if (dut.u_draw.g_keybuf.u_linebuf.h_req) n_hreq++;
     if (dut.draw && dut.shmode != 0) n_shdraw++;
 end
+// +LINE_STATS=1: per line, clocks the scan spent reading entries, waiting on
+// the drawer, the drawer's pixel writes and its ROM waits; the worst line
+int line_stats = 0;
+initial void'($value$plusargs("LINE_STATS=%d", line_stats));
+int ls_scan = 0, ls_wait = 0, ls_pix = 0, ls_rom = 0, ls_tiles = 0, ls_line = 0, ls_skip = 0, ls_rd = 0, ls_mv = 0;
+int ls_worst = 0;
+reg ls_hs = 0;
+always @(posedge clk) if (line_stats != 0) begin
+    ls_hs <= hs;
+    if (hs && !ls_hs) begin
+        if (ls_scan + ls_wait > ls_worst || ls_tiles > 100) begin
+            if (ls_scan + ls_wait > ls_worst) ls_worst = ls_scan + ls_wait;
+            $display("LINE %03x tiles %0d scan %0d wait %0d pix %0d romwait %0d done %0d idle_q %0d busy %0d starved %0d",
+                     vdump, ls_tiles, ls_scan, ls_wait, ls_pix, ls_rom, dut.u_scan.u_scan.done, ls_skip, ls_rd, ls_mv);
+        end
+        ls_scan = 0; ls_wait = 0; ls_pix = 0; ls_rom = 0; ls_tiles = 0; ls_skip = 0; ls_rd = 0; ls_mv = 0;
+    end else begin
+        if (!dut.u_scan.u_scan.done) begin
+            if ({dut.u_scan.u_scan.indr, dut.u_scan.u_scan.scan_sub} >= 5) ls_wait++;
+            else ls_scan++;
+        end
+        if (dut.u_draw.u_draw.buf_we) ls_pix++;
+        if (dut.u_draw.u_draw.busy && dut.u_draw.u_draw.cnt[3]) ls_rom++;
+        if (dut.q_push) ls_tiles++;
+        // idle_q: the drawer free with tiles queued; busy: the drawer's
+        // clocks; starved: nothing queued while the scan is still walking
+        if (!dut.q_empty && !dut.dr_busy) ls_skip++;
+        if (dut.dr_busy) ls_rd++;
+        if (dut.q_empty && !dut.dr_busy && !dut.u_scan.u_scan.done) ls_mv++;
+    end
+end
 
 // ----------------------------------------------------------- stimulus
 integer f;
@@ -203,9 +251,11 @@ int     cap_frame;
 initial begin
     if (!$value$plusargs("NTILES=%d", ntiles)) $fatal(1, "+NTILES= missing");
     void'($value$plusargs("ROM_LAT=%d", ROM_LAT));
+    void'($value$plusargs("LAYOUT=%d", obj_layout));
+    void'($value$plusargs("PRI_RAW=%d", obj_pri_raw));
     void'($value$plusargs("ROM_DUMP=%d", rom_dump));
     void'($value$plusargs("VOFFSET=%d", voffset));
-    if (ntiles * 32 > (1 << 20)) $fatal(1, "sprite ROM larger than rom_v");
+    if (ntiles * 32 > (1 << 22)) $fatal(1, "sprite ROM larger than rom_v");
     $readmemh({DIR, "spr.hex"},  spr_v);
     $readmemh({DIR, "k46.hex"},  k46_v);
     $readmemh({DIR, "k47.hex"},  k47_v);

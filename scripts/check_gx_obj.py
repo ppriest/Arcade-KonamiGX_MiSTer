@@ -25,6 +25,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import render_model as rm          # noqa: E402
+import check_gx_tilemap            # noqa: E402
 
 REPO = rm.REPO
 OUT = REPO / "debug" / "gx_obj_tb"
@@ -42,22 +43,15 @@ def write_vectors(cap):
     (OUT / "k47.hex").write_text("".join(f"{v:04x}\n" for v in sr.kx47))
     k5 = cap.k055555
     shadowon, spri_min = rm.mixer_shadow_setup(cap, [k5[7], k5[10], k5[13], k5[14]])
-    misc = [k5[15], k5[19], k5[27], cap.wrport[0x2001], rm.SPRITE_CFG[cap.set]["primode"],
+    misc = [k5[15], k5[19], k5[27], cap.wrport[0x2001], rm.SPRITE_CFG[cap.set]["primode"] & 0xff,
             sum(1 << i for i in range(3) if shadowon[i]), k5[37], k5[38], k5[39], spri_min,
             0, 0, 0, 0, 0, 0]
     (OUT / "misc.hex").write_text("".join(f"{v:02x}\n" for v in misc))
-    # K055673_LAYOUT_GX, assembled exactly as render_model.k055673_sprites does,
-    # then one 5-byte half-row per line: index = (tile * 16 + row) * 2 + half
-    rom = np.frombuffer((REPO / "debug" / f"{cap.set}-rom" / "k055673.bin").read_bytes(),
-                        dtype=np.uint8)
-    size4 = (len(rom) // 0x100000) // 5 * 0x400000
-    four = rom[:size4].reshape(-1, 4)
-    one = rom[size4:size4 + size4 // 4].reshape(-1, 1)
-    comb = np.concatenate([four, one], axis=1).reshape(-1)
-    n = size4 // 128
-    halves = comb[:n * 160].reshape(-1, 5)
-    (OUT / "rom.hex").write_text("".join(h.tobytes().hex() + "\n" for h in halves))
-    return n
+    # the half-rows as render_model.k055673_halves decodes the set's layout,
+    # one a line padded to 8 bytes: index = (tile * 16 + row) * 2 + half
+    halves = rm.k055673_halves(cap.set)
+    (OUT / "rom.hex").write_text(check_gx_tilemap.rows_hex(halves))
+    return len(halves) // 32
 
 
 def main():
@@ -70,6 +64,8 @@ def main():
     ap.add_argument("--sim", choices=["verilator", "modelsim"], default="verilator",
                     help="Verilator is ~10x faster; ModelSim is four-state (WORKFLOW 10)")
     ap.add_argument("--no-sim", action="store_true")
+    ap.add_argument("--allow-overrun", action="store_true",
+                    help="compare even when the scan ran out of line time")
     ap.add_argument("--plus", action="append", default=[], help="extra +PLUSARG=value for the bench")
     a = ap.parse_args()
     cap = rm.Capture(REPO / "debug" / a.capture)
@@ -81,7 +77,9 @@ def main():
         r = subprocess.run([GIT_BASH, runner, "gx_obj_tb",
                             f"{g}HOFFSET={a.hoffset}", f"+NTILES={ntiles}",
                             f"+ROM_LAT={a.rom_lat}", f"+VOFFSET={a.voffset}",
-                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}"] + a.plus,
+                            f"+OBJ_HADJ={rm.SPRITE_CFG[cap.set]['dx'] + 26}",
+                            f"+LAYOUT={ {'GX': 0, 'RNG': 1, 'GX6': 2, 'LE2': 3}[rm.OBJ_LAYOUT.get(cap.set, 'GX')] }",
+                            f"+PRI_RAW={rm.OBJ_PRI_RAW.get(cap.set, 0)}"] + a.plus,
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "sim.log").write_text(log)
@@ -93,7 +91,9 @@ def main():
         overruns = log.count("did not finish")
         if overruns:
             print(f"FAIL: the object scan did not finish on {overruns} lines")
-            return 1
+            if not a.allow_overrun:
+                return 1
+            print("  (--allow-overrun: comparing anyway)")
 
     rows = [ln.split() for ln in (OUT / "out.hex").read_text().splitlines()]
     V, H = 264, 512

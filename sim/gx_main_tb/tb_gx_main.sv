@@ -30,15 +30,19 @@
 // the PLL gives it: both are blocking-assigned in the same time step (or set
 // together before one eval in main.cpp), so every process samples pre-edge
 // values, as on the board.
+// INSTANCE does nothing but name the build: scripts/check_gx_main.py
+// --instance N builds into obj_verilator/gx_main_tb_GINSTANCE_N_, so a second
+// run can start while another is simulating (they share only the input
+// files, which each reads at its start)
 `ifdef GX_CPP_CLOCK
-module tb_gx_main (
+module tb_gx_main #(parameter INSTANCE = 0) (
     input             clk,
     input             clk_cpu,
     input             reopen,
     output     [31:0] frame_o
 );
 `else
-module tb_gx_main;
+module tb_gx_main #(parameter INSTANCE = 0);
 reg clk = 0, clk_cpu = 0, reopen = 0;
 always #10.417 clk = ~clk;
 always #20.834 clk_cpu = ~clk_cpu;
@@ -84,11 +88,11 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- graphics ROMs
-reg [39:0] trom_v [1 << 21];   // crzcross's tile region is 2M rows
-reg [39:0] orom_v [1 << 21];
+reg [63:0] trom_v [1 << 21];   // crzcross's tile region is 2M rows; rows of 5, 6 or 8 bytes, byte 0 in [63:56]
+reg [63:0] orom_v [1 << 22];   // half-rows, byte 0 in [63:56]
 int        tntiles, ontiles, ROM_LAT = 6;
-wire [23:0] tile_rom_addr;  wire tile_rom_cs;  reg tile_rom_ok = 0; reg [39:0] tile_rom_data;
-wire [22:0] obj_rom_addr;   wire obj_rom_cs;   reg obj_rom_ok = 0;  reg [39:0] obj_rom_data;
+wire [23:0] tile_rom_addr;  wire tile_rom_cs;  reg tile_rom_ok = 0; reg [63:0] tile_rom_data;
+wire [22:0] obj_rom_addr;   wire obj_rom_cs;   reg obj_rom_ok = 0;  reg [63:0] obj_rom_data;
 reg [23:0] tlast; int tlat;
 always @(posedge clk) begin
     tile_rom_ok <= 1'b0;
@@ -197,6 +201,22 @@ always @(posedge clk) begin
     end
 end
 
+// the voices' sample port, as the DSP's: a granule a few clocks later
+wire        sp_cs;
+wire [20:0] sp_addr;
+reg         sp_ok = 0;
+reg  [63:0] sp_data;
+reg  [3:0]  sp_cnt = 0;
+always @(posedge clk) begin
+    sp_ok <= 1'b0;
+    if (!sp_cs || sp_ok) sp_cnt <= 0;
+    else if (sp_cnt == 4'd8) begin
+        sp_data <= smem[('h40000 >> 3) + int'(sp_addr)];
+        sp_ok   <= 1'b1;
+        sp_cnt  <= 0;
+    end else sp_cnt <= sp_cnt + 4'd1;
+end
+
 reg  [3:0] dx_cnt = 0;
 always @(posedge clk) begin
     dx_ok <= 1'b0;
@@ -208,16 +228,140 @@ always @(posedge clk) begin
     end else dx_cnt <= dx_cnt + 4'd1;
 end
 
-wire        snd_run;
-wire [63:0] snd_dbg;
+wire        snd_run, snd_tr_valid;
+wire [63:0] snd_dbg, snd_tr_data, dsp_dbg;
+// +DSP_LOG=1: the DSP's state once a frame (gx_tms57002 dbg)
+int dsp_log = 0;
+initial void'($value$plusargs("DSP_LOG=%d", dsp_log));
+// hostf edges, the first 40
+int dsp_hn = 0; reg dsp_hl = 0;
+always @(posedge clk) if (dsp_log != 0) begin
+    dsp_hl <= dsp_dbg[19];
+    if (dsp_dbg[19] != dsp_hl && dsp_hn < 40) begin
+        $display("DSPHOST t%0t f%0d hostf %0d pc %02x h_rd %0d h_ctrl_wr %0d rst %0d", $time, frame, dsp_dbg[19],
+                 dsp_dbg[7:0], u_sound.d_rd, u_sound.d_ctrl_wr, u_sound.rst);
+        dsp_hn++;
+    end
+    if (u_sound.d_rd && dsp_hn < 40) begin
+        $display("DSPRD t%0t f%0d hostf %0d", $time, frame, dsp_dbg[19]); dsp_hn++;
+    end
+end
+// a shadow of the DSP's RAM from its own writes, checked on its reads
+reg [7:0] dsp_shadow [0:'h3ffff];
+reg       dsp_shv    [0:'h3ffff];
+int dsp_bad = 0, dsp_wn = 0, dsp_rn = 0;
+initial for (int q = 0; q < 'h40000; q++) dsp_shv[q] = 0;
+always @(posedge clk) if (dsp_log != 0) begin
+    if (u_sound.dx_req && u_sound.dx_we && u_sound.dx_wack) begin
+        for (int k = 0; k < 8; k++) if (u_sound.dx_wmask[k]) begin
+            dsp_shadow[{u_sound.dx_addr, 3'(k)}] = u_sound.dx_wdata[8*k +: 8];
+            dsp_shv[{u_sound.dx_addr, 3'(k)}] = 1;
+        end
+        dsp_wn++;
+    end
+    if (u_sound.dx_req && !u_sound.dx_we && dx_ok) begin
+        dsp_rn++;
+        for (int k = 0; k < 8; k++)
+            if (!dsp_shv[{u_sound.dx_addr, 3'(k)}] && dx_data[8*k +: 8] != 0 && dsp_bad < 20) begin
+                $display("DSPMEM f%0d addr %05x byte %0d never written, reads %02x", frame,
+                         {u_sound.dx_addr, 3'(k)}, k, dx_data[8*k +: 8]);
+                dsp_bad++;
+            end else if (dsp_shv[{u_sound.dx_addr, 3'(k)}] && dsp_shadow[{u_sound.dx_addr, 3'(k)}] !== dx_data[8*k +: 8] && dsp_bad < 20) begin
+                $display("DSPMEM f%0d addr %05x byte %0d read %02x wrote %02x (writes %0d reads %0d)", frame,
+                         {u_sound.dx_addr, 3'(k)}, k, dx_data[8*k +: 8], dsp_shadow[{u_sound.dx_addr, 3'(k)}], dsp_wn, dsp_rn);
+                dsp_bad++;
+            end
+    end
+end
+// +DSP_XLOG=n: the DSP's first n external-memory transactions
+int dsp_xlog = 0;
+initial void'($value$plusargs("DSP_XLOG=%d", dsp_xlog));
+always @(posedge clk) if (dsp_xlog > 0) begin
+    if (u_sound.dx_req && u_sound.dx_we && u_sound.dx_wack) begin
+        $display("XLOG W %05x %02x %016x", {u_sound.dx_addr, 3'd0}, u_sound.dx_wmask, u_sound.dx_wdata); dsp_xlog--;
+    end
+    if (u_sound.dx_req && !u_sound.dx_we && dx_ok) begin
+        $display("XLOG R %05x %016x", {u_sound.dx_addr, 3'd0}, dx_data); dsp_xlog--;
+    end
+end
+longint frame_clk = 0;
+always @(posedge clk) frame_clk++;
+// +ESC_LOG=n: how long each of the first n ESC commands holds the CPU
+int esc_log = 0; longint esc_t0 = 0; reg esc_bl = 0; int esc_fr_clk = 0, esc_fr_n = 0;
+initial void'($value$plusargs("ESC_LOG=%d", esc_log));
+always @(posedge clk) begin
+    esc_bl <= dut.esc_busy;
+    if (dut.esc_busy && !esc_bl) esc_t0 = frame_clk;
+    if (dut.esc_busy) esc_fr_clk++;
+    if (!dut.esc_busy && esc_bl) begin
+        esc_fr_n++;
+        if (esc_log > 0) begin $display("ESCLOG f%0d busy %0d clocks", frame, frame_clk - esc_t0); esc_log--; end
+    end
+    if (!vid_lvbl && lvbl_st && (esc_fr_n != 0 || esc_fr_clk != 0) && esc_log != 0) begin
+        $display("ESCFRAME f%0d commands %0d busy %0d clocks", frame, esc_fr_n, esc_fr_clk);
+    end
+    if (!vid_lvbl && lvbl_st) begin esc_fr_clk = 0; esc_fr_n = 0; end
+end
+int dsp_qlog = 0; reg dsp_ql = 0;
+initial void'($value$plusargs("DSP_QLOG=%d", dsp_qlog));
+always @(posedge clk) if (dsp_qlog > 0) begin
+    dsp_ql <= u_sound.dx_req;
+    if (u_sound.dx_req && (!dsp_ql || (u_sound.dx_wack || dx_ok)))
+        ;
+    if (u_sound.dx_req && (u_sound.dx_wack || dx_ok)) begin
+        $display("QLOG ack %s by %s addr %05x mask %02x ust %0d pc %02x t%0t", u_sound.dx_we ? "W" : "R",
+                 u_sound.dx_wack ? (dx_ok ? "both" : "wack") : "x_ok", {u_sound.dx_addr, 3'd0}, u_sound.dx_wmask,
+                 u_sound.ust, dsp_dbg[7:0], $time);
+        dsp_qlog--;
+    end
+end
+reg dsp_xr_l = 0;
+always @(posedge clk) if (dsp_qlog > 0) begin
+    dsp_xr_l <= u_sound.dx_req;
+    if (u_sound.d_ctrl_wr)
+        $display("QLOG ctrl %02x pc %02x st %0d x_req %0d we %0d idle %0d t%0t", u_sound.d_din, dsp_dbg[7:0],
+                 dsp_dbg[25:24], u_sound.dx_req, u_sound.dx_we, dsp_dbg[20], $time);
+    if (u_sound.dx_req && !dsp_xr_l)
+        $display("QLOG req %s addr %05x mask %02x pc %02x t%0t", u_sound.dx_we ? "W" : "R",
+                 {u_sound.dx_addr, 3'd0}, u_sound.dx_wmask, dsp_dbg[7:0], $time);
+    if (!u_sound.dx_req && dsp_xr_l)
+        $display("QLOG drop pc %02x t%0t", dsp_dbg[7:0], $time);
+end
+int dsp_xclk = 0, dsp_xn = 0, dsp_run = 0, dsp_wclk = 0;
+reg dsp_xl = 0;
+always @(posedge clk) begin
+    dsp_xl <= dsp_dbg[16];
+    if (dsp_dbg[16]) dsp_xclk++;
+    if (dsp_dbg[16] && !dsp_xl) dsp_xn++;
+    if (dsp_dbg[25:24] != 0) dsp_run++;
+    if (u_sound.dx_req && u_sound.dx_we) dsp_wclk++;
+    if (dsp_log != 0 && !vid_lvbl && lvbl_st) begin
+        $display("DSPLOG f%0d pc %02x st %0d pload %0d cload %0d in_rst %0d idle %0d hostf %0d x_req %0d ovr %0d smps %0d xreqs %0d xclk %0d wclk %0d run %0d ust %0d",
+                 frame, dsp_dbg[7:0], dsp_dbg[25:24], dsp_dbg[23], dsp_dbg[22], dsp_dbg[21], dsp_dbg[20],
+                 dsp_dbg[19], dsp_dbg[16], dsp_dbg[49:38], dsp_dbg[63:50], dsp_xn, dsp_xclk, dsp_wclk, dsp_run, u_sound.ust);
+        dsp_xclk = 0; dsp_xn = 0; dsp_run = 0; dsp_wclk = 0;
+    end
+end
+// +SND_TRACE=path: the sound 68000's bus cycles, one a line, as
+// scripts/snd_trace.py prints the board's (rtl/gx_trace.sv's records)
+string  snd_trace_f;
+integer snd_tf = 0;
+initial if ($value$plusargs("SND_TRACE=%s", snd_trace_f)) snd_tf = $fopen(snd_trace_f, "w");
+always @(posedge clk) if (snd_tf != 0 && snd_tr_valid)
+    $fwrite(snd_tf, "%0d %0d %s %0d%0d %0d%0d %06x %04x\n", snd_tr_data[63:48], snd_tr_data[47:45],
+            snd_tr_data[44] ? "R" : "W", snd_tr_data[43], snd_tr_data[42], snd_tr_data[41], snd_tr_data[40],
+            snd_tr_data[39:16], snd_tr_data[15:0]);
 gx_sound u_sound (
-    .clk, .clk_cpu, .rst(rst || !snd_run || snd_real == 0),
-    .snd_base(26'd0),
+    .clk, .clk_cpu, .rst(rst || !snd_run || snd_real == 0), .rst_chip(rst || snd_real == 0),
+    .snd_base(26'd0), .snd_pcm(24'h400000),   // this model's layout: RAMs at 0x440000 and 0x450000
     .m_cs(sm_cs), .m_addr(sm_addr), .m_ok(sm_ok), .m_data(sm_data), .m_inval(sm_inval),
     .w_req(sm_wreq), .w_addr(sm_waddr), .w_data(sm_wdata), .w_we16(sm_we16), .w_busy(sm_wbusy),
     .x_cs(dx_cs), .x_addr(dx_addr), .x_ok(dx_ok), .x_data(dx_data), .x_inval(dx_inval),
+    .p_cs(sp_cs), .p_addr(sp_addr), .p_ok(sp_ok), .p_data(sp_data), .p_inval(),
+    .aud_l(), .aud_r(),
     .k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
-    .dbg(snd_dbg), .dsp_dbg()
+    .dbg(snd_dbg), .dsp_dbg(dsp_dbg),
+    .tr_valid(snd_tr_valid), .tr_data(snd_tr_data)
 );
 initial begin
     string f;
@@ -227,6 +371,45 @@ initial begin
         $readmemh(f, smem);
     end
 end
+
+// +AUDIO=file: a line a sample (48 kHz) -- each chip's left and right (8
+// bits of fraction), the board's output -- and, for scripts/k054539_model.py,
+// every write to either K054539, and read of its 0x22d port, between them:
+//   S l0 r0 l1 r1 L R
+//   W chip reg data
+//   R chip 22d
+string  aud_f;
+integer aud_fd = 0;
+initial if ($value$plusargs("AUDIO=%s", aud_f)) aud_fd = $fopen(aud_f, "w");
+// after a restore the saved descriptor is not this process's: this run's own file
+always @(posedge clk) if (reopen) begin
+    aud_fd = 0;
+    if ($value$plusargs("AUDIO=%s", aud_f)) aud_fd = $fopen(aud_f, "w");
+end
+always @(posedge clk) if (aud_fd != 0) begin
+    if (u_sound.smp_cnt == 10'd999 && !u_sound.rst)
+        $fwrite(aud_fd, "S %0d %0d %0d %0d %0d %0d\n", u_sound.kl0, u_sound.kr0, u_sound.kl1, u_sound.kr1,
+                u_sound.mix_l >>> 8, u_sound.mix_r >>> 8);
+    if (u_sound.kc_we && (u_sound.kc_cs0 || u_sound.kc_cs1))
+        $fwrite(aud_fd, "W %0d %03x %02x\n", u_sound.kc_cs1, u_sound.kc_addr, u_sound.kc_din);
+    // a read of the RAM/ROM port moves its pointer
+    if (!u_sound.kc_we && (u_sound.kc_cs0 || u_sound.kc_cs1) && u_sound.kc_addr == 11'h22d)
+        $fwrite(aud_fd, "R %0d 22d\n", u_sound.kc_cs1);
+end
+final if (aud_fd != 0) $fclose(aud_fd);
+
+// +COIN_AT=f / +START_AT=f: coin 1, then player 1's start, held for eight
+// RTL frames from that frame (active low, as KonamiGX.sv's ports), to reach
+// the screens after coin-up
+int coin_at = -1, start_at = -1;
+initial begin
+    void'($value$plusargs("COIN_AT=%d", coin_at));
+    void'($value$plusargs("START_AT=%d", start_at));
+end
+wire        coin_on  = coin_at  >= 0 && frame >= coin_at  && frame < coin_at + 8;
+wire        start_on = start_at >= 0 && frame >= start_at && frame < start_at + 8;
+wire [31:0] tb_inputs = { !start_on, 31'h7FFF_FFFF };
+wire [ 7:0] tb_coins  = { 7'h3F, !coin_on };
 
 wire [7:0]  snd_din_mux = snd_real != 0 ? k8_host : snd_stub != 0 ? stub_dout : snd_din;
 
@@ -285,7 +468,29 @@ end
 reg        ee_we = 0;
 reg  [5:0] ee_a;
 reg [15:0] ee_d;
-reg  signed [7:0] offs_x [4], offs_y [4];
+// the set's constants from the core's own table (+GAME: its mod byte,
+// scripts/build_mra.py SETS order), so the bench cannot drift from the core
+int         game = 0;
+initial void'($value$plusargs("GAME=%d", game));
+wire signed [7:0] offs_x [4], offs_y [4];
+wire [ 3:0] cfg_primode;
+wire [ 1:0] cfg_tile_bpp, cfg_obj_layout;
+wire [ 1:0] cfg_obj_pri_raw;
+wire [ 9:0] cfg_vis_x0;
+wire [ 8:0] cfg_vis_w;
+wire [ 9:0] cfg_obj_hadj;
+// +ROM_UNCACHED=n: gx_main's clocks for an instruction fetch with the cache off
+int rom_uncached = 6;          // as KonamiGX.sv
+initial void'($value$plusargs("ROM_UNCACHED=%d", rom_uncached));
+wire        cfg_esc_gen, cfg_esc_copy, cfg_prot4, cfg_esc_sal2, cfg_tile_rb66, cfg_guns, cfg_orient_fy, cfg_fj_dma;
+wire [23:0] cfg_esc_src;
+wire [ 8:0] cfg_esc_count;
+gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_size4(), .obj_size4(), .snd_pcm(),
+                     .offs_x, .offs_y, .primode(cfg_primode), .tile_bpp(cfg_tile_bpp), .obj_layout(cfg_obj_layout),
+                     .obj_pri_raw(cfg_obj_pri_raw), .vis_x0(cfg_vis_x0), .vis_w(cfg_vis_w),
+                     .obj_hadj(cfg_obj_hadj), .esc_gen(cfg_esc_gen), .esc_src(cfg_esc_src),
+                     .esc_count(cfg_esc_count), .esc_copy(cfg_esc_copy), .prot4(cfg_prot4),
+                     .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma) );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -302,12 +507,14 @@ gx_main dut (
     .tile_base(26'(tile_base)), .obj_base(26'(obj_base)),
     .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
     .snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din(snd_din_mux),
-    .inputs(32'hFFFF_FFFF), .coins(8'h7F), .dsw(16'hFEFF), .service(8'hFF),
+    .inputs(tb_inputs), .coins(tb_coins), .dsw(16'hFEFF), .service(8'hFF),
     .ee_blank(rst), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
-    .offs_x, .offs_y, .primode(4'd4),
-    // per set, as gx_board_cfg gives them: +ESC_GEN, +ESC_SRC, +ESC_COUNT,
-    // +OBJ_HADJ (sexyparo: 0, c00604, fc, -16)
-    .obj_hadj(10'(obj_hadj)), .esc_gen(esc_gen[0]), .esc_src(24'(esc_src)), .esc_count(9'(esc_count)),
+    .offs_x, .offs_y, .primode(cfg_primode), .tile_bpp(cfg_tile_bpp), .obj_layout(cfg_obj_layout),
+    .obj_pri_raw(cfg_obj_pri_raw), .vis_x0(cfg_vis_x0), .vis_w(cfg_vis_w),
+    .obj_hadj(cfg_obj_hadj), .esc_gen(cfg_esc_gen), .esc_src(cfg_esc_src), .esc_count(cfg_esc_count),
+    .esc_copy(cfg_esc_copy), .prot4(cfg_prot4), .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66),
+    // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
+    .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
@@ -347,12 +554,13 @@ reg  [63:0] gfx_data = 0;
 always @(posedge clk) begin
     gfx_ok <= 1'b0;
     if (gfx_cs && !gfx_ok) begin
-        int a; reg [39:0] row;
+        int a; reg [63:0] row;
         a = int'(gfx_addr) << 3;
         if (a >= obj_base)       row = orom_v[(a - obj_base) >> 3];
         else if (a >= tile_base) row = trom_v[(a - tile_base) >> 3];
-        else                     row = 40'd0;
-        gfx_data <= { 24'd0, row[7:0], row[15:8], row[23:16], row[31:24], row[39:32] };
+        else                     row = 64'd0;
+        // granule byte k is the row's byte k
+        for (int k = 0; k < 8; k++) gfx_data[8*k +: 8] <= row[63 - 8*k -: 8];
         gfx_ok   <= 1'b1;
     end
 end
@@ -395,13 +603,6 @@ initial begin
     void'($value$plusargs("PAUSE_FOR=%d", pause_for));
 end
 initial void'($value$plusargs("ROM_TOP=%h", rom_top));
-int obj_hadj = 0, esc_gen = 1, esc_src = 24'hc00000, esc_count = 'h100;
-initial begin
-    void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
-    void'($value$plusargs("ESC_GEN=%d", esc_gen));
-    void'($value$plusargs("ESC_SRC=%h", esc_src));
-    void'($value$plusargs("ESC_COUNT=%h", esc_count));
-end
 
 integer ft, seq = 0, frame = 0, frames = 60;
 reg     lvbl_l = 1;
@@ -559,12 +760,16 @@ always @(posedge clk) if (setup_n < 160) begin
     ee_d    <= { ee[2*(setup_n-84)+1], ee[2*(setup_n-84)] };    // MAME stores 16-bit words little-endian
 end
 
+string rom_file;
 initial begin
     integer fd, got, rg, vl, mf;
     run_args();
     if (!$value$plusargs("TNTILES=%d", tntiles)) $fatal(1, "+TNTILES= missing");
     if (!$value$plusargs("ONTILES=%d", ontiles)) $fatal(1, "+ONTILES= missing");
-    fd = $fopen({"debug/", set_name, "-rom/maincpu.bin"}, "rb");
+    // +ROM_FILE=path: another program image in place of the set's (a
+    // directed test: a few instructions at the reset address)
+    if ($value$plusargs("ROM_FILE=%s", rom_file)) fd = $fopen(rom_file, "rb");
+    else fd = $fopen({"debug/", set_name, "-rom/maincpu.bin"}, "rb");
     got = $fread(rom, fd); $fclose(fd);
     if (got != ROM_BYTES) $fatal(1, "maincpu.bin: %0d bytes", got);
     // +ROM_JUNK_FROM=<hex CPU address>: what the board holds where the .mra
@@ -581,8 +786,6 @@ initial begin
         end
     $fclose(fd);
     for (int i = 0; i < 16; i++) begin rp_next[i] = 0; rp_last[i] = 8'h00; end
-    offs_x = '{ -8'sd2, 8'sd0, 8'sd2, 8'sd3 };
-    offs_y = '{ 8'sd0, 8'sd0, 8'sd0, 8'sd0 };
     fd = $fopen({"debug/", set_name, "-nvram/", set_name, "/eeprom"}, "rb");
     got = $fread(ee, fd); $fclose(fd);
     $display("ROM %0d bytes, %0d sound replies, EEPROM %0d bytes", ROM_BYTES, rp_n, got);

@@ -1,0 +1,2 @@
+rtl/gx_esc.v
+sim/gx_esc_tb/tb_gx_esc.sv

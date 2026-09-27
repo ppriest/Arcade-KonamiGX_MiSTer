@@ -2,6 +2,7 @@
     <name>Sexy Parodius (ver JAA)</name>
     <setname>sexyparo</setname>
     <rbf>KonamiGX</rbf>
+    <mameversion>0289</mameversion>
     <year>1996</year>
     <manufacturer>Konami</manufacturer>
     <category>Arcade</category>
@@ -20,11 +21,11 @@
             <part name="533jaa02.31b" crc="b8030abc" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
-        <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
+        <!-- k056832: the four-byte part of each 5-byte row, then the last 1 byte of each (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
         <part name="533a19.17h" crc="3ec1843e"/>  <!-- four-byte part -->
         <part repeat="2097152">00</part>
-        <part name="533a18.13g" crc="d3e0d058"/>  <!-- fifth bytes -->
+        <part name="533a18.13g" crc="d3e0d058"/>  <!-- second part -->
         <part repeat="524288">00</part>
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="3145728">00</part>
@@ -49,5 +50,5 @@
         <dip name="Flip Screen" bits="1" ids="On,Off"/>
     </switches>
 
-    <buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>
+    <buttons names="Power Up,Shot,Missile,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>
 </misterromdescription>

@@ -65,11 +65,12 @@ def main():
     lo = build_mra.rtl_arm(mod)
     parent = games.get(a.set)
     folder = build_mra.OUT_DIR if parent in (None, "0", "konamigx") else \
-        build_mra.OUT_DIR / "_alternatives" / build_mra.mra_filename(gl[parent]["title"])[:-4]
+        build_mra.OUT_DIR / "_alternatives" / ("_" + build_mra.mra_filename(gl[parent]["title"])[:-4])
     mra = folder / build_mra.mra_filename(gl[a.set]["title"])
     import xml.etree.ElementTree as ET
     rom0 = next(r for r in ET.parse(mra).getroot().findall("rom") if r.get("index") == "0")
-    zips = [REPO / "roms" / z for z in rom0.get("zip").split("|")]
+    zips = [REPO / "roms" / z for z in rom0.get("zip").split("|")
+            if (REPO / "roms" / z).exists()]        # a clone whose files are in its parent's zip
     img = mra_lib.build_image(mra, zips)
 
     # the stream as runs of data: a zero fill of 4096 bytes or more is skipped
@@ -113,8 +114,9 @@ def main():
         was skipped reads as the zero it is)."""
         return not any(c0 < hi and lo < c1 for c0, c1 in cut)
 
-    def spread_ok(base, size4, r):
-        return streamed(base + 4 * r, base + 4 * r + 4) and streamed(base + size4 + r, base + size4 + r + 1)
+    def spread_ok(base, size4, r, w1=1):
+        return (streamed(base + 4 * r, base + 4 * r + 4)
+                and streamed(base + size4 + w1 * r, base + size4 + w1 * r + w1))
     (OUT / "stream.hex").write_text("".join(f"{b:02x}\n" for b in bytes_out))
     (OUT / "runs.hex").write_text("".join(f"{s:07x} {n:07x} {o:07x}\n" for s, n, o in runs))
 
@@ -133,31 +135,44 @@ def main():
     # the rows as the video benches' ROM models hold them (check_gx_tilemap
     # and check_gx_obj write_vectors do this for the captured set)
     trom = bri.build(a.set, "k056832")
-    trows = [trom[5 * r:5 * r + 5].hex() for r in range(len(trom) // 5)]
+    tbw = build_mra.TILE_BYTES.get(a.set, 5)      # tile_data: the row's bytes, byte 0 on top
+    trows = [(trom[tbw * r:tbw * r + tbw] + bytes(8 - tbw)).hex() for r in range(len(trom) // tbw)]
     # the k055673 region is its four-byte part then its fifth bytes, as MAME
     # loads it (check_gx_obj.write_vectors builds the rows the same way)
+    import render_model as rm
+    lay = rm.OBJ_LAYOUT.get(a.set, "GX")
+    obw = {"GX": 5, "GX6": 6}.get(lay, 0)      # two-part layouts: row bytes; 0: as it comes
     orom = bri.build(a.set, "k055673")
     o4 = lo["obj_size4"]
-    orows = [(orom[4 * r:4 * r + 4] + orom[o4 + r:o4 + r + 1]).hex() for r in range(o4 // 4)]
+    if lay == "GX6":                            # MAME's region: six-byte half-rows as they are
+        orows = [(orom[6 * r:6 * r + 6] + bytes(2)).hex() for r in range(o4 // 4)]
+    elif obw:
+        orows = [(orom[4 * r:4 * r + 4] + orom[o4 + (obw - 4) * r:o4 + (obw - 4) * (r + 1)] + bytes(8 - obw)).hex()
+                 for r in range(o4 // 4)]
+    else:                                       # RNG 4, LE2 8 bytes a half-row
+        hb = rm.OBJ_BPP[lay]
+        orows = [(orom[hb * r:hb * r + hb] + bytes(8 - hb)).hex() for r in range(len(orom) // hb)]
     with open(OUT / "tile.hex", "w") as f:
         for r in sample(len(trows)):
-            if spread_ok(lo["tile_base"], tile_size4, r):
+            if spread_ok(lo["tile_base"], tile_size4, r, tbw - 4):
                 f.write(f"{r:06x} {trows[r]}\n")
     with open(OUT / "obj.hex", "w") as f:
         for r in sample(len(orows)):
-            if spread_ok(lo["obj_base"], obj_size4, r):
+            if (spread_ok(lo["obj_base"], obj_size4, r, obw - 4) if obw
+                    else streamed(lo["obj_base"] + hb * r, lo["obj_base"] + hb * r + hb)):
                 f.write(f"{r:06x} {orows[r]}\n")
     # the sound board's ROMs: stored as they come from snd_base, so the SDRAM
     # granule is the image's own eight bytes, read through the absolute port
     snd = build_mra.snd_base(lo)
-    snd_end = min(N, snd + build_mra.SND_CPU + build_mra.SND_PCM)
+    snd_end = min(N, snd + build_mra.SND_CPU + lo["snd_pcm"])
     with open(OUT / "snd.hex", "w") as f:
         for gi in sample((snd_end - snd) // 8):
             g = snd // 8 + gi
             if not streamed(8 * g, 8 * g + 8):
                 continue
             f.write(f"{g:06x} {int.from_bytes(img[8 * g:8 * g + 8], 'little'):016x}\n")
-    (OUT / "cfg.hex").write_text(f"{lo['tile_base']:07x}\n{lo['obj_base']:07x}\n{tile_size4:06x}\n{obj_size4:06x}\n")
+    (OUT / "cfg.hex").write_text(f"{lo['tile_base']:07x}\n{lo['obj_base']:07x}\n{tile_size4:06x}\n{obj_size4:06x}\n"
+                                 f"{ {5: 0, 6: 1, 8: 2}[tbw] }\n{ {'GX': 0, 'RNG': 1, 'GX6': 2, 'LE2': 3}[lay] }\n")
     print(f"stream: {len(bytes_out):#x} bytes in {len(runs)} runs of {len(img):#x}; "
           f"{ng} CPU granules, {len(trows)} tile rows, {len(orows)} sprite half-rows")
 

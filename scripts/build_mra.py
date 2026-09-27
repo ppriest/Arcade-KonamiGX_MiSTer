@@ -54,26 +54,126 @@ import build_rom_image as bri     # noqa: E402
 import extract_dips as ed         # noqa: E402
 import mra as mra_lib             # noqa: E402
 
+
+_MAME_VERSION = None
+
+
+def mame_version():
+    """<mameversion> of the MAME the ROM definitions are checked against, from
+    `mame -version` ("0.289 (mame0289)" -> "0289"). MAME_DIR / MAME_EXE come from the
+    environment, then mister.env, then ~/.mister-core.env; never typed by hand."""
+    global _MAME_VERSION
+    if _MAME_VERSION:
+        return _MAME_VERSION
+    import os
+    import subprocess
+    here = Path(__file__).resolve().parent.parent
+    env = {}
+    for f in (Path(os.environ.get("MISTER_CORE_ENV") or Path.home() / ".mister-core.env"),
+              here / "mister.env"):
+        if f.exists():
+            for ln in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                ln = ln.strip()
+                if ln and not ln.startswith("#") and "=" in ln:
+                    k, v = ln.split("=", 1)
+                    env[k.strip()] = v.strip().strip('"').strip("'")
+    exe = Path(os.environ.get("MAME_DIR") or env.get("MAME_DIR") or ".") / (
+        os.environ.get("MAME_EXE") or env.get("MAME_EXE") or "mame.exe")
+    try:
+        out = subprocess.run([str(exe), "-version"], capture_output=True, text=True,
+                             timeout=30).stdout
+    except OSError:
+        out = ""
+    m = re.match(r"\s*0\.(\d+)", out)
+    if not m:
+        sys.exit("cannot read the MAME version from %s: set MAME_DIR / MAME_EXE. The .mra "
+                 "<mameversion> is the MAME the ROM definitions are checked against." % exe)
+    _MAME_VERSION = "%04d" % int(m.group(1))
+    return _MAME_VERSION
+
 REPO = bri.REPO
 RTL_CFG = REPO / "rtl" / "gx_board_cfg.sv"
 OUT_DIR = REPO / "releases"
 MB = 1 << 20
 
-# The sets the core takes today (5 bpp tiles as TILE_WORD + TILE_BYTE, 5 bpp
-# sprites as two ROM_LOAD32_WORD and a ROM_LOAD), in mod-byte order. The
-# other Type 2 sets (dragoonj: 4 bpp sprites; tokkae, tkmmpzdm, salmndr2:
-# 6 bpp; le2, winspike: 8 bpp) wait for their video paths, and their .mra
-# layouts with them.
+# The sets the core takes today, in mod-byte order (gx_board_cfg's arms).
 SETS = ["daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
-        "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa"]
+        "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa", "tokkae", "tkmmpzdm", "le2",
+        "dragoona", "dragoonj", "winspike", "winspikea", "winspikej", "salmndr2", "salmndr2a",
+        "le2u", "le2j"]
 
-# KonamiGX.sv reads B1-B3 at joystick bits 4-6, Start 10, Coin 11, Pause 12,
-# Service 13; every set here has three buttons. `names` is positional ("-"
-# keeps a bit unused); Main_MiSTer applies `default` to the NAMED buttons
-# only, in order, so it has one pad button per name and none for a "-". A
-# default with ten entries put the pad's Start on Service (Twin Bee entered
-# service mode on Start) -- the Seta .mra files have it right.
-BUTTONS = 'names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"'
+# K056832 row bytes per set (set_config's depth; render_model.TILE_BPP):
+# BPP_5 unless listed. gx_board_cfg's tile_bpp says the same to the core.
+TILE_BYTES = {"tokkae": 6, "tkmmpzdm": 6, "le2": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
+              "salmndr2": 6, "salmndr2a": 6, "le2u": 8, "le2j": 8}
+
+# Program patches MAME applies at start-up, carried as .mra <patch>es:
+# (CPU address, old byte, new byte). tkmmpzdm (init_konamigx, special 2):
+# rom[0x810f1] &= ~1 and rom[0x872ea] |= 0xe0000 on the big-endian program --
+# or.b #$1,d0 becomes #$0 (the checksum, rebalanced) and move.b #$11,($5a,a2)
+# becomes #$1f, re-enabling planes B-D after the copyright screen, which MAME
+# says it could not otherwise explain. Applied at the user's request until the
+# cause is found.
+PATCHES = {"tkmmpzdm": [(0x2043c7, 0x01, 0x00), (0x21cba9, 0x11, 0x1f)]}
+
+# K055673 layout per set (render_model.OBJ_LAYOUT): GX unless listed. RNG and
+# LE2 regions go into SDRAM as they are, with obj_size4 half the region.
+OBJ_LAYOUT = {"le2": "LE2", "dragoona": "RNG", "dragoonj": "RNG",
+              "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2",
+              "salmndr2": "GX6", "salmndr2a": "GX6", "le2u": "LE2", "le2j": "LE2"}
+
+# The game buttons each set's .mra names, in order: KonamiGX.sv reads buttons
+# 1-3 at joystick bits 4-6 and 4-6 at bits 7-9. EDIT THE NAMES HERE; the
+# <buttons> element, the pad defaults and the count follow from them.
+#
+# MAME's driver names none of these (konamigx.cpp: every set takes the
+# shared "common" port, BUTTON1-3 unnamed; dragoonj adds 4-6). The names
+# below are from history.xml and command.dat where they give them, and
+# MAME's "Button n" where they do not; a set history.xml gives fewer
+# buttons has only those.
+BUTTON_NAMES = {
+    "daiskiss":  ["1", "2", "3"],  # Daisu-Kiss (ver JAA) -- literally the numbered buttons for quiz answers
+    "crzcross":  ["Rotate", "-", "-"],  # Crazy Cross (ver EAA)
+    "puzldama":  ["Rotate", "-", "-"],  # Taisen Puzzle-dama (ver JAA)
+    "fantjour":  ["Power Up", "Shot", "Missile"],  # Fantastic Journey (ver EAA)
+    "fantjoura": ["Power Up", "Shot", "Missile"],  # Fantastic Journey (ver AAA)
+    "gokuparo":  ["Power Up", "Shot", "Missile"],  # Gokujou Parodius: Kako no Eikou o Motomete (ver JAD)
+    "mtwinbee":  ["Shot", "Bomb", "-"],  # Magical Twin Bee (ver EAA)
+    "tbyahhoo":  ["Shot", "Bomb", "-"],  # Twin Bee Yahhoo! (ver JAA)
+    "sexyparo":  ["Power Up", "Shot", "Missile"],  # Sexy Parodius (ver JAA)
+    "sexyparoa": ["Power Up", "Shot", "Missile"],  # Sexy Parodius (ver AAA)
+    "tokkae":    ["Swap Ball", "Line Up"],  # Taisen Tokkae-dama (ver JAA)
+    "tkmmpzdm":  ["Rotate Right", "Rotate Left"],  # Tokimeki Memorial Taisen Puzzle-dama (ver JAB)
+    # history.xml (command.dat: Weak/Medium/Strong)
+    "dragoona":  ["Light Punch", "Medium Punch", "Heavy Punch", "Light Kick", "Medium Kick", "Heavy Kick"],  # Dragoon Might (ver AAB)
+    "dragoonj":  ["Light Punch", "Medium Punch", "Heavy Punch", "Light Kick", "Medium Kick", "Heavy Kick"],  # Dragoon Might (ver JAA)
+    "winspike":  ["Button A", "Button B", "Button C"],  # Winning Spike (ver EAA) -- Context sensitive
+    "winspikea": ["Button A", "Button B", "Button C"],  # Winning Spike (ver AAA) -- Context sensitive
+    "winspikej": ["Button A", "Button B", "Button C"],  # Winning Spike (ver JAA) -- Context sensitive
+    "salmndr2":  ["Shot", "Option", "-"],  # Salamander 2 (ver JAA)
+    "salmndr2a": ["Shot", "Option", "-"],  # Salamander 2 (ver AAB)
+    "le2":       ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver EAA)
+    "le2u":      ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver UAA)
+    "le2j":      ["Trigger", "Reload"],  # Lethal Enforcers II: The Western (ver JAA)
+}
+
+
+def buttons_attr(set_name):
+    """The .mra's <buttons> attributes. `names` is positional -- the six game
+    buttons ("-" keeps a bit unused), then Start, Coin, Pause, Service as
+    the core's J1 line has them. Main_MiSTer applies `default` to the NAMED
+    buttons only, in order, so it has one pad button per name and none for
+    a "-": a default with ten entries once put the pad's Start on Service
+    (Twin Bee entered service mode on Start). Game buttons take A, B, X, Y,
+    L, R in turn; Pause and Service get L and R when the game leaves them."""
+    game = BUTTON_NAMES.get(set_name, ["Button 1", "Button 2", "Button 3"])
+    assert 1 <= len(game) <= 6, set_name
+    named = [n for n in game if n != "-"]       # a "-" in the list is a button left unused
+    names = game + ["-"] * (6 - len(game)) + ["Start", "Coin", "Pause", "Service"]
+    pads = ["A", "B", "X", "Y", "L", "R"][:len(named)] + ["Start", "Select"]
+    pads += [b for b in ("L", "R") if b not in pads]
+    return f'names="{",".join(names)}" default="{",".join(pads)}" count="{len(named)}"'
+
 
 OSD_COLS = 28      # MiSTer draws " name:" padded to 28 columns, the value right-aligned
 
@@ -94,7 +194,7 @@ def game_lines():
     """setname -> (year, parent, input block, title, manufacturer) from GAME()."""
     src = bri.DRIVER.read_text(encoding="utf8", errors="replace")
     out = {}
-    for m in re.finditer(r'^GAME\(\s*(\d+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),[^,]*,[^,]*,\s*ROT\d+,\s*"([^"]*)",\s*"([^"]*)"',
+    for m in re.finditer(r'^GAME\(\s*(\d+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),[^,]*,[^,]*,\s*(?:ROT\d+|ORIENTATION_FLIP_[XY]),\s*"([^"]*)",\s*"([^"]*)"',
                          src, re.M):
         out[m.group(2)] = dict(year=m.group(1), parent=m.group(3), machine=m.group(4),
                                inputs=m.group(5), manufacturer=m.group(6), title=m.group(7))
@@ -107,6 +207,7 @@ def layout(set_name, blocks):
     previous one's spread size. Sizes are the DECLARED region sizes: the
     game may address the whole region."""
     ms, ml = bri.region_loads(blocks[set_name], "maincpu")
+    ps, _ = bri.region_loads(blocks[set_name], "k054539")
     ts, _ = bri.region_loads(blocks[set_name], "k056832")
     os_, _ = bri.region_loads(blocks[set_name], "k055673")
     ext = 0
@@ -116,30 +217,36 @@ def layout(set_name, blocks):
     if any(0x20000 <= l[2] < 0x200000 for l in ml):
         raise SystemExit(f"{set_name}: a maincpu load between 0x20000 and 0x200000")
     packed = 0x20000 + max(0, ext - 0x200000)
-    # k056832: 5-byte rows through the region. k055673: the four-byte part
-    # is (MB / 5) * 4 MB and the fifth bytes follow, MAME's k055673.cpp
-    # split (a 6 MB region is 4 MB + 1 MB used, the rest unread)
-    tr = ts // 5
-    orow = ((os_ >> 20) // 5) << 20
+    # k056832: 5- or 6-byte rows through the region (TILE_BYTES). k055673:
+    # the four-byte part is (MB / 5) * 4 MB and the fifth bytes follow,
+    # MAME's k055673.cpp split (a 6 MB region is 4 MB + 1 MB used, the rest
+    # unread)
+    tr = ts // TILE_BYTES.get(set_name, 5)
+    if OBJ_LAYOUT.get(set_name, "GX") in ("RNG", "LE2"):
+        orow = os_ // 8                          # as it comes: 2 * obj_size4 = the region
+    else:
+        orow = ((os_ >> 20) // 5) << 20
     up = lambda x: (x + MB - 1) // MB * MB
     tb = up(packed)
     ob = tb + up(tr * 8)
     end = ob + up(orow * 8)
     if end > 32 * MB:
         raise SystemExit(f"{set_name}: {end / MB:.1f} MB does not fit the 32 MB module")
-    return dict(tile_base=tb, obj_base=ob, tile_size4=tr * 4, obj_size4=orow * 4, end=end)
+    # the K054539 sample area: the region, to 1 MB (dragoonj's 2 MB is what
+    # lets its 16 MB of sprites fit; the rest have 4 MB)
+    return dict(tile_base=tb, obj_base=ob, tile_size4=tr * 4, obj_size4=orow * 4, end=end,
+                snd_pcm=up(ps))
 
 
 def cfg_arm(mod, set_name, lo):
     return (f"        8'd{mod}:{' ' * (3 - len(str(mod)))}begin tile_base = 26'h{lo['tile_base']:07x}; "
             f"obj_base = 26'h{lo['obj_base']:07x}; tile_size4 = 24'h{lo['tile_size4']:06x}; "
-            f"obj_size4 = 24'h{lo['obj_size4']:06x}; end  // {set_name}")
+            f"obj_size4 = 24'h{lo['obj_size4']:06x}; snd_pcm = 24'h{lo['snd_pcm']:06x}; end  // {set_name}")
 
 
 # The sound board's ROMs, after the graphics (gx_sdram_top's snd_base): the
 # sound CPU's program space, then the K054539 samples, each at its largest.
 SND_CPU = 0x40000
-SND_PCM = 0x400000
 
 
 def snd_base(lo):
@@ -151,11 +258,13 @@ def rtl_arm(mod):
     """gx_board_cfg.sv's arm for a mod byte, as a dict, or None."""
     src = RTL_CFG.read_text(encoding="utf8")
     m = re.search(rf"8'd{mod}:\s*begin\s*tile_base = 26'h([0-9a-f]+); obj_base = 26'h([0-9a-f]+); "
-                  rf"tile_size4 = 24'h([0-9a-f]+); obj_size4 = 24'h([0-9a-f]+); end", src)
+                  rf"tile_size4 = 24'h([0-9a-f]+); obj_size4 = 24'h([0-9a-f]+); "
+                  rf"snd_pcm = 24'h([0-9a-f]+); end", src)
     if not m:
         return None
     return dict(tile_base=int(m.group(1), 16), obj_base=int(m.group(2), 16),
-                tile_size4=int(m.group(3), 16), obj_size4=int(m.group(4), 16))
+                tile_size4=int(m.group(3), 16), obj_size4=int(m.group(4), 16),
+                snd_pcm=int(m.group(5), 16))
 
 
 # ---------------------------------------------------------------- the stream
@@ -216,9 +325,15 @@ def pick_maps(datas, bits, truth):
     width = bits // 8
     group = width // len(datas)
     cands = candidate_maps(width, group)
+    # screened on the first 4096 words, then proven on all of it: the whole
+    # region per candidate took minutes for four ROM_LOAD64_WORD files
+    n = 4096 * group
+    head = [d[:n] for d in datas]
     for maps in itertools.product(cands, repeat=len(datas)):
         used = [set(i for i, c in enumerate(m) if c != "0") for m in maps]
         if any(a & b for a, b in itertools.combinations(used, 2)):
+            continue
+        if mra_lib.interleave(list(zip(head, maps)), bits) != truth[:n * len(datas)]:
             continue
         if mra_lib.interleave(list(zip(datas, maps)), bits) == truth:
             return list(maps)
@@ -342,31 +457,79 @@ def build(set_name, mod, gl, games, blocks, check_only):
 
     size, loads = bri.region_loads(blocks[set_name], "k056832")
     truth = bri.build(set_name, "k056832")
-    rows = size // 5
-    st.lines.append("        <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->")
+    tbw = TILE_BYTES.get(set_name, 5)            # row bytes: 4, then 1 (5 bpp) or 2 (6 bpp)
+    if tbw == 8:
+        # 8 bpp: eight-byte rows, a granule each, so MAME's region as it is
+        st.lines.append("        <!-- k056832: MAME's region as it is (8-byte rows, a granule each) -->")
+        emit_loads(st, zips, set_name, loads, truth, 0, lo["tile_base"], size)
+        st.fill_to(lo["tile_base"] + size)
+        loads = []
+    w1 = tbw - 4
+    rows = size // tbw
+    st.lines.append(f"        <!-- k056832: the four-byte part of each {tbw}-byte row, then the last "
+                    f"{w1} byte{'s' if w1 > 1 else ''} of each (the core spreads rows to 8) -->")
     base = lo["tile_base"]
-    for form, fname, off, length in sorted(loads, key=lambda l: l[2]):
+
+    def dest(load):
+        """where a load lands in the stream: the four-byte parts first"""
+        form, _, off, _ = load
+        if form in ("TILE_WORD_ROM_LOAD", "TILE_WORDS2_ROM_LOAD"):
+            return off // tbw * 4
+        return rows * 4 + (off - 4) // tbw * w1
+    for form, fname, off, length in sorted(loads, key=dest):
         data = bri.read_file(zips, fname, length, set_name)
-        if form == "TILE_WORD_ROM_LOAD":
-            r0 = off // 5
-            four = bytes(b for r in range(r0, r0 + length // 4) for b in truth[5 * r:5 * r + 4])
+        if form in ("TILE_WORD_ROM_LOAD", "TILE_WORDS2_ROM_LOAD"):
+            if (form == "TILE_WORDS2_ROM_LOAD") != (tbw == 6):
+                raise SystemExit(f"{fname}: {form} in a {tbw}-byte-row region")
+            r0 = off // tbw
+            four = bytes(b for r in range(r0, r0 + length // 4) for b in truth[tbw * r:tbw * r + 4])
             if four != data:
-                raise SystemExit(f"{fname}: TILE_WORD is not verbatim in the four-byte part?")
+                raise SystemExit(f"{fname}: {form} is not verbatim in the four-byte part?")
             st.part(base + r0 * 4, fname, data, "four-byte part")
-        elif form == "TILE_BYTE_ROM_LOAD":
-            r0 = (off - 4) // 5
-            one = bytes(truth[5 * r + 4] for r in range(r0, r0 + length))
-            if one != data:
-                raise SystemExit(f"{fname}: TILE_BYTE is not verbatim in the one-byte part?")
-            st.part(base + rows * 4 + r0, fname, data, "fifth bytes")
+        elif form in ("TILE_BYTE_ROM_LOAD", "TILE_BYTES2_ROM_LOAD"):
+            if (form == "TILE_BYTES2_ROM_LOAD") != (tbw == 6):
+                raise SystemExit(f"{fname}: {form} in a {tbw}-byte-row region")
+            r0 = (off - 4) // tbw
+            rest = bytes(b for r in range(r0, r0 + length // w1) for b in truth[tbw * r + 4:tbw * r + tbw])
+            if rest != data:
+                raise SystemExit(f"{fname}: {form} is not verbatim in the second part?")
+            st.part(base + rows * 4 + r0 * w1, fname, data, "second part")
         else:
             raise SystemExit(f"k056832 load form {form}: not handled yet -- add it and prove it")
-    st.fill_to(base + rows * 5)
+    if tbw != 8:
+        st.fill_to(base + rows * tbw)
 
     size, loads = bri.region_loads(blocks[set_name], "k055673")
     truth = bri.build(set_name, "k055673")
-    st.lines.append("        <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->")
-    used = lo["obj_size4"] // 4 * 5                  # what the chip reads of the region
+    if OBJ_LAYOUT.get(set_name, "GX") in ("RNG", "LE2"):
+        st.lines.append("        <!-- k055673: MAME's region as it is -->")
+        emit_loads(st, zips, set_name, loads, truth, 0, lo["obj_base"], size)
+        st.fill_to(lo["obj_base"] + 2 * lo["obj_size4"])
+        loads = []
+    elif OBJ_LAYOUT.get(set_name, "GX") == "GX6":
+        # _48_WORD: three ROMs give bytes 0-1, 2-3 and 4-5 of each six-byte
+        # half-row; the core wants the four-byte part (the first two ROMs
+        # interleaved) and then the two-byte part (the third as it is)
+        st.lines.append("        <!-- k055673: GX6, bytes 0-3 of each half-row, then bytes 4-5 -->")
+        g6 = sorted(loads, key=lambda l: l[2])
+        if [l[0] for l in g6] != ["_48_WORD_ROM_LOAD"] * 3 or [l[2] for l in g6] != [0, 2, 4]:
+            raise SystemExit(f"{set_name}: GX6 expects three _48_WORD loads at 0, 2, 4")
+        n = g6[0][3]
+        if any(l[3] != n for l in g6) or 3 * n != lo["obj_size4"] // 4 * 6:
+            raise SystemExit(f"{set_name}: GX6 loads do not fill the region")
+        datas = [bri.read_file(zips, f, ln, set_name) for _, f, _, ln in g6]
+        rows = [truth[6 * r:6 * r + 6] for r in range(n // 2)]
+        four = bytes(b for r in rows for b in r[:4])
+        two = bytes(b for r in rows for b in r[4:])
+        maps = pick_maps(datas[:2], 32, four)
+        st.interleave(lo["obj_base"], 32, [(g6[0][1], maps[0], datas[0]), (g6[1][1], maps[1], datas[1])], four)
+        if two != datas[2]:
+            raise SystemExit(f"{g6[2][1]}: not bytes 4-5 of the half-rows?")
+        st.part(lo["obj_base"] + len(four), g6[2][1], datas[2], "two-byte part")
+        loads = []
+    else:
+        st.lines.append("        <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->")
+    used = lo["obj_size4"] // 4 * 5 if loads else 0  # what the chip reads of the region (GX)
     whole, clipped = [], []
     for form, fname, off, length in loads:
         gr, sk, _ = bri.FORMS[form]
@@ -376,9 +539,10 @@ def build(set_name, mod, gl, games, blocks, check_only):
             clipped.append((fname, off, used - off, length))
         else:
             whole.append((form, fname, off, length))
-    end_whole = max(base + length * (bri.FORMS[form][0] + bri.FORMS[form][1]) // bri.FORMS[form][0]
-                    for (base, form, length), _ in groups_of(whole))
-    emit_loads(st, zips, set_name, whole, truth, 0, lo["obj_base"], end_whole)
+    if whole:
+        end_whole = max(base + length * (bri.FORMS[form][0] + bri.FORMS[form][1]) // bri.FORMS[form][0]
+                        for (base, form, length), _ in groups_of(whole))
+        emit_loads(st, zips, set_name, whole, truth, 0, lo["obj_base"], end_whole)
     for fname, off, length, full in sorted(clipped, key=lambda c: c[1]):
         data = bri.read_file(zips, fname, full, set_name)[:length]
         if bytes(truth[off:off + length]) != data:
@@ -388,19 +552,21 @@ def build(set_name, mod, gl, games, blocks, check_only):
                         f'length="{length:#x}"/>  <!-- the chip reads this much -->')
         st.data += data
         st.pos += length
-    st.fill_to(lo["obj_base"] + used)
+    if used:
+        st.fill_to(lo["obj_base"] + used)
 
     # the sound board: the sound 68000's program, then the K054539 samples,
     # stored as they come from where the sprite region's spread ends
-    # (gx_sdram_top's snd_base). The samples are padded to SND_PCM so the
-    # stream ends at the same offset from snd_base for every set, which is
-    # the length the DDR3 loader copies.
+    # (gx_sdram_top's snd_base). The samples are padded to the set's sample
+    # area (layout()'s snd_pcm, gx_board_cfg's), after which gx_sound puts the
+    # K054539s' and the DSP's RAMs; the stream ends there, which is the length
+    # the DDR3 loader copies.
     snd = snd_base(lo)
     # then the RAMs written at runtime: the K054539s' (2 x 32 KB) and the
     # TMS57002's (256 KB), gx_sound's RAM_OFF and DSP_OFF
-    if snd + SND_CPU + SND_PCM + 0x10000 + 0x40000 > 32 * MB:
+    if snd + SND_CPU + lo["snd_pcm"] + 0x10000 + 0x40000 > 32 * MB:
         raise SystemExit(f"{set_name}: the sound board's RAMs end past the 32 MB module")
-    for region, at, pad in (("soundcpu", snd, SND_CPU), ("k054539", snd + SND_CPU, SND_PCM)):
+    for region, at, pad in (("soundcpu", snd, SND_CPU), ("k054539", snd + SND_CPU, lo["snd_pcm"])):
         size, loads = bri.region_loads(blocks[set_name], region)
         if size > pad:
             raise SystemExit(f"{set_name}: {region} is {size:#x}, more than the {pad:#x} reserved")
@@ -420,6 +586,16 @@ def build(set_name, mod, gl, games, blocks, check_only):
                     f'        <part name="{m.group(1)}"/>', '    </rom>']
     dip_lines, dflt = dips_of(g["inputs"])
     title = g["title"]
+    # the program patches, at their place in the stream (the CPU window from
+    # 0x200000 is moved down by 0x1e0000)
+    patch_lines = []
+    for addr, old, new in PATCHES.get(set_name, []):
+        off = addr - 0x1e0000 if addr >= 0x200000 else addr
+        if st.data[off] != old:
+            raise SystemExit(f"{set_name}: patch at {addr:#x}: {st.data[off]:#04x}, expected {old:#04x}")
+        st.data[off] = new
+        patch_lines.append(f'        <patch offset="{off:#x}">{new:02X}</patch>'
+                           f'  <!-- CPU {addr:#x}: {old:02X} -> {new:02X}, MAME init_konamigx -->')
     text = "\n".join([
         '<misterromdescription>',
         f'    <name>{esc(title)}</name>',
@@ -428,6 +604,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         # and the sibling cores have it: the released bitstream keeps the prefix
         # and is renamed when it is copied to the device
         '    <rbf>KonamiGX</rbf>',
+        f'    <mameversion>{mame_version()}</mameversion>',
         f'    <year>{g["year"]}</year>',
         f'    <manufacturer>{esc(g["manufacturer"])}</manufacturer>',
         '    <category>Arcade</category>',
@@ -442,6 +619,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         # copies it to SDRAM (rtl/memory/gx_rom_loader.sv), as the sibling cores do
         f'    <rom index="0" zip="{zip_names}" md5="none" address="0x30000000">',
         *st.lines,
+        *patch_lines,
         '    </rom>',
         *ee_lines,
         '',
@@ -449,7 +627,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         *dip_lines,
         '    </switches>',
         '',
-        f'    <buttons {BUTTONS}/>',
+        f'    <buttons {buttons_attr(set_name)}/>',
         '</misterromdescription>',
         '',
     ])

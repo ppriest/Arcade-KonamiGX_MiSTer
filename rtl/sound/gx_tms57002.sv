@@ -66,6 +66,7 @@ module gx_tms57002 (
     input             sync,         // a sample: one clock
     input      [95:0] si,           // { si3, si2, si1, si0 }, 24 bits each
     output     [95:0] so,
+    output            sim,          // ST0 SIM: tms57002_device scales si by 256
 
     output reg        x_req,        // held until x_ack
     output reg        x_we,
@@ -102,6 +103,7 @@ reg        xlate;               // a read has taken its last step, its data not 
 reg        sync_pend;
 
 assign so = { so_r[3], so_r[2], so_r[1], so_r[0] };
+assign sim = st0[3];
 wire [23:0] si_w [0:3];
 assign si_w[0] = si[23:0];  assign si_w[1] = si[47:24];
 assign si_w[2] = si[71:48]; assign si_w[3] = si[95:72];
@@ -141,6 +143,22 @@ reg         c_we;
 reg  [7:0]  c_wa;
 reg  [31:0] c_d;
 wire        a_fire;
+
+// The instruction rate: MAME's TMS57002 runs at MASTER_CLOCK / 2, 12 MHz, one
+// instruction a cycle -- 250 a 48 kHz sample. The state machine takes two
+// states an instruction; it steps 512 times in each 1000 clocks of the
+// 48 kHz sample (256 instructions, restarted at each sync). At one step a
+// clock the host's writes (paced by the same 48 kHz) met the program at
+// other points than in MAME: salmndr2's RAM test loaded its next program
+// while a read was pending, and the new program's first write was dropped
+// (rde/wre are ignored while an access is pending, as in MAME).
+reg  [9:0] xacc;
+reg        xen;
+always @(posedge clk) begin
+    if( rst || sync ) begin xacc <= 10'd0; xen <= 1'b0; end
+    else if( 11'(xacc) + 11'd512 >= 11'd1000 ) begin xacc <= 10'(11'(xacc) + 11'd512 - 11'd1000); xen <= 1'b1; end
+    else begin xacc <= xacc + 10'd512; xen <= 1'b0; end
+end
 wire        a_cw, a_dw;
 wire [7:0]  a_cwa;
 wire [31:0] a_cd;
@@ -471,7 +489,7 @@ assign p_ra = st == S_A ? pc_n : pc;
 // the program word read then; held otherwise
 reg  [7:0] c_ra_r;
 reg  [8:0] d_ra_r;
-wire       prep  = (st == S_F && s_r) || (st == S_B && !bstall);
+wire       prep  = xen && ((st == S_F && s_r) || (st == S_B && !bstall));
 wire [7:0] c_ra_n = caddr(p_q, ca);
 wire [8:0] d_ra_n = daddr(p_q, id, st == S_B ? st1_n[ST1_DBP] : st1[ST1_DBP], ba0, ba1);
 assign c_ra = prep ? c_ra_n : c_ra_r;
@@ -481,7 +499,7 @@ assign d_ra = prep ? d_ra_n : d_ra_r;
 wire run_ok  = !idle && !pload && !in_rst;
 wire host_wr = h_wr || h_ctrl_wr;
 wire astall  = xstall || host_wr;
-assign a_fire = st == S_A && run_ok && !astall;
+assign a_fire = xen && st == S_A && run_ok && !astall;
 assign a_cw   = a_fire && (pre_cw || pop);
 assign a_cwa  = cadr;
 assign a_cd   = pop ? updv : pre_c;
@@ -581,7 +599,7 @@ always @(posedge clk) begin
         end
 
         // ------------------------------------------------ execution
-        case( st )
+        if( xen ) case( st )
         S_HALT: begin
             s_r <= 1'b0;
             if( sync_pend && !pload && !host_wr ) begin
@@ -662,7 +680,7 @@ end
 // the access's address and bytes (xm_init; xm_step_write's bytes, all at
 // once: nothing else can touch memory before the steps are done)
 wire [31:0] xbyte = ( b_c + { 13'd0, xba } ) << xsh;
-always @(posedge clk) if( st == S_B && !bstall && b_iss ) begin
+always @(posedge clk) if( xen && st == S_B && !bstall && b_iss ) begin
     x_addr <= xbyte[17:3];
     xlo    <= xbyte[2:0];
     for( int j=0; j<8; j=j+1 ) begin

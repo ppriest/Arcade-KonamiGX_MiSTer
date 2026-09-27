@@ -52,6 +52,10 @@ module gx_rom_port #(
     // reads (the K054539s' RAM), since held granules are otherwise trusted
     // never to go stale
     input             inval,
+    // 1: the client's address is a half-granule (four bytes); the granule
+    // holding it is fetched and its half returned in data[31:0] (K055673
+    // RNG sprites: two 4-byte half-rows a granule)
+    input             halfsel,
 
     input  [25:0]     base,         // the region's byte address in SDRAM
     output reg        c_req,        // arbiter client (clk_mem)
@@ -144,11 +148,12 @@ always @(posedge clk_mem) begin
     end else begin
         if( start ) begin
             c_req  <= 1;
-            c_addr <= base + { {(26-AW-3){1'b0}}, a_l, 3'b000 };
+            c_addr <= base + ( halfsel ? { {(26-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }
+                                       : { {(26-AW-3){1'b0}}, a_l, 3'b000 } );
         end
         if( c_req && c_valid ) begin
             c_req  <= 0;
-            data_m <= c_rdata;
+            data_m <= !halfsel ? c_rdata : a_l[0] ? { 32'd0, c_rdata[63:32] } : { 32'd0, c_rdata[31:0] };
             done_t <= ~done_t;
         end
     end

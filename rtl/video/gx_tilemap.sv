@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Konami GX tilemaps: the K054156 register file and the K056832 tile fetch,
-// as a line renderer. Four layers, 16 VRAM pages, 5 bpp.
+// as a line renderer. Four layers, 16 VRAM pages, 5, 6 or 8 bpp (tile_bpp).
 //
 // WRITTEN FROM THE SOFTWARE MODEL, NOT PORTED. scripts/render_model.py
 // layer_fields() is the specification and scripts/check_gx_tilemap.py the
@@ -15,7 +15,7 @@
 // scroll registers, where MAME uses all 16 and the two differ whenever a
 // layer is not a power of two tall (rowspan 3, 768 rows).
 //
-// OUTPUT, per layer per pixel: { colour[5:0], pixel[4:0] }. The K055555 adds
+// OUTPUT, per layer per pixel: { colour[5:0], pixel[7:0] }. The K055555 adds
 // the palette base (PALBASE_A..D << 6); pixel 0 is transparent.
 //
 // COORDINATES are MAME's bitmap coordinates: a line is rendered for bitmap
@@ -23,9 +23,9 @@
 // Mapping the K053252's counters onto those is the video top level's job.
 //
 // NOT HANDLED, and flagged on `unsupported` rather than drawn wrong: screen
-// flip (m_regs[0] bits 4-5), scroll mode 1 (the chip's own documentation calls
-// it unused), colour
-// depths other than 5 bpp.
+// flip X (m_regs[0] bit 4). Flip Y (bit 5) is drawn unflipped: the sets that
+// set it (le2u, le2j) are ones MAME turns back with ORIENTATION_FLIP_Y, and
+// the result is the unflipped rendering (gx_video).
 //
 // ONE LINE BUFFER PAIR: line_start renders into one half and flips which half
 // rd_x reads, so the previous line is readable while the next renders.
@@ -69,19 +69,27 @@ module gx_tilemap (
     // m_cur_gfx_banks: registers 0x1a and 0x1b)
     output      [31:0]  gfx_bank,
 
-    // tile ROM, one 5-byte pixel row per address: row = code * 8 + y
+    // tile ROM, one pixel row per address: row = code * 8 + y. The row's
+    // bytes in MAME's order, byte 0 in [63:56]; 5 bpp uses bytes 0-4, 6 bpp
+    // 0-5, 8 bpp all eight (K056832 set_config's BPP_5, BPP_6, BPP_8)
+    input        [1:0]  tile_bpp,        // 0: 5 bpp, 1: 6 bpp, 2: 8 bpp
     output reg  [23:0]  rom_addr,
     output reg          rom_cs,
     input               rom_ok,
-    input       [39:0]  rom_data,
+    input       [63:0]  rom_data,
 
-    // line buffer read: bitmap column 24 + rd_x, one cycle latency
+    // the visible window's first bitmap column and width (24 and 288 on
+    // most sets; dragoonj 40 and 384, winspike 24 and 384)
+    input        [9:0]  vis_x0,
+    input        [8:0]  vis_w,
+
+    // line buffer read: bitmap column vis_x0 + rd_x, one cycle latency
     input        [8:0]  rd_x,
-    output      [10:0]  rd_pix [4]
+    output      [13:0]  rd_pix [4]
 );
 
-localparam [9:0] VIS_X0 = 10'd24;
-localparam [8:0] VIS_W  = 9'd288;
+wire [9:0] VIS_X0 = vis_x0;
+wire [8:0] VIS_W  = vis_w;
 
 // ------------------------------------------------------------ registers ---
 reg [15:0] regs [32];
@@ -188,12 +196,12 @@ reg  [ 5:0] fleft;           // tiles still to fetch on this layer
 reg  [ 2:0] ftx;
 reg  [ 5:0] fcol;
 reg  [ 1:0] fflip;
-reg  [39:0] frow;
+reg  [63:0] frow;
 wire [11:0] fnext = {fmx[11:3], 3'd0} + 12'd8;
 
 // one-tile buffer between fetcher and emitter
 reg         nb_valid;
-reg  [39:0] nb_row;
+reg  [63:0] nb_row;
 reg  [ 5:0] nb_col;
 reg  [ 1:0] nb_flip;
 reg  [ 2:0] nb_tx;
@@ -204,14 +212,23 @@ reg  [ 8:0] px;
 reg  [ 2:0] tx;
 reg  [ 1:0] flip;
 reg  [ 5:0] colour;
-reg  [39:0] row;
+reg  [63:0] row;
 
 // The pixel at tx of the emitter's row. MAME's bit order is MSB first within
-// each byte, and charlayout5's planes are { b4, b3, b1, b2, b0 } (bit
-// offsets 32, 24, 8, 16, 0), b0 being the row's first byte.
+// each byte, and the planes, most significant first, are the charlayouts'
+// bit offsets / 8 (k054156_k054157_k056832.cpp), b0 being the row's first
+// byte:
+//   charlayout5 { 32, 24, 8, 16, 0 }             { b4, b3, b1, b2, b0 }
+//   charlayout6 { 40, 32, 24, 8, 16, 0 }         { b5, b4, b3, b1, b2, b0 }
+//   charlayout8 { 56, 24, 40, 8, 48, 16, 32, 0 } { b7, b3, b5, b1, b6, b2, b4, b0 }
 wire [2:0] bitsel = flip[0] ? tx : ~tx;
-wire [7:0] b0 = row[39:32], b1 = row[31:24], b2 = row[23:16], b3 = row[15:8], b4 = row[7:0];
-wire [4:0] pixel = { b4[bitsel], b3[bitsel], b1[bitsel], b2[bitsel], b0[bitsel] };
+wire [7:0] b0 = row[63:56], b1 = row[55:48], b2 = row[47:40], b3 = row[39:32],
+           b4 = row[31:24], b5 = row[23:16], b6 = row[15:8],  b7 = row[7:0];
+wire [7:0] pixel = tile_bpp == 2'd2 ? { b7[bitsel], b3[bitsel], b5[bitsel], b1[bitsel],
+                                        b6[bitsel], b2[bitsel], b4[bitsel], b0[bitsel] } :
+                   tile_bpp == 2'd1 ? { 2'd0, b5[bitsel], b4[bitsel], b3[bitsel],
+                                        b1[bitsel], b2[bitsel], b0[bitsel] } :
+                                      { 3'd0, b4[bitsel], b3[bitsel], b1[bitsel], b2[bitsel], b0[bitsel] };
 
 wire last_px  = e_valid && px == VIS_W - 9'd1;
 wire tile_end = e_valid && tx == 3'd7 && !last_px;
@@ -231,9 +248,13 @@ wire nb_free  = !nb_valid || nb_take;
 wire [14:0] tile_addr = { 2'(rowstart + my[9:8]), 2'(colstart + fmx[10:9]), my[7:3], fmx[8:3] };
 wire        scan_rd   = st == RUN && fst == F_IDLE && fleft != 6'd0 && !vram_rd;
 // the line's scroll pair: page, then layer * 0x200 + the map row (mode 2
-// takes the row's group of eight), wrapping at 512 rows as MAME's mask does
+// takes the row's group of eight), wrapping at 512 rows as MAME's mask does.
+// A layer one page tall reads it at the line plus dy itself, not the map row
+// (tilemap_draw_common's sdat_start = dy): salmndr2's dy 0x100 is the second
+// half of the table
 wire [11:0] ls_row    = ysum >= height ? ysum - height : ysum;   // this line's map row
-wire [14:0] ls_addr   = { ls_page, layer, ls_mode == 2'd2 ? { ls_row[8:3], 3'd0 } : ls_row[8:0] };
+wire [ 8:0] ls_line   = l_rows[1:0] == 2'd0 ? 9'(y) + l_ysc[8:0] : ls_row[8:0];
+wire [14:0] ls_addr   = { ls_page, layer, ls_mode == 2'd2 ? { ls_line[8:3], 3'd0 } : ls_line };
 wire        ls_rd     = st == LS_RD && !vram_rd;
 wire [14:0] rd_addr   = vram_rd    ? vram_addr[15:1] :
                         ls_rd      ? ls_addr         : tile_addr;
@@ -264,11 +285,11 @@ reg        wr_half;
 reg        lb_we;
 reg [ 1:0] lb_layer;
 reg [ 8:0] lb_px;
-reg [10:0] lb_din;
+reg [13:0] lb_din;
 
 genvar l;
 generate for (l = 0; l < 4; l++) begin : g_lbuf
-    gx_sdpram #(.AW(10), .DW(11)) u_lbuf (
+    gx_sdpram #(.AW(10), .DW(14)) u_lbuf (
         .clk ( clk ),
         .we  ( lb_we && lb_layer == l ),
         .wa  ( {wr_half, lb_px} ),
@@ -301,7 +322,7 @@ always @(posedge clk) begin
             // Cross sets it on all four layers, and MAME's switch takes 1 and 3
             // through the same default case: no line scroll, the layer's own
             // X/Y scroll registers. ls_on already reads it that way.
-            if (r_ctrl[5:4] != 2'd0) unsupported <= 1'b1;
+            if (r_ctrl[4]) unsupported <= 1'b1;
         end
         SETUP: begin
             rowstart <= l_rows[4:3];
@@ -337,7 +358,7 @@ always @(posedge clk) begin
         PREP: begin
             my    <= ly;
             fmx   <= mx0;
-            fleft <= 6'((10'(mx0[2:0]) + 10'd295) >> 3);     // tiles the 288 pixels touch
+            fleft <= 6'((10'(mx0[2:0]) + { 1'b0, VIS_W } + 10'd7) >> 3);   // tiles the VIS_W pixels touch
             px    <= 9'd0;
             st    <= RUN;
         end

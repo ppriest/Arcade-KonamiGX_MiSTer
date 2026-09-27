@@ -30,5 +30,6 @@ rtl/sound/gx_tms57002.sv
 rtl/sound/gx_sound.sv
 obj_verilator/tg68k_ghdl/TG68KdotC_Kernel.v
 rtl/cpu/gx_romcache.sv
+rtl/gx_board_cfg.sv
 rtl/gx_main.sv
 sim/gx_main_tb/tb_gx_main.sv

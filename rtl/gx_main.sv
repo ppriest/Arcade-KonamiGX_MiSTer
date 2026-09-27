@@ -34,10 +34,16 @@
 // level << 1, which is how HOLD_LINE-style interrupts are cleared here.
 //
 // ---- interrupts (konamigx.cpp)
-//   level 1  vblank: the K053252's INT1 flip-flop, gated by wrport1_1 0x81.
-//            The game acknowledges through K053252 register 0x0e (MAME:
-//            vblank_irq_ack_w). MAME models this as HOLD_LINE plus a
-//            "syncen" latch; the flip-flop is the chip's own behaviour.
+//   level 1  vblank: raised at the K053252's INT1 edge if wrport1_1 has
+//            0x81 then (or syncen bit 0), and held until the acknowledge
+//            cycle or the game's acknowledge through K053252 register 0x0e
+//            (MAME: HOLD_LINE, vblank_irq_ack_w's CLEAR_LINE). INT1 rises
+//            only after that acknowledge, which is MAME's syncen bit 5.
+//            An INT1 that came while the level was disabled is not
+//            delivered when it is enabled: it was, once, and Crazy Cross
+//            took the interrupt between enabling it (91) and enabling the
+//            object DMA's (95); the handler wrote back 90, IRQ 3 never came,
+//            and the game stopped with a black screen.
 //            syncen bit 0, set by any write of wrport1_1 with bit 7 and bit
 //            0, lets the next INT1 through once even if the enable has been
 //            cleared since: tbyahhoo writes 91, d1, then 90 and waits for
@@ -70,13 +76,13 @@ module gx_main (
     output     [23:0] tile_rom_addr,
     output            tile_rom_cs,
     input             tile_rom_ok,
-    input      [39:0] tile_rom_data,
+    input      [63:0] tile_rom_data,     // the row's bytes, byte 0 in [63:56]
     output     [22:0] obj_rom_addr,
     output            obj_rom_cs,
     output     [22:0] obj_pf_addr,           // the row the sprite scan will draw next
     output            obj_pf_cs,
     input             obj_rom_ok,
-    input      [39:0] obj_rom_data,
+    input      [63:0] obj_rom_data,      // the half-row's bytes, byte 0 in [63:56]
 
     // K056800 mailbox (0xd52000, register n = byte 2n): the bench answers
     output reg        snd_wr,
@@ -101,10 +107,26 @@ module gx_main (
     input  signed [7:0] offs_x [4],
     input  signed [7:0] offs_y [4],
     input      [ 3:0] primode,              // konamigx_mixer_primode for the set
+    input      [ 1:0] tile_bpp,             // K056832 depth: 0 5 bpp, 1 6 bpp, 2 8 bpp
+    input      [ 1:0] obj_layout,           // K055673 layout: 0 GX, 1 RNG, 2 GX6, 3 LE2
+    input      [ 1:0] obj_pri_raw,          // 1 dragoonj's, 2 salmndr2's sprite priority callback
+    input      [ 9:0] vis_x0,               // the visible window (gx_board_cfg)
+    input      [ 8:0] vis_w,
     input      [ 9:0] obj_hadj,             // the set's K055673 dx - (-26), signed
     input             esc_gen,              // the set's ESC callback generates sprites
     input      [23:0] esc_src,              // from this list
     input      [ 8:0] esc_count,            // of this many entries
+    input             esc_copy,             // the callback copies the list (konamigx_esc_alert mode 0)
+    input             esc_sal2,             // ... builds it from the object records (mode 1)
+    input             prot4,                // 0xcc0000-0xcc0007 is the type 4 Xilinx protection, not the ESC
+    input             fj_dma,               // 0xdb0000-0xdb001f is fantjour's DMA (gameDefs special 9)
+    input      [ 4:0] rom_uncached,         // clocks an instruction fetch takes while CACR's cache is off
+    input             tile_rb66,            // the K056832 window is k_6bpp_rom_long_r (six-byte rows)
+    input             guns,                 // le2: the light guns at 0xd44000, P2's trigger at 0xd5e002
+    input      [31:0] gun_h,                // le2_gun_H_r
+    input      [31:0] gun_v,                // le2_gun_V_r
+    input             gun_trig2,            // player 2's trigger
+    input             orient_fy,            // ORIENTATION_FLIP_Y sets (gx_video)
 
     // video out
     output     [23:0] rgb,
@@ -125,6 +147,8 @@ module gx_main (
     output     [ 1:0] dbg_esc,               // { the CPU is held on its ESC write, the ESC is busy }
     output     [95:0] dbg_esc_st,            // { count2, SR high byte, ESC completions, gx_esc dbg[63:0] }
     output     [95:0] dbg_obj,               // sprite DMA starts, vblanks, OBJSET1, short lines (probe J)
+    output reg [63:0] dbg_k338,              // the last write to K054338 register 14's high byte (probe O)
+    output    [135:0] dbg_shd,               // gx_obj's shadow-code-1 tile probe (probe O)
     output    [111:0] dbg_mix,               // the mixer's registers (probe L)
     output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
     input             peek_t,                // JTAG: read one granule of the packed image
@@ -178,6 +202,7 @@ wire [ 1:0] busstate;
 wire [ 7:0] cpu_sr;                          // T.S.0III (TG68K FlagsSR)
 wire        nWr, nUDS, nLDS;
 wire [ 2:0] fc;
+wire [ 3:0] cacr;                           // the 68EC020's CACR (EI is bit 0)
 reg  [15:0] cpu_din;
 reg  [15:0] u_din;                          // the access unit's read data
 reg         ready;
@@ -208,13 +233,22 @@ TG68KdotC_Kernel #(
     .addr_out(a32), .data_write(cpu_dout),
     .nWr(nWr), .nUDS(nUDS), .nLDS(nLDS),
     .busstate(busstate), .longword(), .nResetOut(), .FC(fc),
-    .clr_berr(), .skipFetch(), .regin_out(), .CACR_out(), .VBR_out(), .FlagsSR_out(cpu_sr)
+    .clr_berr(), .skipFetch(), .regin_out(), .CACR_out(cacr), .VBR_out(), .FlagsSR_out(cpu_sr)
 );
 
 // ------------------------------------------------------------ registers
 reg  [7:0] wrport1_0, wrport1_1, rdport1_3, syncen;
 reg  [7:0] vram_bank;                       // K056832 m_regs[0x19], low byte
 reg [15:0] esc_hi;
+reg [15:0] p4_op;                           // type4_prot_w: the command word
+reg        p4_op_v, p4_clk;                 // m_last_prot_op != -1, m_last_prot_clk
+reg        esc_p4;
+reg        esc_fj;
+reg [15:0] fjw [0:15];                      // fantjour_dma_w's eight dwords, as words
+reg [ 7:0] fj_mode, fj_sz2;
+reg [23:0] fj_sa, fj_da;
+reg [15:0] fj_db;
+reg [31:0] fj_x;
 
 // ------------------------------------------------------------ memories
 // work RAM, 0xc00000-0xc1ffff: two byte lanes of 64K
@@ -256,8 +290,12 @@ wire        int1, int2, obj_dma_busy, obj_ln_short;
 reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
 wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
 
+// the tile ROM readback's address and bank (declared before gx_video, which
+// drives them; used by the readback windows below)
+wire [22:1] rmrd_addr;
+wire [31:0] tile_gfx_bank;
 gx_video u_video (
-    .rst, .clk, .pxl_cen, .pxl2_cen,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .obj_vmirror(orient_fy),
     .crtc_cs, .crtc_addr, .crtc_din, .crtc_dout(), .int1, .int2,
     .tm_reg_we, .tm_reg_addr(tm_addr), .tm_reg_din(bus_d16), .tm_reg_be(tm_be),
     .tbank_we, .tbank_addr, .tbank_din,
@@ -266,8 +304,8 @@ gx_video u_video (
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
-    .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .obj_hadj,
-    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix,
+    .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj,
+    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .rmrd_addr, .tile_gfx_bank,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
@@ -295,8 +333,8 @@ wire [ 1:0] esc_be;
 wire [15:0] esc_dout;
 
 gx_esc u_escm (
-    .rst, .clk, .start(esc_start), .data(esc_data), .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
-    .gen_en(esc_gen), .gen_src(esc_src), .gen_count(esc_count),
+    .rst, .clk, .start(esc_start), .data(esc_data), .p4(esc_p4), .fj(esc_fj), .fj_mode, .fj_sz2, .fj_sa, .fj_da, .fj_db, .fj_x, .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
+    .gen_en(esc_gen), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(esc_copy), .gen_sal2(esc_sal2),
     .m_req(esc_req), .m_we(esc_we), .m_addr(esc_addr), .m_be(esc_be), .m_dout(esc_dout),
     .m_din(u_din), .m_ack(esc_ack)
 );
@@ -357,7 +395,8 @@ reg         uwe_r;
 reg  [15:0] ud_r;
 reg  [ 3:0] usrc;                           // where the read data comes from
 
-localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6;
+localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6, R_REGS=7;
+
 reg  [15:0] io_q;
 
 wire        cpu_req_now;
@@ -374,6 +413,45 @@ wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11 
 wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_md ? 1'b0    : !nWr;
 wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_md ? 16'd0   : cpu_dout;
 wire [23:0] ub  = { ua, 1'b0 };             // byte address of the word
+
+// ---- the register copy, for a capture from the board
+// The video chips' registers are write-only (MAME's gx map has no read
+// handler for them), so scripts/mame/capture.lua rebuilds them from a tap
+// on the CPU's writes. This keeps the same thing here: every write to
+// those ranges, as the chips are given it, in a small RAM that only the
+// memory reader (take_md, scripts/memdump.py) reads, at 0xe00000 + 2 *
+// word -- nothing the game can reach. scripts/board_capture.py lays it out
+// as capture.lua's reg_*.bin files, so the video benches can render the
+// board's own state.
+//   words 0x00-0x1f  d40000-d4003f  K056832
+//         0x20-0x27  d44000-d4400f  tile bank
+//         0x28-0x2b  d48000-d48007  K053246
+//         0x2c-0x33  d4a010-d4a01f  K055673
+//         0x34-0x43  d4c000-d4c01f  K053252
+//         0x44-0xc3  d50000-d500ff  K055555
+//         0xc4-0xd3  d80000-d8001f  K054338
+//         0xd4-0xd5  d56000-d56003  write port 1
+//         0xd6-0xd7  d58000-d58003  write port 2
+reg  [8:0] rg_wa;
+reg        rg_in;
+always @* begin
+    rg_in = 1'b1;
+    if(      ub >= 24'hd40000 && ub < 24'hd40040 ) rg_wa = 9'h000 + 9'(ua[5:1]);
+    else if( ub >= 24'hd44000 && ub < 24'hd44010 ) rg_wa = 9'h020 + 9'(ua[3:1]);
+    else if( ub >= 24'hd48000 && ub < 24'hd48008 ) rg_wa = 9'h028 + 9'(ua[2:1]);
+    else if( ub >= 24'hd4a010 && ub < 24'hd4a020 ) rg_wa = 9'h02c + 9'(ua[3:1]);
+    else if( ub >= 24'hd4c000 && ub < 24'hd4c020 ) rg_wa = 9'h034 + 9'(ua[4:1]);
+    else if( ub >= 24'hd50000 && ub < 24'hd50100 ) rg_wa = 9'h044 + 9'(ua[7:1]);
+    else if( ub >= 24'hd80000 && ub < 24'hd80020 ) rg_wa = 9'h0c4 + 9'(ua[4:1]);
+    else if( ub >= 24'hd56000 && ub < 24'hd56004 ) rg_wa = 9'h0d4 + 9'(ua[1]);
+    else if( ub >= 24'hd58000 && ub < 24'hd58004 ) rg_wa = 9'h0d6 + 9'(ua[1]);
+    else begin rg_wa = 9'd0; rg_in = 1'b0; end
+end
+wire        rg_we = take && uwe && rg_in && !take_md;
+reg  [8:0]  rg_ra;
+wire [7:0]  rg_qh, rg_ql;
+gx_sdpram #(.AW(9), .DW(8)) u_rgh ( .clk, .we(rg_we && ube[1]), .wa(rg_wa), .d(ud[15:8]), .ra(rg_ra), .q(rg_qh) );
+gx_sdpram #(.AW(9), .DW(8)) u_rgl ( .clk, .we(rg_we && ube[0]), .wa(rg_wa), .d(ud[ 7:0]), .ra(rg_ra), .q(rg_ql) );
 assign esc_ack = u_ack && u_esc;
 assign md_ack  = u_ack && u_md;
 
@@ -405,8 +483,6 @@ endfunction
 // base+1 on the next read of the same address -- m_rom_half, which a VRAM
 // read clears. Dividing that by five to find the row is avoidable: with
 // q = o/4 and r = o%4 the row and the byte within it fall out of r alone.
-wire [22:1] rmrd_addr;
-wire [31:0] tile_gfx_bank;
 reg         rom_half;
 reg  [ 2:0] gfx_sel;                         // byte within the granule
 reg         gfx_five;                        // the fifth-bit part (one byte)
@@ -425,6 +501,11 @@ wire [ 1:0] tr_r    = tr_o[1:0];
 reg  [22:0] tr_row;
 reg  [ 2:0] tr_bir;
 always @* begin
+    // k_6bpp_rom_long_r: base = (o/4)*6 + (o%4)*2, rows of six
+    if( tile_rb66 ) begin
+        tr_row = tr_r == 2'd3 ? tr_q + 23'd1 : tr_q;
+        tr_bir = tr_r == 2'd3 ? { 2'd0, rom_half } : { tr_r[1:0], rom_half };
+    end else
     case( { rom_half, tr_r } )
         3'b000: begin tr_row = tr_q;            tr_bir = 3'd0; end
         3'b001: begin tr_row = tr_q;            tr_bir = 3'd2; end
@@ -468,6 +549,24 @@ gx_romcache u_cache (
 );
 reg  esc_started;                           // the CPU's write started the ESC
 
+// The 68EC020's instruction cache (CACR bit 0, EI). The games run their
+// power-on tests with it off -- Twin Bee from frame 244 to 827, Crazy Cross
+// to 764, Dragoon Might to 1059, by MAME's CACR -- and on the board every
+// instruction fetch then goes to the program ROM. gx_romcache would answer
+// most of them in a clock or two, the CPU ran the tests' timeout loops far
+// faster than the board, and the loops gave up waiting for the sound CPU
+// (MAME underclocks the CPU for twelve seconds instead, init_posthack).
+// With the cache off, an instruction fetch (FC program space) takes at
+// least rom_uncached clocks from its issue. Twin Bee in the main bench with
+// the real sound board: 0 and 4 stop in the sound test as the board did, 6
+// and 8 pass it and reach the game; KonamiGX.sv uses 6, the board's SDRAM
+// misses only adding to it. Data reads are unchanged: the
+// real cache holds instructions only, so this is still faster than the
+// board there.
+reg  [ 4:0] rom_wc;
+reg         rom_slow, rom_got;
+reg  [15:0] rom_q;
+
 always @(posedge clk) begin
     u_ack <= 0;
     { tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs } <= 0;
@@ -480,6 +579,7 @@ always @(posedge clk) begin
         ust <= U_IDLE; cr_cs <= 0;
         wrport1_0 <= 0; wrport1_1 <= 0; wrport2 <= 0; vram_bank <= 0;
         esc_start <= 0; esc_started <= 0;
+        p4_op_v <= 0; p4_clk <= 0; esc_p4 <= 0; esc_fj <= 0;
     end else case( ust )
     // the granule the readback window asked for
     U_GFX: if( gfx_ok ) begin
@@ -506,18 +606,52 @@ always @(posedge clk) begin
             ucnt    <= 3'd1;                     // default: done next clock
             if( take_cpu && fc == 3'b111 ) begin
                 usrc <= R_ZERO;                  // interrupt acknowledge
+            end else if( take_md && ub >= 24'he00000 && ub < 24'he00400 ) begin
+                rg_ra <= ua[9:1]; usrc <= R_REGS; ucnt <= 3'd2;      // the register copy
             end else if( ub < 24'h800000 ) begin
                 if( rom_backed ) begin
                     cr_addr <= ua[22:1]; cr_cs <= 1; ust <= U_ROM;
+                    rom_wc <= 5'd0; rom_got <= 1'b0;
+                    rom_slow <= take_cpu && fc[1:0] == 2'b10 && !cacr[0];
                 end else usrc <= R_ZERO;
             end else if( ub >= 24'hc00000 && ub < 24'hc20000 ) begin
                 wr_a <= ua[16:1]; wr_d <= ud;
                 if( uwe ) begin wr_we_h <= ube[1]; wr_we_l <= ube[0]; end
                 usrc <= R_WRAM; ucnt <= 3'd2;
+            end else if( fj_dma && ub >= 24'hdb0000 && ub < 24'hdb0020 ) begin
+                // fantjour_dma_w: the registers, and a write to register 0's
+                // top byte (the mode) starts the DMA, which holds the CPU
+                // until it is done -- MAME runs it on the write, in no time
+                if( uwe ) begin
+                    if( ube[1] ) fjw[ua[4:1]][15:8] <= ud[15:8];
+                    if( ube[0] ) fjw[ua[4:1]][ 7:0] <= ud[ 7:0];
+                    if( ua[4:1] == 4'd0 && ube[1] ) begin
+                        fj_mode <= ud[15:8];
+                        fj_sz2  <= ube[0] ? ud[7:0] : fjw[0][7:0];
+                        fj_sa   <= { fjw[2][7:0], fjw[3] };
+                        fj_da   <= { fjw[7][7:0], fjw[8] };
+                        fj_db   <= fjw[11];
+                        fj_x    <= { fjw[12], fjw[13] };
+                        esc_fj <= 1; esc_p4 <= 0; esc_start <= 1; esc_started <= 1;
+                    end
+                end
+            end else if( prot4 && ub >= 24'hcc0000 && ub < 24'hcc0008 ) begin
+                // type4_prot_w, the high word of each dword (the only writes
+                // winspike makes, by a MAME write tap): 0xcc0004 is the
+                // command; bit 9 of 0xcc0000 is a clock, and its falling edge
+                // runs the command, once
+                if( uwe && ub[2:1] == 2'b10 ) begin p4_op <= ud; p4_op_v <= 1; end
+                if( uwe && ub[2:1] == 2'b00 ) begin
+                    p4_clk <= ud[9];
+                    if( p4_clk && !ud[9] && p4_op_v ) begin
+                        esc_data <= { 8'd0, p4_op }; esc_p4 <= 1; esc_fj <= 0; esc_start <= 1; esc_started <= 1;
+                        p4_op_v <= 0;
+                    end
+                end
             end else if( ub >= 24'hcc0000 && ub < 24'hcc0004 ) begin
                 // esc_w: the 32-bit write arrives as two words; the second starts it
                 if( uwe && !ub[1] ) esc_hi <= ud;
-                if( uwe &&  ub[1] ) begin esc_data <= { esc_hi[7:0], ud }; esc_start <= 1; esc_started <= 1; end
+                if( uwe &&  ub[1] ) begin esc_data <= { esc_hi[7:0], ud }; esc_p4 <= 0; esc_fj <= 0; esc_start <= 1; esc_started <= 1; end
             end else if( ub >= 24'hd00000 && ub < 24'hd02000 ) begin
                 // K056832 ROM readback, a byte at a time
                 gfx_cs <= 1; gfx_addr <= tr_byte[25:3]; gfx_sel <= tr_byte[2:0];
@@ -541,6 +675,11 @@ always @(posedge clk) begin
                     if( ua[5:1] == 5'h19 && ube[0] ) vram_bank <= ud[7:0];
                 end
             end else if( ub >= 24'hd44000 && ub < 24'hd44008 ) begin
+                if( !uwe && guns ) begin
+                    io_q <= ub[2] ? (ub[1] ? gun_v[15:0] : gun_v[31:16])
+                                  : (ub[1] ? gun_h[15:0] : gun_h[31:16]);
+                    usrc <= R_IO;
+                end
                 // konamigx_tilebank_w: one byte per lane
                 if( uwe && ube[1] ) begin tbank_we <= 1; tbank_addr <= { ua[2:1], 1'b0 }; tbank_din <= ud[15:8]; end
                 else if( uwe && ube[0] ) begin tbank_we <= 1; tbank_addr <= { ua[2:1], 1'b1 }; tbank_din <= ud[7:0]; end
@@ -571,7 +710,9 @@ always @(posedge clk) begin
                 io_q <= ub[1] ? inputs[15:0] : inputs[31:16];
                 usrc <= R_IO;
             end else if( ub >= 24'hd5e000 && ub < 24'hd5e004 ) begin
-                io_q <= ub[1] ? 16'h0000 : { service, 8'h00 };
+                // le2's port: bits 15-8 unknown active low, P2's trigger at bit 10
+                io_q <= ub[1] ? (guns ? { 5'b11111, ~gun_trig2, 2'b11, 8'h00 } : 16'h0000)
+                              : { service, 8'h00 };
                 usrc <= R_IO;
             end else if( ub >= 24'hd80000 && ub < 24'hd80020 ) begin
                 if( uwe ) begin k338_we <= ube; k338_addr <= ua[4:1]; end
@@ -604,6 +745,7 @@ always @(posedge clk) begin
                 R_SPR:  u_din <= spr_ram_dout;
                 R_IO:   u_din <= io_q;
                 R_SND:  u_din <= { snd_din, 8'h00 };
+                R_REGS: u_din <= { rg_qh, rg_ql };
                 default: u_din <= 16'h0000;
             endcase
             u_ack <= 1;
@@ -614,8 +756,12 @@ always @(posedge clk) begin
         tbank_we <= 1; tbank_addr <= { ua_r[2:1], 1'b1 }; tbank_din <= ud_r[7:0];
         ucnt <= 3'd1; ust <= U_WAIT;
     end
-    U_ROM: if( cr_ok ) begin
-        cr_cs <= 0; u_din <= cr_data; u_ack <= 1; ust <= U_IDLE;
+    U_ROM: begin
+        if( rom_wc != 5'h1f ) rom_wc <= rom_wc + 5'd1;
+        if( cr_ok ) begin cr_cs <= 0; rom_q <= cr_data; rom_got <= 1'b1; end
+        if( (cr_ok || rom_got) && (!rom_slow || rom_wc >= rom_uncached) ) begin
+            u_din <= cr_ok ? cr_data : rom_q; u_ack <= 1; ust <= U_IDLE;
+        end
     end
     default: ust <= U_IDLE;
     endcase
@@ -714,19 +860,24 @@ always @(posedge clk) begin
             rdport1_3 <= rdport1_3 & ~8'h08;
             irq4 <= 1;
         end
-        // MAME's vblank/hblank callbacks: a set syncen bit passes this one
-        // interrupt and is consumed
-        if( int1 && !int1_l && syncen[0] ) begin syncen[0] <= 0; pend1 <= 1; end
-        if( int2 && !int2_l && syncen[1] ) begin syncen[1] <= 0; pend2 <= 1; end
-        if( iack && iack_lvl == 3'd1 ) pend1 <= 0;
-        if( iack && iack_lvl == 3'd2 ) pend2 <= 0;
+        // MAME's vblank/hblank callbacks, at the INT edge: the level's
+        // enable, or a set syncen bit (consumed), raises it
+        if( int1 && !int1_l && ((wrport1_1 & 8'h81) == 8'h81 || syncen[0]) ) begin
+            syncen[0] <= 0; pend1 <= 1;
+        end
+        if( int2 && !int2_l && ((wrport1_1 & 8'h82) == 8'h82 || syncen[1]) ) begin
+            syncen[1] <= 0; pend2 <= 1;
+        end
+        // cleared by the acknowledge cycle, or the K053252's (INT falls)
+        if( (iack && iack_lvl == 3'd1) || !int1 ) pend1 <= 0;
+        if( (iack && iack_lvl == 3'd2) || !int2 ) pend2 <= 0;
         if( iack && iack_lvl == 3'd3 ) irq3 <= 0;
         if( iack && iack_lvl == 3'd4 ) irq4 <= 0;
     end
 end
 
-wire irq1 = int1 && ((wrport1_1[7] && wrport1_1[0]) || pend1);
-wire irq2 = int2 && ((wrport1_1[7] && wrport1_1[1]) || pend2);
+wire irq1 = pend1;
+wire irq2 = pend2;
 always @* begin
     ipl_n = 3'b111;
     if( irq1 ) ipl_n = ~3'd1;
@@ -780,6 +931,24 @@ always @(posedge clk) begin
     end
 end
 assign dbg_obj = { c_dma_esc, c_short_last, c_short, objset1_dma, objset1_vbl, objset1_m, 4'd0, c_vbl_en, c_vbl, c_dma };
+
+// The last write to K054338 register 14's high byte (0xd8001c): on the
+// board that byte is lost (tkmmpzdm's select screen), while the byte
+// writes of the attract's fade arrive as bytes. { who (1 ESC, 2 memory
+// reader, 0 CPU), byte lanes, the CPU's interrupt mask, data } in [22:0],
+// the address of the CPU's last instruction fetch before it in [46:23], a
+// count of such writes in [62:47].
+reg [23:0] last_fetch;
+always @(posedge clk)
+    if( rst ) begin dbg_k338 <= 64'd0; last_fetch <= 24'd0; end
+    else begin
+        if( take_cpu && fc[1:0] == 2'b10 ) last_fetch <= { ua, 1'b0 };
+        if( take && uwe && ub >= 24'hd8001c && ub < 24'hd8001e && ube[1] ) begin
+            dbg_k338[22:0]  <= { take_md, take_esc, ube, cpu_sr[2:0], ud };
+            dbg_k338[46:23] <= last_fetch;
+            dbg_k338[62:47] <= dbg_k338[62:47] + 16'd1;
+        end
+    end
 
 assign dbg_access = u_ack;                // CPU and ESC: MAME's write tap sees both
 assign dbg_addr   = { ua_r, 1'b0 };

@@ -153,38 +153,32 @@ def write_set_roms(game):
     """The set's graphics ROMs as the video benches' rom.hex holds them --
     tile rows of five bytes, sprite half-rows of four then the fifth -- over
     the capture's (daiskiss's). Returns the tile counts the bench wraps at."""
-    for region in ("k056832", "k055673"):
+    for region in ("maincpu", "k056832", "k055673"):
         f = REPO / "debug" / f"{game}-rom" / f"{region}.bin"
         if not f.exists():
             import build_rom_image as bri
             f.parent.mkdir(parents=True, exist_ok=True)
             f.write_bytes(bri.build(game, region))
-    trom = np.frombuffer((REPO / "debug" / f"{game}-rom" / "k056832.bin").read_bytes(), dtype=np.uint8)
-    rows = trom[:len(trom) // 40 * 40].reshape(-1, 5)
-    (check_gx_tilemap.OUT / "rom.hex").write_text("".join(r.tobytes().hex() + "\n" for r in rows))
-    orom = np.frombuffer((REPO / "debug" / f"{game}-rom" / "k055673.bin").read_bytes(), dtype=np.uint8)
-    size4 = (len(orom) // 0x100000) // 5 * 0x400000
-    four = orom[:size4].reshape(-1, 4)
-    one = orom[size4:size4 + size4 // 4].reshape(-1, 1)
-    n = size4 // 128
-    halves = np.concatenate([four, one], axis=1).reshape(-1)[:n * 160].reshape(-1, 5)
-    (check_gx_obj.OUT / "rom.hex").write_text("".join(h.tobytes().hex() + "\n" for h in halves))
-    return len(rows) // 8, n
-
-
-# rtl/gx_board_cfg.sv's per-set values the bench needs: the ESC's list and the
-# K055673's x offset less daiskiss's -26 (konamigx.cpp's machine configs).
-ESC = {"daiskiss": (1, 0xc00000, 0x100), "mtwinbee": (1, 0xc00000, 0x100),
-       "tbyahhoo": (1, 0xc00000, 0x100), "sexyparo": (1, 0xc00604, 0xfc),
-       "sexyparoa": (1, 0xc00604, 0xfc)}
-HADJ = {"crzcross": -20, "puzldama": -20, "fantjour": -20, "fantjoura": -20,
-        "gokuparo": -20, "sexyparo": -16, "sexyparoa": -16}
+    # the program as the .mra delivers it: MAME's start-up patches applied
+    # (build_mra.PATCHES), which MAME's own reference trace runs with
+    import build_mra
+    if game in build_mra.PATCHES:
+        img = bytearray((REPO / "debug" / f"{game}-rom" / "maincpu.bin").read_bytes())
+        for addr, old, new in build_mra.PATCHES[game]:
+            assert img[addr] in (old, new), f"{game}: patch at {addr:#x}"
+            img[addr] = new
+        (REPO / "debug" / f"{game}-rom" / "maincpu.bin").write_bytes(bytes(img))
+    rows = check_gx_tilemap.tile_rows(game)
+    (check_gx_tilemap.OUT / "rom.hex").write_text(check_gx_tilemap.rows_hex(rows))
+    halves = rm.k055673_halves(game)
+    (check_gx_obj.OUT / "rom.hex").write_text(check_gx_tilemap.rows_hex(halves))
+    return len(rows) // 8, len(halves) // 32
 
 
 def board_cfg(game):
-    gen, src, count = ESC.get(game, (0, 0xc00000, 0x100))
-    return [f"+ESC_GEN={gen}", f"+ESC_SRC={src:x}", f"+ESC_COUNT={count:x}",
-            f"+OBJ_HADJ={HADJ.get(game, 0) & 0x3ff}"]
+    """The set's mod byte: the bench takes its constants from rtl/gx_board_cfg.sv."""
+    import build_mra
+    return [f"+GAME={build_mra.SETS.index(game)}"]
 
 
 def main():
@@ -208,6 +202,8 @@ def main():
                          "set's own sound program) instead of MAME's replies replayed by time")
     ap.add_argument("--plus", action="append", default=[],
                     help="extra +PLUSARG=value for the bench (+ROM_JUNK_FROM, +ROM_TOP)")
+    ap.add_argument("--instance", type=int, default=0,
+                    help="build into a separate directory (-GINSTANCE=N), to run beside another run")
     ap.add_argument("--rom-wait", type=int, default=10,
                     help="the bench ROM's clocks per miss (+ROM_WAIT); odd values catch clock-phase faults")
     a = ap.parse_args()
@@ -272,7 +268,8 @@ def main():
             shutil.copyfile(f"{snap}.trace", rtl)
             args += [f"+RESTORE={snap.relative_to(REPO)}.vlsave"]
         if a.sim == "verilator":
-            cmd = ["scripts/run_verilator.sh", "gx_main_tb", f"--threads={a.threads}"] + args
+            cmd = (["scripts/run_verilator.sh", "gx_main_tb", f"--threads={a.threads}"]
+                   + ([f"-GINSTANCE={a.instance}"] if a.instance else []) + args)
         else:
             cmd = ["scripts/run_sim.sh", "gx_main_tb"] + args
         r = subprocess.run([check_gx_obj.GIT_BASH] + cmd, cwd=REPO, capture_output=True, text=True)

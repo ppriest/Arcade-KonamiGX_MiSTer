@@ -85,7 +85,7 @@ logic disagree, **the silicon is taken as the source of truth**. This project's 
 MAME. Both positions are correct for their own project; the roadmap's "Design decisions" says how
 the collision is handled.
 
-### furrtek/SiliconRE — GPL-2.0, version ambiguity **assumed resolved** — *planned*
+### furrtek/SiliconRE — GPL-2.0 — **not used as code**
 
 <https://github.com/furrtek/SiliconRE> — the K054539 PCM chip, `Konami/054539/hdl/` (41 KB of
 Verilog plus ROM contents dumped from the die), to land in `rtl/sound/k054539/`. Also the reference
@@ -102,9 +102,10 @@ assumption.** The facts, so the assumption can be re-checked rather than inherit
 - The repository `README.md` makes no statement about "or later".
 - GPL-2.0-**only** cannot be combined with the GPL-3 modules above. GPL-2.0-**or-later** can.
 
-**Decision: proceed as though the HDL is usable under GPL-3 (this repository's owner).** That is an
-assumption, not a grant from the author, and nothing in this repository should be read as claiming
-furrtek licensed it under GPL-3.
+**Outcome: the HDL is treated as GPL-2.0-only and is not used.** The question was put to the author
+(below) and closed without a grant; the project owner then decided to assume strictly GPL-2.0, not
+later, which cannot be combined with this GPL-3 core. The K054539 is written from scratch against
+MAME's `sound/k054539.cpp` (BSD-3-Clause) instead, with the register notes as documentation.
 
 **The question has been put to the author:
 [furrtek/SiliconRE#40, "Query: Use under GPL-3?"](https://github.com/furrtek/SiliconRE/issues/40).**

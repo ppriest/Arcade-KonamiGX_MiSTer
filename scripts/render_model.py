@@ -61,6 +61,19 @@ REPO = Path(__file__).resolve().parent.parent
 # change this (opengolf, the type 3/4 boards) are out of the first scope.
 VIS_X0, VIS_Y0, VIS_W, VIS_H = 24, 16, 288, 224
 
+# The K053252's x offset per machine config (set_offsets): konamigx() 24,
+# dragoonj() 24 + 16. With the visible width (from the CRTC registers, as
+# MAME's screen has it) it places the window in bitmap coordinates.
+K053252_OFFSX = {"dragoonj": 40, "dragoona": 40,
+                 "winspike": 39, "winspikea": 39, "winspikej": 39}   # set_offsets(24+15, 16)
+
+
+def set_geometry(set_name, width, height):
+    """The visible window for this capture: module globals, which every
+    stage reads."""
+    global VIS_X0, VIS_W, VIS_H
+    VIS_X0, VIS_W, VIS_H = K053252_OFFSX.get(set_name, 24), width, height
+
 
 class Capture:
     """Everything a capture directory holds, decoded once."""
@@ -73,6 +86,8 @@ class Capture:
             man[k] = v
         self.manifest = man
         self.set = man.get("set", "?")
+        w, _, h = man.get("screen", "288x224").partition("x")
+        set_geometry(self.set, int(w), int(h))
 
         # Palette RAM at 0xd90000: 8192 dwords, big-endian, xRGB_888
         # (konamigx(): PALETTE(...).set_format(palette_device::xRGB_888, 8192)).
@@ -149,6 +164,14 @@ def k056832_pages(cap):
     error if the capture needs it.
     """
     pages = np.zeros((16, 4096), dtype=np.uint16)
+    direct = sorted(cap.path.glob("vram_direct_page*.bin"))
+    if len(direct) == 16:
+        # the pages read straight out of MAME at the end of the capture: the
+        # ground truth. The taps' bucketing by 0xd40033 put dragoonj's writes
+        # on the wrong pages (0-7 matched nowhere).
+        for page, f in enumerate(direct):
+            pages[page] = np.frombuffer(f.read_bytes()[:0x2000], dtype=">u2")
+        return pages
     for f in cap.path.glob("vram_bank*.bin"):
         bank = int(f.stem[len("vram_bank"):], 16)
         page = ((bank >> 1) & 0xc) | (bank & 3)
@@ -157,30 +180,50 @@ def k056832_pages(cap):
     return pages
 
 
-def k056832_tiles(set_name, bpp):
+# K056832 bit depth per set (konamigx.cpp machine configs, set_config's
+# first argument): konamigx() and its derivatives BPP_5; konamigx_6bpp
+# (tokkae, tkmmpzdm) and salmndr2 BPP_6; le2 and winspike BPP_8.
+TILE_BPP = {"tokkae": 6, "tkmmpzdm": 6, "salmndr2": 6, "salmndr2a": 6,
+            "le2": 8, "le2u": 8, "le2j": 8, "winspike": 8, "winspikea": 8, "winspikej": 8}
+
+# The row byte that holds each plane, most significant plane first: the
+# charlayout planes' bit offsets / 8 (k054156_k054157_k056832.cpp).
+#   charlayout5 {32, 24, 8, 16, 0}
+#   charlayout6 {40, 32, 24, 8, 16, 0}
+#   charlayout8 {8*7, 8*3, 8*5, 8*1, 8*6, 8*2, 8*4, 8*0}
+TILE_PLANES = {5: (4, 3, 1, 2, 0), 6: (5, 4, 3, 1, 2, 0), 8: (7, 3, 5, 1, 6, 2, 4, 0)}
+
+
+def k056832_tiles(set_name, bpp=None):
     """Decode the whole tile ROM to an (ntiles, 8, 8) array of pixel values.
 
-    5 bpp is charlayout5 in k054156_k054157_k056832.cpp: 40 bytes a tile,
-    5 bytes a row, plane bit offsets {32, 24, 8, 16, 0} MSB plane first, and
-    MAME's bit order is MSB-first within each byte. So for row byte b0..b4,
+    A tile is 8 rows of bpp bytes; MAME's bit order is MSB-first within each
+    byte, and TILE_PLANES says which byte holds which plane. For 5 bpp:
     pixel x = b4[x]<<4 | b3[x]<<3 | b1[x]<<2 | b2[x]<<1 | b0[x].
     """
-    if bpp != 5:
+    if bpp is None:
+        bpp = TILE_BPP.get(set_name, 5)
+    if bpp not in TILE_PLANES:
         raise SystemExit(f"K056832 {bpp} bpp not modelled yet")
     rom_path = REPO / "debug" / f"{set_name}-rom" / "k056832.bin"
     if not rom_path.exists():
         raise SystemExit(f"{rom_path} missing -- run scripts/build_rom_image.py "
                          f"{set_name} k056832")
     rom = np.frombuffer(rom_path.read_bytes(), dtype=np.uint8)
-    n = len(rom) // 40
-    rows = rom[:n * 40].reshape(n, 8, 5)
-    bits = np.unpackbits(rows[..., None], axis=-1)          # (n, 8, 5, 8), MSB first
-    return (bits[:, :, 4] << 4 | bits[:, :, 3] << 3 | bits[:, :, 1] << 2
-            | bits[:, :, 2] << 1 | bits[:, :, 0]).astype(np.uint8)
+    n = len(rom) // (8 * bpp)
+    rows = rom[:n * 8 * bpp].reshape(n, 8, bpp)
+    bits = np.unpackbits(rows[..., None], axis=-1)          # (n, 8, bpp, 8), MSB first
+    pix = np.zeros((n, 8, 8), dtype=np.uint8)
+    for byte in TILE_PLANES[bpp]:
+        pix = (pix << 1) | bits[:, :, byte]
+    return pix
 
 
-# common_init() in konamigx_v.cpp; every konamigx_5bpp set gets these.
+# common_init() in konamigx_v.cpp: every set gets these, and dragoonj's video
+# start then moves each layer one right (set_layer_offs(n, x + 1, 0)).
 LAYER_OFFS = [(-2, 0), (0, 0), (2, 0), (3, 0)]
+LAYER_OFFS_SET = {"dragoonj": [(-1, 0), (1, 0), (3, 0), (4, 0)],
+                  "dragoona": [(-1, 0), (1, 0), (3, 0), (4, 0)]}
 
 
 def layer_fields(cap, layer):
@@ -193,11 +236,16 @@ def layer_fields(cap, layer):
     anything else is an error rather than a wrong picture.
     """
     r = k056832_regs(cap)
-    if r[0] & 0x30:
-        raise SystemExit("K056832 screen flip not modelled yet")
+    if r[0] & 0x10:
+        raise SystemExit("K056832 screen flip X not modelled yet")
+    # flip Y (le2u, le2j): MAME's ORIENTATION_FLIP_Y turns the picture back,
+    # which is the unflipped rendering (checked against their captures)
     ls_mode = r[5] >> (2 * layer) & 3
+    # Mode 1 is "unused" in the chip's documentation, but MAME's switch takes
+    # it through the same default case as 3: no line scroll (gx_tilemap.sv
+    # reads it that way; Crazy Cross and tkmmpzdm set it)
     if ls_mode == 1:
-        raise SystemExit(f"layer {layer}: scroll mode 1 is unused in the chip's documentation")
+        ls_mode = 3
 
     rowstart, rowspan = r[8 + layer] >> 3 & 3, (r[8 + layer] & 3) + 1
     colstart, colspan = r[12 + layer] >> 3 & 3, (r[12 + layer] & 3) + 1
@@ -208,7 +256,7 @@ def layer_fields(cap, layer):
 
     # tilemap_draw_common: ay = (dy - offs_y) % height; the X scroll is dx plus
     # corr = -offs_x, and `sx = dx & (width - 1)`.
-    offs_x, offs_y = LAYER_OFFS[layer]
+    offs_x, offs_y = LAYER_OFFS_SET.get(cap.set, LAYER_OFFS)[layer]
     ay = (dy - offs_y) % height
     sx = (dx - offs_x) & (width - 1)
 
@@ -219,14 +267,21 @@ def layer_fields(cap, layer):
     # row -- and it replaces the layer's X scroll.
     if ls_mode != 3:
         ls_page = ((r[24] >> 3) & 3) << 2 | (r[24] & 3)
-        rows = (np.arange(VIS_H) + VIS_Y0 + ay) % height
+        # tilemap_draw_common's sdat_start: a layer one page tall reads the
+        # table from dy itself (not ay, the scroll wrapped to the layer's
+        # height), so dy 0x100 is the table's second half; a taller layer
+        # reads it by map row. The table holds 512 lines either way.
+        if rowspan == 1:
+            rows = (np.arange(VIS_H) + VIS_Y0 + dy) % 512
+        else:
+            rows = (np.arange(VIS_H) + VIS_Y0 + ay) % height
         if ls_mode == 2:
             rows = rows & ~7
         words = pages[ls_page, (layer * 0x400 + 2 * (rows % 512) + 1) % 4096].astype(np.int64)
         sx_line = (np.vectorize(s16)(words) - offs_x) & (width - 1)
     else:
         sx_line = None
-    tiles = k056832_tiles(cap.set, 5)
+    tiles = k056832_tiles(cap.set)
     fbits = r[3] >> 6 & 3
     flips, palm1, pals2, palm2 = [(6, 0x3f, 0, 0x00), (4, 0x0f, 2, 0x30),
                                   (2, 0x03, 2, 0x3c), (0, 0x00, 2, 0x3f)][fbits]
@@ -264,7 +319,10 @@ def stage_layer(cap, layer):
     """
     col6, pix = layer_fields(cap, layer)
     vcb = cap.k055555[23 + layer] << 6          # K55_PALBASE_A + layer
-    pal = col6 | vcb        # V INMIX ON = 0xff here: all six bits internal
+    # K055555GX_decode_vmixcolor: colour bits 5:4 reach the palette only where
+    # V INMIX ON passes them (salmndr2's layer D: not, they are its mix code)
+    von = cap.k055555[34] >> 2 * layer & 3
+    pal = (col6 & 0xf) | ((col6 >> 4 & von) << 4) | vcb
     # COLOUR GRANULARITY IS 16, WHATEVER THE BIT DEPTH. k054156_k054157_k056832.cpp
     # decodes the tiles with konami_decode_gfx -- which would give 32 for 5 bpp --
     # and then immediately overrides it: gfx(gfx_index)->set_granularity(16).
@@ -275,6 +333,25 @@ def stage_layer(cap, layer):
     pen = pal * 16 + pix
     rgb = cap.pal[pen]
     return rgb, pix != 0
+
+
+def layer_category(cap, layer):
+    """Each pixel's tile mix code, the tilemap category MAME 5c75784's tile
+    callback gives it: K055555GX_decode_vmixcolor's return, colour bits 5:4
+    where V INMIX ON does not route them to the palette and V INMIX's where
+    it does; 0 when V INMIX ON is 3 (no external code)."""
+    col6, _ = layer_fields(cap, layer)
+    von = cap.k055555[34] >> 2 * layer & 3
+    if von == 3:
+        return np.zeros_like(col6)
+    vmx = cap.k055555[33] >> 2 * layer & 3 & von
+    return ((col6 >> 4 & 3) & ~von & 3) | vmx
+
+
+def add_blend(d, s, level):
+    """gx_draw_tilemap_category's additive draw: the colour scaled by
+    (level + 1) >> 8 per channel, added and clamped (add_blend_r32)."""
+    return np.minimum(d + ((s * (level + 1)) >> 8), 255)
 
 
 def stage_tiles(cap):
@@ -328,6 +405,18 @@ SPRITE_CFG = {
     "mtwinbee": dict(dx=-26, dy=-23, primode=0),
     "sexyparo": dict(dx=-42, dy=-23, primode=0),   # sexyparo(): -42
     "sexyparoa": dict(dx=-42, dy=-23, primode=0),
+    "tokkae": dict(dx=-46, dy=-23, primode=5),     # konamigx_6bpp(): -46; primode 5
+    "tkmmpzdm": dict(dx=-46, dy=-23, primode=5),
+    "dragoonj": dict(dx=-53, dy=-23, primode=0),  # dragoonj(): LAYOUT_RNG -53
+    "dragoona": dict(dx=-53, dy=-23, primode=0),
+    "winspike": dict(dx=-53, dy=-23, primode=0),  # winspike(): LAYOUT_LE2 -53
+    "winspikea": dict(dx=-53, dy=-23, primode=0),
+    "winspikej": dict(dx=-53, dy=-23, primode=0),
+    "salmndr2": dict(dx=-48, dy=-23, primode=0),  # salmndr2(): LAYOUT_GX6 -48
+    "salmndr2a": dict(dx=-48, dy=-23, primode=0),
+    "le2": dict(dx=-46, dy=-23, primode=-1),      # le2(): LAYOUT_LE2 -46; primode -1
+    "le2u": dict(dx=-46, dy=-23, primode=-1),
+    "le2j": dict(dx=-46, dy=-23, primode=-1),
 }
 
 
@@ -335,31 +424,64 @@ def s16(v):
     return v - 0x10000 if v & 0x8000 else v
 
 
-def k055673_sprites(set_name):
-    """The sprite graphics, (n, 16, 16), assembled and decoded as MAME does.
+# K055673 set_config layout per set (konamigx.cpp machine configs): GX for
+# every konamigx() derivative unless listed; dragoonj RNG, salmndr2 GX6, le2
+# and winspike LE2. OBJ_BPP is each layout's depth.
+# the sprite callbacks that take the priority from the raw attribute
+# (gx_board_cfg obj_pri_raw): 1 dragoonj_sprite_callback, 2 salmndr2_
+# the sets MAME turns over (ORIENTATION_FLIP_Y), which flip their own screen
+ORIENT_FLIPY = ("le2u", "le2j")
+OBJ_PRI_RAW = {"dragoonj": 1, "dragoona": 1, "salmndr2": 2, "salmndr2a": 2}
+OBJ_LAYOUT = {"dragoonj": "RNG", "dragoona": "RNG", "salmndr2": "GX6", "salmndr2a": "GX6",
+              "le2": "LE2", "le2u": "LE2", "le2j": "LE2",
+              "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2"}
+OBJ_BPP = {"GX": 5, "RNG": 4, "GX6": 6, "LE2": 8}
 
-    K055673_LAYOUT_GX in k053246_k053247_k055673.cpp builds a 5 bpp image at
-    start-up: size4 = (region / 0x100000) / 5 * 0x400000, then for every 4
-    bytes of the 4 bpp area it emits those 4 bytes plus 1 from the 1 bpp area
-    at size4. That is then decoded with the GX spritelayout: 16 x 16, 160
-    bytes a sprite, 10 bytes a row with pixels 0-7 in bytes 0-4 and 8-15 in
-    bytes 5-9, plane bit offsets {32, 24, 16, 8, 0} -- NOT the tiles'
-    {32, 24, 8, 16, 0}; the two orders are easy to copy across by mistake.
+
+def obj_bpp(set_name):
+    return OBJ_BPP[OBJ_LAYOUT.get(set_name, "GX")]
+
+
+def k055673_halves(set_name):
+    """The sprite region as MAME decodes it, one half-row (8 pixels) a row of
+    the result, bpp bytes each: byte k is plane k in every layout.
+
+    GX: K055673_LAYOUT_GX builds a 5 bpp image at start-up -- size4 =
+    (region / 0x100000) / 5 * 0x400000, then for every 4 bytes of the 4 bpp
+    area those 4 bytes plus 1 from the 1 bpp area at size4 -- decoded with
+    spritelayout: 10 bytes a row, pixels 0-7 in bytes 0-4, 8-15 in 5-9, plane
+    offsets {32, 24, 16, 8, 0} (NOT the tiles' {32, 24, 8, 16, 0}).
+    RNG (spritelayout2), GX6 (spritelayout4) and LE2 (spritelayout3) decode
+    the region as it is: 8, 12 and 16 bytes a row, half-rows of 4, 6 and 8
+    bytes, planes {24..0}, {40..0}, {56..0} in steps of 8.
     """
     rom_path = REPO / "debug" / f"{set_name}-rom" / "k055673.bin"
     if not rom_path.exists():
         raise SystemExit(f"{rom_path} missing -- run scripts/build_rom_image.py "
                          f"{set_name} k055673")
     rom = np.frombuffer(rom_path.read_bytes(), dtype=np.uint8)
-    size4 = (len(rom) // 0x100000) // 5 * 0x400000
-    four = rom[:size4].reshape(-1, 4)
-    one = rom[size4:size4 + size4 // 4].reshape(-1, 1)
-    comb = np.concatenate([four, one], axis=1).reshape(-1)       # 5 bytes per 4
-    n = size4 // 128
-    groups = comb[:n * 160].reshape(n, 16, 2, 5)                 # row, half, byte
-    bits = np.unpackbits(groups[..., None], axis=-1)             # (n,16,2,5,8)
-    pix = (bits[:, :, :, 4] << 4 | bits[:, :, :, 3] << 3 | bits[:, :, :, 2] << 2
-           | bits[:, :, :, 1] << 1 | bits[:, :, :, 0])           # (n,16,2,8)
+    lay = OBJ_LAYOUT.get(set_name, "GX")
+    if lay == "GX":
+        size4 = (len(rom) // 0x100000) // 5 * 0x400000
+        four = rom[:size4].reshape(-1, 4)
+        one = rom[size4:size4 + size4 // 4].reshape(-1, 1)
+        halves = np.concatenate([four, one], axis=1)
+        return halves[:len(halves) // 32 * 32]
+    hb = OBJ_BPP[lay]
+    return rom[:len(rom) // (32 * hb) * (32 * hb)].reshape(-1, hb)
+
+
+def k055673_sprites(set_name):
+    """The sprite graphics, (n, 16, 16): k055673_halves, 32 half-rows a
+    sprite (row, half), MSB-first pixels, plane k from byte k."""
+    halves = k055673_halves(set_name)
+    hb = halves.shape[1]
+    n = len(halves) // 32
+    groups = halves.reshape(n, 16, 2, hb)                        # row, half, byte
+    bits = np.unpackbits(groups[..., None], axis=-1)             # (n,16,2,hb,8)
+    pix = np.zeros((n, 16, 2, 8), dtype=np.int32)
+    for k in range(hb):
+        pix |= bits[:, :, :, k].astype(np.int32) << k
     return pix.reshape(n, 16, 16).astype(np.uint8)
 
 
@@ -367,9 +489,13 @@ class SpriteRegs:
     """konamigx_precache_registers(), plus what the callbacks read."""
 
     def __init__(self, cap):
+        self.set = cap.set
         k46 = (cap.path / "reg_k053246.bin").read_bytes()
         k47b = (cap.path / "reg_k055673.bin").read_bytes()
         self.kx46 = list(k46[:8])                                # k053246_w: bytes
+        # a game that flips its screen in Y (K056832 m_regs[0] bit 5) for a
+        # monitor MAME turns back (ORIENTATION_FLIP_Y: le2u, le2j)
+        self.orient_flipy = bool(k056832_regs(cap)[0] & 0x20)
         self.kx47 = [int.from_bytes(k47b[2 * i:2 * i + 2], "big") for i in range(8)]
         self.wrport2 = cap.wrport[0x2001]                        # control_w: byte 1 of 0xd58000
         i = self.kx47[4]
@@ -402,11 +528,44 @@ class SpriteRegs:
     def type2_callback(self, code, color):
         code = self.vrcbk[code >> 14] | (code & 0x3fff)
         c18 = self.combine_c18(color)
+        if self.set in ("dragoonj", "dragoona"):
+            # dragoonj_sprite_callback: the priority from the raw attribute
+            pri = 4 if color & 0x200 else color >> 4 & 0xf
+            return code, self.objcolor(c18), pri & ~self.oinprion | (self.opri & self.oinprion)
+        if self.set in ("salmndr2", "salmndr2a"):
+            # salmndr2_sprite_callback: six bits of the raw attribute
+            pri = color >> 4 & 0x3f
+            return code, self.objcolor(c18), pri & ~self.oinprion | (self.opri & self.oinprion)
         return code, self.objcolor(c18), self.inpri(c18)
 
 
 XOFFSET = [0, 1, 4, 5, 16, 17, 20, 21]
 YOFFSET = [0, 2, 8, 10, 32, 34, 40, 42]
+
+
+def check_vbri(cap):
+    """K55_VBRI picks each layer's brightness from the K054338's BRI3 bytes
+    (set_brightness: mode 0 full, else m_brightness[mode - 1]). MAME applies
+    it as a palette contrast on EVERY pen while that layer draws, so what is
+    drawn after a dimmed layer is dimmed too; that is not modelled. A level
+    of 0xff is full brightness either way, and every capture so far that
+    sets VBRI (le2, tkmmpzdm) has all three levels at 0xff."""
+    k5, k3 = cap.k055555, cap.k054338
+    bri = [k3[11] & 0xff, k3[12] >> 8 & 0xff, k3[12] & 0xff]
+    for layer in range(4):
+        mode = k5[42] >> 2 * layer & 3
+        if mode and bri[mode - 1] != 0xff:
+            raise SystemExit(f"K055555 VBRI: layer {'ABCD'[layer]} at brightness "
+                             f"{bri[mode - 1]:#x} -- not modelled")
+
+
+def layer_priorities(cap):
+    """konamigx_mixer's layerpri: PRIINP_0, _3, _6, _7, _9, _10 -- except under
+    primode -1 (le2), where layer C takes PRIINP_3 + 0x20 ("Lethal Enforcer
+    hack (requires pixel color comparison)")."""
+    k5 = cap.k055555
+    c = (k5[10] + 0x20) & 0xff if SPRITE_CFG[cap.set]["primode"] == -1 else k5[13]
+    return [k5[7], k5[10], c, k5[14], k5[16], k5[17]]
 
 
 def mixer_shadow_setup(cap, layerpri_abcd):
@@ -493,9 +652,20 @@ def sprite_objects(cap, sr, primode, shadowon=(False, False, False), spri_min=0)
                          offs, code, color & 0xffff))
         if add_shadow:
             skipped["shadow"] += 1
-            pool.append((spri << 24 | zcode << 16 | offs << 5 | shadow_mode << 4 | shadow,
-                         offs, code, color & 0xffff))
+            obj = (spri << 24 | zcode << 16 | offs << 5 | shadow_mode << 4 | shadow,
+                   offs, code, color & 0xffff)
+            # MAME 5c75784: SHD PRI SEL conditions 1 and 2 are drawn after
+            # everything else, gated by the topmost screen's priority
+            if shd_pri_sel(cap, primode) >> (2 * shadow) & 3 in (1, 2):
+                skipped.setdefault("deferred", []).append(obj)
+            else:
+                pool.append(obj)
     return pool, skipped, spr
+
+
+def shd_pri_sel(cap, primode):
+    """K55_SHD_PRI_SEL, which primode -1 (le2) replaces with 0x3f."""
+    return 0x3f if primode == -1 else cap.k055555[41]
 
 
 def sort_pool(pool):
@@ -594,7 +764,14 @@ def sprite_blits(sr, cfg, spr, offs, code):
                 fy = flipy
             if nozoom:
                 zw = zh = 0x10
-            yield tc, fx, fy, sx, sy, zw, zh
+            if sr.orient_flipy:
+                # ORIENTATION_FLIP_Y turns MAME's whole bitmap over its
+                # visible rows: y -> 2 * VIS_Y0 + VIS_H - 1 - y
+                # the tile is sampled as MAME samples it (fy), then its rows
+                # are turned over (bit 1 of fy, for draw_sprite_tile)
+                yield tc, fx, int(bool(fy)) | 2, sx, 2 * VIS_Y0 + VIS_H - sy - zh, zw, zh
+            else:
+                yield tc, fx, fy, sx, sy, zw, zh
 
 
 class Canvas:
@@ -610,10 +787,14 @@ class Canvas:
         self.pen = np.zeros((VIS_H, VIS_W), dtype=np.int32)     # solid sprite pixels only
         self.pri = np.zeros((VIS_H, VIS_W), dtype=np.int32)
         self.offs = np.full((VIS_H, VIS_W), -1, dtype=np.int32)  # which sprite (RAM offset)
+        # the topmost screen's priority code (screen.priority() in MAME
+        # 5c75784's gx_draw_deferred_shadows), kept only while a frame has
+        # shadows under SHD PRI SEL conditions 1 or 2; 0xff is the back colour
+        self.top = None
 
 
 def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
-                     drawmode, z8, pri=0, shd_table=None, offs=-1, winner=None):
+                     drawmode, z8, pri=0, shd_table=None, offs=-1, winner=None, gate=None):
     """zdrawgfxzoom32GP with the z-buffer on (zcode >= 0), drawmodes 0, 1, 4, 5.
 
     dst size is zw x zh; the source is stepped in 13.19 fixed point at
@@ -627,15 +808,18 @@ def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
     w, h = zw, zh
     if w <= 0 or h <= 0:
         return
-    shdpen = 31
+    bpp = obj_bpp(cap.set)
+    shdpen = (1 << bpp) - 1                     # granularity - 1
     if drawmode == 5:
         drawmode, shdpen = 4, 1
     x_off = (np.arange(w) * ((16 << FP) // w)) >> FP
     y_off = (np.arange(h) * ((16 << FP) // h)) >> FP
     if fx:
         x_off = 15 - x_off
-    if fy:
+    if fy & 1:
         y_off = 15 - y_off
+    if fy & 2:                                  # ORIENTATION_FLIP_Y (sprite_blits)
+        y_off = y_off[::-1]
     src = gfx[code % len(gfx)][y_off[:, None], x_off[None, :]].astype(np.int32)
 
     dx0, dy0 = sx - VIS_X0, sy - VIS_Y0
@@ -655,14 +839,20 @@ def draw_sprite_tile(cv, cap, gfx, code, color, fx, fy, sx, sy, zw, zh,
         if winner is not None:              # stage_mix(one_sprite_pixel=True)
             draw &= winner[win] == offs
         zb[draw] = z8
-        rgb[draw] = cap.pal[(color % 256) * 32 + s[draw]]
+        # pal_base: pens + (color % colors) * granularity, colors = 8192 >> bpp
+        pens = (color % (8192 >> bpp)) * (1 << bpp) + s[draw]
+        rgb[draw] = cap.pal[pens]
         cv.opaque[win] |= draw
-        cv.pen[win][draw] = (color % 256) * 32 + s[draw]
+        cv.pen[win][draw] = pens
         cv.pri[win][draw] = pri
         cv.offs[win][draw] = offs
+        if cv.top is not None:
+            cv.top[win][draw] = pri
     else:
         sz, sp = cv.shd_z[win], cv.shd_pri[win]
         draw = (s >= shdpen) & ~(sz < z8) & ~(sp <= pri)
+        if gate is not None:                     # a deferred shadow (stage_mix)
+            draw &= gate[cv.top[win]]
         sz[draw] = z8
         sp[draw] = pri
         rgb[draw] = shd_table(rgb[draw])
@@ -741,12 +931,11 @@ def stage_mix(cap, one_sprite_pixel=False):
     disp = k5[45]
     if not disp or not (k3[15] & 0x01):                         # K338_CTL_KILL
         return cv.rgb.astype(np.uint8)
-    if k5[42]:
-        raise SystemExit("K055555 VBRI (layer brightness) not modelled")
+    check_vbri(cap)
     if k3[15] & 0x02:
         raise SystemExit("K054338 MIXPRI not modelled")
 
-    layerpri = [k5[7], k5[10], k5[13], k5[14], k5[16], k5[17]]
+    layerpri = layer_priorities(cap)
     shadowon, spri_min = mixer_shadow_setup(cap, layerpri[:4])
     noclip = bool(k3[15] & 0x20)
     tables = [shadow_table(k054338_shadow_deltas(cap, i), noclip) for i in range(3)]
@@ -765,7 +954,11 @@ def stage_mix(cap, one_sprite_pixel=False):
 
     sr = SpriteRegs(cap)
     gfx = k055673_sprites(cap.set)
-    spool, _, spr = sprite_objects(cap, sr, cfg["primode"], shadowon, spri_min)
+    spool, skipped, spr = sprite_objects(cap, sr, cfg["primode"], shadowon, spri_min)
+    deferred = skipped.get("deferred", [])
+    if deferred:
+        cv.top = np.full((VIS_H, VIS_W), 0xff, dtype=np.int32)
+    shd_on = k5[40]
     # one_sprite_pixel: draw each solid sprite only where it is the line
     # buffer's winner (stage_sprites_only), as the hardware hands the mixer one
     # sprite pixel per position. Equal to MAME if its shared z-buffer never
@@ -786,22 +979,46 @@ def stage_mix(cap, one_sprite_pixel=False):
         layer = code
         if not disp >> layer & 1:
             continue
-        # gx_draw_basic_tilemaps: the internal mix code from the K055555, and
-        # MAME's hack that turns an additive level into an inverted alpha.
-        mix = (k5[33] >> 2 * layer & 3) & (k5[34] >> 2 * layer & 3)
-        alpha = k054338_alpha_level(cap, mix) & 0x1ff
-        if alpha & 0x100:
-            alpha &= 0xff
-            if alpha:
-                alpha = ~alpha & 0xff
+        # MAME 5c75784 gx_draw_basic_tilemaps: four categories, each at its own
+        # K054338 level -- category 0 at the layer's internal code (V INMIX &
+        # V INMIX ON), 1-3 at the tile's own; an alpha level blends, an
+        # additive one adds. While deferred shadows are pending the layer
+        # records its priority as the topmost screen, or 0xff where SHD ON
+        # keeps shadows off it.
         if layer not in layers:
-            layers[layer] = stage_layer(cap, layer)
-        rgb, opq = layers[layer]
+            layers[layer] = stage_layer(cap, layer) + (layer_category(cap, layer),)
+        rgb, opq, cat = layers[layer]
         src = rgb.astype(np.int32)
-        if alpha < 255:
-            cv.rgb[opq] = alpha_blend(cv.rgb[opq], src[opq], alpha)
-        else:
-            cv.rgb[opq] = src[opq]
+        topv = (order >> 24 & 0xff) if shd_on >> layer & 1 else 0xff
+        for c in range(4):
+            mix = (k5[33] >> 2 * layer & 3) & (k5[34] >> 2 * layer & 3) if c == 0 else c
+            level = k054338_alpha_level(cap, mix)
+            alpha = level & 0xff
+            m = opq & (cat == c)
+            if not level & 0x100:
+                if alpha == 0:
+                    continue
+                if alpha < 255:
+                    cv.rgb[m] = alpha_blend(cv.rgb[m], src[m], alpha)
+                else:
+                    cv.rgb[m] = src[m]
+            else:
+                cv.rgb[m] = add_blend(cv.rgb[m], src[m], alpha)
+            if cv.top is not None:
+                cv.top[m] = topv
+    # gx_draw_deferred_shadows: in the pool's order, each gated by its
+    # condition against the topmost screen -- 1: the shadow's priority above
+    # it, 2: equal; never over the back colour or a layer SHD ON keeps clear
+    if deferred and disp & 0x10:
+        sel = shd_pri_sel(cap, cfg["primode"])
+        for order, offs, code, color in sort_pool(deferred):
+            spri, shadow = order >> 24 & 0xff, order & 3
+            p = np.arange(256)
+            gate = (p == spri) if sel >> (2 * shadow) & 3 == 2 else (spri > p)
+            gate[0xff] = False
+            for blit in sprite_blits(sr, cfg, spr, offs, code):
+                draw_sprite_tile(cv, cap, gfx, blit[0], color, *blit[1:], order >> 4 & 0xf,
+                                 order >> 16 & 0xff, spri, tables[shadow], offs=offs, gate=gate)
     return cv.rgb.astype(np.uint8)
 
 
@@ -823,7 +1040,7 @@ def mix_sources(cap, shadow_ids=False):
     cfg = SPRITE_CFG[cap.set]
     k5, k3 = cap.k055555, cap.k054338
     disp = k5[45]
-    layerpri = [k5[7], k5[10], k5[13], k5[14], k5[16], k5[17]]
+    layerpri = layer_priorities(cap)
     shadowon, spri_min = mixer_shadow_setup(cap, layerpri[:4])
     layerid = list(range(6))
     lp = layerpri[:]
@@ -896,8 +1113,7 @@ def stage_mix_hw(cap):
     out = stage_bg(cap).astype(np.int32)
     if not k5[45] or not (k3[15] & 0x01):
         return out.astype(np.uint8)
-    if k5[42]:
-        raise SystemExit("K055555 VBRI (layer brightness) not modelled")
+    check_vbri(cap)
     src, (shrank, shcode, shcount) = mix_sources(cap)
     if (shcount > 1).any():
         raise SystemExit("more than one shadow on a pixel: not modelled")

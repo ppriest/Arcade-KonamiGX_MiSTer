@@ -66,6 +66,8 @@ module gx_sdram_top (
     input  wire [25:0] obj_base,
     input  wire [23:0] tile_size4,    // bytes in each region's four-byte part
     input  wire [23:0] obj_size4,
+    input  wire  [1:0] tile_bpp,
+    input  wire  [1:0] obj_layout,    // K055673: 0 GX, 1 RNG, 2 GX6, 3 LE2 (see the download)      // 0: 5 bpp, 1: 6 bpp (a two-byte second part), 2: 8 bpp (rows as they come)
 
     // clients, clk: the video benches' ROM model contract (gx_rom_port)
     input  wire        cpu_cs,        // gx_romcache: a granule of the packed image
@@ -76,12 +78,12 @@ module gx_sdram_top (
     input  wire        tile_cs,       // gx_tilemap: its rom_addr, a row index
     input  wire [20:0] tile_addr,
     output wire        tile_ok,
-    output wire [39:0] tile_data,
+    output wire [63:0] tile_data,     // the row's bytes, byte 0 in [63:56]
 
     input  wire        obj_cs,        // gx_obj: its rom_addr, a half-row index ([4:0] within a tile)
-    input  wire [19:0] obj_addr,
+    input  wire [21:0] obj_addr,      // half-row: 4M of them in dragoonj's 16 MB at 4 bpp
     input  wire        obj_pf_cs,     // and the half-row it will ask for next
-    input  wire [19:0] obj_pf_addr,
+    input  wire [21:0] obj_pf_addr,
 
     // the CPU reading graphics ROM back through the chips' own windows
     // (0xd00000, 0xd4a000): an absolute granule of the image, on the chip
@@ -103,15 +105,23 @@ module gx_sdram_top (
     input  wire [15:0] snd_wdata,
     input  wire        snd_we16,
     output wire        snd_wbusy,
-    // the TMS57002's RAM, granules from snd_base + 0x450000; inval after
+    input  wire [23:0] snd_pcm,       // the sample area's size: the sound RAMs follow it
+    // the TMS57002's RAM, granules from snd_base + 0x50000 + snd_pcm; inval after
     // each of its writes
     input  wire        dsp_cs,
     input  wire [14:0] dsp_addr,
     output wire        dsp_ok,
     output wire [63:0] dsp_data,
     input  wire        dsp_inval,
+    // the K054539s' voices and reverb: granules from the sample region
+    // (snd_base + 0x40000) on, their RAM after it
+    input  wire        pcm_cs,
+    input  wire [20:0] pcm_addr,
+    output wire        pcm_ok,
+    output wire [63:0] pcm_data,
+    input  wire        pcm_inval,
     output wire        obj_ok,
-    output wire [39:0] obj_data
+    output wire [63:0] obj_data       // the half-row's bytes, byte 0 in [63:56]
 );
 
 localparam logic [25:0] BASE_MAINCPU = 26'h000_0000;
@@ -119,7 +129,23 @@ localparam logic [25:0] BASE_MAINCPU = 26'h000_0000;
 // ------------------------------------------------------------ download
 // The stream address to the SDRAM address: the graphics regions spread.
 // A region's stream is 5/8 of its spread, so it ends before the next base.
-wire [25:0] s       = ioctl_addr[25:0];
+//
+// Two register stages: the ioctl byte is registered (stage 1), the address
+// transform and the fits check work from that, and their result is
+// registered again (stage 2). One stage failed timing at 96 MHz by 0.18 ns
+// once the tile spread had a case per bit depth (build 50).
+logic [26:0] io_addr_q;
+logic        io_wr_q, io_dl_q;
+logic [15:0] io_index_q;
+logic  [7:0] io_dout_q;
+always_ff @(posedge clk_mem) begin
+    io_addr_q  <= ioctl_addr;
+    io_wr_q    <= ioctl_wr;
+    io_dl_q    <= ioctl_download;
+    io_index_q <= ioctl_index;
+    io_dout_q  <= ioctl_dout;
+end
+wire [25:0] s       = io_addr_q[25:0];
 // The sound board's ROMs follow the sprite region's spread, stored as they
 // come (the stream address is the SDRAM address): the sound CPU's program
 // at snd_base, the K054539 samples after it. Without the upper bound the
@@ -132,9 +158,23 @@ wire [25:0] base    = in_tile ? tile_base : obj_base;
 wire [23:0] size4   = in_tile ? tile_size4 : obj_size4;
 wire [25:0] off     = s - base;
 wire [25:0] off1    = off - { 2'd0, size4 };                 // within the one-byte part
-wire [25:0] spread  = off < { 2'd0, size4 } ? base + { off[24:2], 3'b000 } + { 24'd0, off[1:0] }
+// The tile region's second part is one byte a row at 5 bpp (TILE_BYTE) and
+// two at 6 bpp (TILE_BYTES2, bytes 4-5 of the row); at 8 bpp the .mra carries
+// the rows whole, eight bytes each, so they are stored as they come.
+//
+// The sprite region by K055673 layout: GX a four-byte part and a one-byte
+// part, as the tiles at 5 bpp; GX6 a four-byte part and a two-byte part
+// (build_mra splits the three _48_WORD ROMs so), as the tiles at 6 bpp; RNG
+// (4 bytes a half-row, two a granule) and LE2 (8 bytes a half-row) as they
+// come, obj_size4 then being half the region so that snd_base still follows
+// it.
+wire        two1    = in_tile ? tile_bpp == 2'd1 : obj_layout == 2'd2;
+wire        verb    = in_tile ? tile_bpp == 2'd2 : obj_layout[0];   // RNG, LE2
+wire [25:0] spread  = verb ? s :
+                      off < { 2'd0, size4 } ? base + { off[24:2], 3'b000 } + { 24'd0, off[1:0] } :
+                      two1                  ? base + { off1[23:1], 3'b000 } + 26'd4 + { 25'd0, off1[0] }
                                             : base + { off1[22:0], 3'b000 } + 26'd4;
-wire [26:0] dl_addr_c = (in_tile || in_obj) ? { 1'b0, spread } : ioctl_addr;
+wire [26:0] dl_addr_c = (in_tile || in_obj) ? { 1'b0, spread } : io_addr_q;
 
 // A region's one-byte part is spread eight times as wide as the stream that
 // carries it, and the .mra pads each region to its nominal size -- so once
@@ -159,18 +199,18 @@ logic [15:0] dl_index_q;
 logic  [7:0] dl_dout_q;
 always_ff @(posedge clk_mem) begin
     dl_addr_q  <= dl_addr_c;
-    dl_wr_q    <= ioctl_wr && dl_fits;
-    dl_dl_q    <= ioctl_download;
-    dl_index_q <= ioctl_index;
-    dl_dout_q  <= ioctl_dout;
+    dl_wr_q    <= io_wr_q && dl_fits;
+    dl_dl_q    <= io_dl_q;
+    dl_index_q <= io_index_q;
+    dl_dout_q  <= io_dout_q;
 end
 
 wire        dl_req, dl_we16, dl_busy, dl_wait;
 wire [25:0] dl_addr;
 wire [15:0] dl_data;
-// the byte in the pipeline register counts too, so a byte pushed on the
+// the bytes in the pipeline registers count too, so a byte pushed on the
 // clock after another's is held off (the HPS is slower; a bench need not be)
-assign ioctl_wait = dl_wait | ioctl_wr | dl_wr_q;
+assign ioctl_wait = dl_wait | ioctl_wr | io_wr_q | dl_wr_q;
 
 sdram_download u_dl (
     .clk(clk_mem), .reset(reset),
@@ -207,11 +247,11 @@ sdram u_sdram (
 // K056832 and K055673 windows, and a read there is rare -- once a boot --
 // so it gets the port the tile and sprite drawing do not use, and never
 // waits behind them.
-wire [2:0]  arb1_req, arb1_valid;
-wire [77:0] arb1_addr;
+wire [3:0]  arb1_req, arb1_valid;
+wire [103:0] arb1_addr;
 wire [63:0] arb1_rdata;
 
-sdram_arbiter #(.N(3)) u_arb1 (
+sdram_arbiter #(.N(4)) u_arb1 (
     .clk(clk_mem), .reset(reset),
     .port_addr(p_addr[1]), .port_wrl(p_wrl[1]), .port_wrh(p_wrh[1]),
     .port_din(p_din[1]), .port_dout(p_dout[1]),
@@ -226,7 +266,7 @@ sdram_arbiter #(.N(3)) u_arb1 (
 gx_rom_port #(.AW(23)) u_gfx (
     .clk, .clk_mem, .rst(reset),
     .cs(gfx_cs), .addr(gfx_addr), .ok(gfx_ok), .data(gfx_data),
-    .hint_cs(1'b0), .hint_addr(23'd0), .inval(1'b0),
+    .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(1'b0),
     .base(26'd0),
     .c_req(arb1_req[0]), .c_addr(arb1_addr[25:0]), .c_valid(arb1_valid[0]), .c_rdata(arb1_rdata)
 );
@@ -234,7 +274,7 @@ gx_rom_port #(.AW(23)) u_gfx (
 gx_rom_port #(.AW(23)) u_snd (
     .clk, .clk_mem, .rst(reset),
     .cs(snd_cs), .addr(snd_addr), .ok(snd_ok), .data(snd_data),
-    .hint_cs(1'b0), .hint_addr(23'd0), .inval(snd_inval),
+    .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(snd_inval),
     .base(26'd0),
     .c_req(arb1_req[1]), .c_addr(arb1_addr[51:26]), .c_valid(arb1_valid[1]), .c_rdata(arb1_rdata)
 );
@@ -242,9 +282,18 @@ gx_rom_port #(.AW(23)) u_snd (
 gx_rom_port #(.AW(15)) u_dsp (
     .clk, .clk_mem, .rst(reset),
     .cs(dsp_cs), .addr(dsp_addr), .ok(dsp_ok), .data(dsp_data),
-    .hint_cs(1'b0), .hint_addr(15'd0), .inval(dsp_inval),
-    .base(snd_base + 26'h450000),
+    .hint_cs(1'b0), .hint_addr(15'd0), .halfsel(1'b0), .inval(dsp_inval),
+    .base(snd_base + 26'h050000 + { 2'd0, snd_pcm }),
     .c_req(arb1_req[2]), .c_addr(arb1_addr[77:52]), .c_valid(arb1_valid[2]), .c_rdata(arb1_rdata)
+);
+
+// the voices keep a granule per channel themselves (gx_k054539), so one here
+gx_rom_port #(.AW(21), .NS(1)) u_pcm (
+    .clk, .clk_mem, .rst(reset),
+    .cs(pcm_cs), .addr(pcm_addr), .ok(pcm_ok), .data(pcm_data),
+    .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(pcm_inval),
+    .base(snd_base + 26'h040000),
+    .c_req(arb1_req[3]), .c_addr(arb1_addr[103:78]), .c_valid(arb1_valid[3]), .c_rdata(arb1_rdata)
 );
 
 // ------------------------------------------------------------ port 0: graphics
@@ -266,20 +315,22 @@ sdram_arbiter #(.N(2)) u_arb0 (
 gx_rom_port #(.AW(21)) u_tile (
     .clk, .clk_mem, .rst(reset),
     .cs(tile_cs), .addr(tile_addr), .ok(tile_ok), .data(tile_g),
-    .hint_cs(1'b0), .hint_addr(21'd0), .inval(1'b0),
+    .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(1'b0),
     .base(tile_base),
     .c_req(arb0_req[0]), .c_addr(arb0_addr[25:0]), .c_valid(arb0_valid[0]), .c_rdata(arb0_rdata)
 );
-gx_rom_port #(.AW(20), .PAIR(1)) u_obj (
+gx_rom_port #(.AW(22), .PAIR(1)) u_obj (
     .clk, .clk_mem, .rst(reset),
     .cs(obj_cs), .addr(obj_addr), .ok(obj_ok), .data(obj_g),
-    .hint_cs(obj_pf_cs), .hint_addr(obj_pf_addr), .inval(1'b0),
+    .hint_cs(obj_pf_cs), .hint_addr(obj_pf_addr), .inval(1'b0), .halfsel(obj_layout == 2'd1),
     .base(obj_base),
     .c_req(arb0_req[1]), .c_addr(arb0_addr[51:26]), .c_valid(arb0_valid[1]), .c_rdata(arb0_rdata)
 );
 // a row's five bytes, in the order the benches' rom.hex holds them
-assign tile_data = { tile_g[7:0], tile_g[15:8], tile_g[23:16], tile_g[31:24], tile_g[39:32] };
-assign obj_data  = { obj_g[7:0],  obj_g[15:8],  obj_g[23:16],  obj_g[31:24],  obj_g[39:32]  };
+assign tile_data = { tile_g[7:0], tile_g[15:8], tile_g[23:16], tile_g[31:24],
+                      tile_g[39:32], tile_g[47:40], tile_g[55:48], tile_g[63:56] };
+assign obj_data  = { obj_g[7:0],  obj_g[15:8],  obj_g[23:16],  obj_g[31:24],
+                      obj_g[39:32], obj_g[47:40], obj_g[55:48], obj_g[63:56] };
 
 // ------------------------------------------------------------ port 2: CPU, download
 wire [0:0]  arb2_req, arb2_valid;
@@ -299,7 +350,7 @@ sdram_arbiter #(.N(1)) u_arb2 (
 gx_rom_port #(.AW(20)) u_cpu (
     .clk, .clk_mem, .rst(reset),
     .cs(cpu_cs), .addr(cpu_addr), .ok(cpu_ok), .data(cpu_data),
-    .hint_cs(1'b0), .hint_addr(20'd0), .inval(1'b0),
+    .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
     .base(BASE_MAINCPU),
     .c_req(arb2_req[0]), .c_addr(arb2_addr), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata)
 );

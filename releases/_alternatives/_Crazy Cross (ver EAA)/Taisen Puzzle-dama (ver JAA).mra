@@ -2,6 +2,7 @@
     <name>Taisen Puzzle-dama (ver JAA)</name>
     <setname>puzldama</setname>
     <rbf>KonamiGX</rbf>
+    <mameversion>0289</mameversion>
     <year>1994</year>
     <manufacturer>Konami</manufacturer>
     <category>Arcade</category>
@@ -20,11 +21,11 @@
             <part name="315jaa02.31b" crc="e0a35c7d" map="1200"/>
         </interleave>
         <part repeat="2">00</part>
-        <!-- k056832: the four-byte part of each 5-byte row, then the fifth bytes (the core spreads rows to 8) -->
+        <!-- k056832: the four-byte part of each 5-byte row, then the last 1 byte of each (the core spreads rows to 8) -->
         <part repeat="917502">00</part>
         <part name="315a14.17h" crc="0ab731e0"/>  <!-- four-byte part -->
         <part repeat="7864320">00</part>
-        <part name="315a12.13g" crc="3047b8d2"/>  <!-- fifth bytes -->
+        <part name="315a12.13g" crc="3047b8d2"/>  <!-- second part -->
         <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->
         <part repeat="6291456">00</part>
         <interleave output="32">
@@ -53,5 +54,5 @@
         <dip name="Flip Screen" bits="2" ids="On,Off"/>
     </switches>
 
-    <buttons names="Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service" default="A,B,X,Start,Select,L,R" count="3"/>
+    <buttons names="Rotate,-,-,-,-,-,Start,Coin,Pause,Service" default="A,Start,Select,L,R" count="1"/>
 </misterromdescription>

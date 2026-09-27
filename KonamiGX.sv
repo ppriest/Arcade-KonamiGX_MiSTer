@@ -43,9 +43,11 @@ assign HDMI_FREEZE = 0;
 assign HDMI_BLACKOUT = 0;
 assign HDMI_BOB_DEINT = 0;
 
-assign AUDIO_S = 0;
-assign AUDIO_L = 0;
-assign AUDIO_R = 0;
+// the sound board's output (gx_sound): signed, stereo
+wire [15:0] snd_aud_l, snd_aud_r;
+assign AUDIO_S = 1;
+assign AUDIO_L = snd_aud_l;
+assign AUDIO_R = snd_aud_r;
 assign AUDIO_MIX = 0;
 
 assign LED_DISK  = 0;
@@ -79,17 +81,30 @@ localparam CONF_STR = {
 	// is for a rotated monitor, not for the game.
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
-	// Phase 3a, until the sound 68000 is proven on the board: Stub is the
-	// stand-in built from Daisu-Kiss's power-on test, which the games that
-	// run today depend on; 68000 runs the real sound program
-	"O[66],Sound board,Stub,68000;",
+	// 68000 runs the real sound program, the default: Winning Spike's and
+	// Tokimeki's power-on tests mark every RAM BAD without it. Stub is the
+	// stand-in built from Daisu-Kiss's power-on test (status bit set)
+	"O[66],Sound board,68000,Stub;",
+	// the sound 68000's bus cycles into DDR3 (rtl/gx_trace.sv), read back
+	// with scripts/snd_trace.py
+	"O[67],Sound trace,Off,On;",
+	// le2's guns (H1: shown for the gun sets): MAME's crosshair where each
+	// gun points; the left stick per player -- Auto moves a pushed-full axis
+	// as the d-pad does (arcade sticks on gamepad encoders), Aim is always
+	// absolute (light guns), D-pad moves on any deflection; the mouse aims
+	// for one player (rtl/gx_guns.sv)
+	"H1O[68],Crosshair,Off,On;",
+	"H1O[70:69],P1 stick,Auto,Aim,D-pad;",
+	"H1O[72:71],P2 stick,Auto,Aim,D-pad;",
+	"H1O[74:73],Mouse aims,P1,P2,Off;",
 	"-;",
 	"DIP;",
 	"-;",
 	"R[0],Reset and close OSD;",
 	// positional: bit 4 + i (Arcade-Seta_MiSTer's layout, LESSONS_LEARNED);
 	// the .mra's <buttons> lists the same
-	"J1,Button 1,Button 2,Button 3,-,-,-,Start,Coin,Pause,Service;",
+	// le2: button 1 is the trigger, button 2 a reload (a shot off the screen)
+	"J1,Button 1,Button 2,Button 3,Button 4,Button 5,Button 6,Start,Coin,Pause,Service;",
 	"jn,A,B,X,-,-,-,Start,Select,L,R;",
 	"V,v",`BUILD_DATE
 };
@@ -100,6 +115,11 @@ wire [127:0] status;
 wire  [21:0] gamma_bus;
 
 wire [31:0] joystick_0, joystick_1;
+wire [15:0] joystick_l_analog_0, joystick_l_analog_1;
+wire [24:0] ps2_mouse;
+wire [31:0] gun_h, gun_v;               // gx_guns, below
+wire  [1:0] gun_trig;
+wire        guns;                       // the set has le2's guns (gx_board_cfg)
 
 wire        ioctl_download;
 wire [15:0] ioctl_index;
@@ -119,10 +139,13 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask(16'd0),
+	.status_menumask({ 14'd0, ~guns, 1'b0 }),     // H1: the gun options
 
 	.joystick_0(joystick_0),
 	.joystick_1(joystick_1),
+	.joystick_l_analog_0(joystick_l_analog_0),
+	.joystick_l_analog_1(joystick_l_analog_1),
+	.ps2_mouse(ps2_mouse),
 
 	.ioctl_download(ioctl_download),
 	.ioctl_index(ioctl_index),
@@ -190,7 +213,9 @@ always @(posedge clk_sys)
 // reset into the board's clock, held long
 reg [3:0] rst_sr = 4'hf;
 always @(posedge clk_vid) rst_sr <= { rst_sr[2:0], core_reset };
-wire rst_vid = |rst_sr;
+// and then while gx_snd_clear zeroes the sound board's RAMs (below)
+wire clr_busy;
+wire rst_vid = |rst_sr | clr_busy;
 
 // which ROM-load path ran, and how long the DDR3 copy took (probe K)
 reg [25:0] ldr_cycles = 0;       // clk_sys cycles while copying
@@ -205,7 +230,7 @@ end
 ///////////////////////   MEMORY   ///////////////////////////////
 
 wire [25:0] tile_base, obj_base;
-wire [23:0] tile_size4, obj_size4;
+wire [23:0] tile_size4, obj_size4, snd_pcm;
 
 // the fast load: DDR3 (0x30000000) to the download port as a byte stream
 wire        ldr_ddr_req, ldr_ddr_busy, ldr_ddr_valid, ldr_wr, mem_wait;
@@ -232,7 +257,7 @@ gx_rom_loader u_ldr (
 	// the stream ends after the sound board's ROMs: snd_base (where the
 	// sprite spread ends) + the sound program's 0x40000 + the samples'
 	// 0x400000 (build_mra's SND_CPU and SND_PCM)
-	.length({ 2'd0, obj_base + { 1'b0, obj_size4, 1'b0 } + 26'h440000 }),
+	.length({ 2'd0, obj_base + { 1'b0, obj_size4, 1'b0 } + 26'h040000 + { 2'd0, snd_pcm } }),
 	.start(ldr_start), .busy(ldr_busy),
 	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
 	.ddr_valid(ldr_ddr_valid), .ddr_rdata(ldr_ddr_rdata),
@@ -246,12 +271,16 @@ wire  [7:0] m_dout     = ldr_busy ? ldr_dout : ioctl_dout;
 assign ioctl_wait = mem_wait;
 wire signed [7:0] offs_x [4], offs_y [4];
 wire  [3:0] primode;
-wire        esc_gen;
+wire  [1:0] tile_bpp, obj_layout;
+wire  [1:0] obj_pri_raw;
+wire  [9:0] vis_x0;
+wire  [8:0] vis_w;
+wire        esc_gen, esc_copy, prot4, esc_sal2, tile_rb66, orient_fy, fj_dma;
 wire  [9:0] obj_hadj;
 wire [23:0] esc_src;
 wire  [8:0] esc_count;
-gx_board_cfg u_cfg ( .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .offs_x, .offs_y, .primode,
-                     .obj_hadj, .esc_gen, .esc_src, .esc_count );
+gx_board_cfg u_cfg ( .clk(clk_sys), .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w,
+                     .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma );
 
 wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
@@ -260,6 +289,10 @@ wire [23:0] tile_rom_addr;
 wire [22:0] obj_rom_addr, obj_pf_addr;
 // the sound board's SDRAM client (gx_sound, below)
 wire        snd_cs, snd_ok, snd_inval, snd_wreq, snd_wbusy;
+// gx_sound's own, before gx_snd_clear's are muxed in
+wire        s_inval, s_wreq, s_we16, x_inval_s, p_inval_s;
+wire [25:0] s_waddr;
+wire [15:0] s_wdata;
 wire [22:0] snd_maddr;
 wire [63:0] snd_mdata;
 wire [25:0] snd_waddr;
@@ -267,13 +300,17 @@ wire [15:0] snd_wdata;
 wire        snd_we16;
 // the DSP's RAM (gx_tms57002 through gx_sound)
 wire        dsp_cs, dsp_ok, dsp_inval;
+// the K054539s' voices' sample reads (gx_sound)
+wire        pcm_cs, pcm_ok, pcm_inval;
+wire [20:0] pcm_addr;
+wire [63:0] pcm_data;
 wire [14:0] dsp_addr;
 wire [63:0] dsp_data;
 wire        gfx_cs, gfx_ok;
 wire [22:0] gfx_addr;
 wire [63:0] gfx_data;
 wire        obj_pf_cs;
-wire [39:0] tile_rom_data, obj_rom_data;
+wire [63:0] tile_rom_data, obj_rom_data;
 
 gx_sdram_top u_mem (
 	.clk(clk_vid), .clk_mem(clk_sys), .reset(mem_reset), .init(~pll_locked),
@@ -281,17 +318,18 @@ gx_sdram_top u_mem (
 	.SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS, .SDRAM_CKE, .SDRAM_CLK(),
 	.ioctl_download(m_download), .ioctl_index(m_index), .ioctl_wr(m_wr), .ioctl_addr(m_addr),
 	.ioctl_dout(m_dout), .ioctl_wait(mem_wait),
-	.tile_base, .obj_base, .tile_size4, .obj_size4,
+	.tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .tile_bpp, .obj_layout,
 	.cpu_cs(rom_cs), .cpu_addr(rom_addr), .cpu_ok(rom_ok), .cpu_data(rom_data),
 	// gx_tilemap's rom_addr is a row index and gx_obj's a half-row index (the
 	// video benches' ROM models); each is one granule
 	.tile_cs(tile_rom_cs), .tile_addr(tile_rom_addr[20:0]), .tile_ok(tile_rom_ok), .tile_data(tile_rom_data),
-	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[19:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data),
-	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[19:0]),
+	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[21:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data),
+	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[21:0]),
 	.gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
 	.snd_cs, .snd_addr(snd_maddr), .snd_ok, .snd_data(snd_mdata), .snd_inval,
 	.snd_wreq, .snd_waddr, .snd_wdata, .snd_we16, .snd_wbusy,
-	.dsp_cs, .dsp_addr, .dsp_ok, .dsp_data, .dsp_inval
+	.dsp_cs, .dsp_addr, .dsp_ok, .dsp_data, .dsp_inval,
+	.pcm_cs, .pcm_addr, .pcm_ok, .pcm_data, .pcm_inval
 );
 
 ///////////////////////   INPUTS   ///////////////////////////////
@@ -301,16 +339,24 @@ gx_sdram_top u_mem (
 // B1 B2 B3 at 4-6, Start 10, Coin 11, Pause 12, Service 13.
 
 function [7:0] player( input [31:0] j );
-	player = ~{ j[10], j[6], j[5], j[4], j[3], j[2], j[0], j[1] };   // start, B3, B2, B1, down, up, right, left
+	// MAME bit 2 is up and bit 3 down; MiSTer's joystick bit 3 is up and 2
+	// down (it had them the other way round: up and down were swapped)
+	player = ~{ j[10], j[6], j[5], j[4], j[2], j[3], j[0], j[1] };   // start, B3, B2, B1, down, up, right, left
 endfunction
 
-wire [31:0] inputs  = { player(joystick_0), player(joystick_1), 16'hffff };
+// the low half is players 3 and 4 on the common port; dragoonj puts buttons
+// 4-6 there (player 1 at bits 12-14, player 2 at 8-10), from joystick bits
+// 7-9. Unpressed they read 1, as the 3/4-player inputs no set here uses.
+wire [31:0] inputs  = { player(joystick_0), player(joystick_1),
+                        1'b1, ~joystick_0[9], ~joystick_0[8], ~joystick_0[7],
+                        1'b1, ~joystick_1[9], ~joystick_1[8], ~joystick_1[7], 8'hff };
 // 0xd5a002: coins and service switches, active low, except bit 7: the gokuparo
 // port set every set here uses declares SYSTEM_DSW bit 15 active HIGH, so it
 // reads 0 (MAME reads 0xFEFF7FF7 idle; the bench gives the same). With it
 // high Twin Bee Yahhoo! failed its EEPROM check on the board.
 wire  [7:0] coins   = { 1'b0, ~{ 1'b0, 2'b00, 2'b00, joystick_1[11], joystick_0[11] } };  // bit 0 coin 1, bit 1 coin 2
-wire  [7:0] service = ~{ 4'b0000, joystick_0[13] | joystick_1[13], 3'b000 };          // bit 3: the service switch
+// bit 3: the service switch; bit 2: le2's player 1 trigger (SERVICE 0x04000000)
+wire  [7:0] service = ~{ 4'b0000, joystick_0[13] | joystick_1[13], guns & gun_trig[0], 2'b00 };
 
 // The 93C46: blank (swept to all ones) from configuration until the ROM
 // download starts, then the set's default image (ioctl index 2, the .mra's
@@ -354,7 +400,8 @@ always @(posedge clk_vid) lvbl_q <= vid_lvbl;
 // The sound board. Stub: gx_snd_stub, answering Daisu-Kiss's power-on test.
 // 68000: the K056800 with the sound CPU behind it running the real program
 // (Phase 3a), held in reset until the main CPU releases it.
-wire        snd_real = status[66];
+wire        snd_real = ~status[66];
+wire        snd_trace_en = status[67];
 wire        snd_run;
 wire  [7:0] stub_din, k8_host;
 gx_snd_stub u_snd ( .clk(clk_vid), .rst(rst_vid), .frame(lvbl_q & ~vid_lvbl),
@@ -373,22 +420,45 @@ gx_k056800 u_k056800 (
 	.irq(k8_irq), .dbg(k8_dbg)
 );
 
-wire [63:0] snd_dbg, dsp_dbg;
+wire [63:0] snd_dbg, dsp_dbg, snd_tr_data;
+wire        snd_tr_valid;
 wire [49:0] k8_dbg;
+// the sound board's RAMs zeroed after each reset, gx_sound held meanwhile
+wire        clr_inval, clr_wreq;
+wire [25:0] clr_waddr;
+gx_snd_clear u_snd_clear (
+	.clk(clk_vid), .hold(|rst_sr),
+	.snd_base(obj_base + { 1'b0, obj_size4, 1'b0 }), .snd_pcm,
+	.busy(clr_busy), .inval(clr_inval),
+	.w_req(clr_wreq), .w_addr(clr_waddr), .w_busy(snd_wbusy)
+);
+assign snd_wreq  = clr_busy ? clr_wreq  : s_wreq;
+assign snd_waddr = clr_busy ? clr_waddr : s_waddr;
+assign snd_wdata = clr_busy ? 16'd0     : s_wdata;
+assign snd_we16  = clr_busy ? 1'b1      : s_we16;
+assign snd_inval = s_inval   | clr_inval;
+assign dsp_inval = x_inval_s | clr_inval;
+assign pcm_inval = p_inval_s | clr_inval;
+
 gx_sound u_sound (
-	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run || !snd_real),
+	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run || !snd_real), .rst_chip(rst_vid || !snd_real),
 	// where the sprite region's spread ends (gx_sdram_top's snd_base)
-	.snd_base(obj_base + { 1'b0, obj_size4, 1'b0 }),
-	.m_cs(snd_cs), .m_addr(snd_maddr), .m_ok(snd_ok), .m_data(snd_mdata), .m_inval(snd_inval),
-	.w_req(snd_wreq), .w_addr(snd_waddr), .w_data(snd_wdata), .w_we16(snd_we16), .w_busy(snd_wbusy),
-	.x_cs(dsp_cs), .x_addr(dsp_addr), .x_ok(dsp_ok), .x_data(dsp_data), .x_inval(dsp_inval),
+	.snd_base(obj_base + { 1'b0, obj_size4, 1'b0 }), .snd_pcm,
+	.m_cs(snd_cs), .m_addr(snd_maddr), .m_ok(snd_ok), .m_data(snd_mdata), .m_inval(s_inval),
+	.w_req(s_wreq), .w_addr(s_waddr), .w_data(s_wdata), .w_we16(s_we16), .w_busy(snd_wbusy),
+	.x_cs(dsp_cs), .x_addr(dsp_addr), .x_ok(dsp_ok), .x_data(dsp_data), .x_inval(x_inval_s),
+	.p_cs(pcm_cs), .p_addr(pcm_addr), .p_ok(pcm_ok), .p_data(pcm_data), .p_inval(p_inval_s),
+	.aud_l(snd_aud_l), .aud_r(snd_aud_r),
 	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
-	.dbg(snd_dbg), .dsp_dbg
+	.dbg(snd_dbg), .dsp_dbg,
+	.tr_valid(snd_tr_valid), .tr_data(snd_tr_data)
 );
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
 wire [63:0] dbg_ee, dbg_irq;
 wire [95:0] dbg_esc_st;
 wire [95:0] dbg_obj;
+wire [63:0] dbg_k338;
+wire [135:0] dbg_shd;
 wire [111:0] dbg_mix;
 wire [83:0] dbg_rom;
 wire [ 1:0] dbg_esc;
@@ -426,10 +496,11 @@ gx_main u_board (
 	.snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din,
 	.inputs, .coins, .dsw, .service,
 	.ee_blank(ee_blank), .ee_load_we(ee_we), .ee_load_addr(ee_a), .ee_load_data(ee_d),
-	.offs_x, .offs_y, .primode, .obj_hadj, .esc_gen, .esc_src, .esc_count,
+	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
+	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
-	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_mix(dbg_mix), .dbg_rom(dbg_rom),
+	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_rom(dbg_rom),
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
 	.rom_top(tile_base), .pause_cpu(pause_cpu), .snd_run,
 	.tile_base, .obj_base, .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
@@ -523,6 +594,11 @@ issp_probe #(.INSTANCE_ID("L"), .PROBE_W(112), .SOURCE_W(8)) u_issp_mix (
 issp_probe #(.INSTANCE_ID("K"), .PROBE_W(64), .SOURCE_W(8)) u_issp_ldr (
 	.clk(clk_sys), .probe({ 10'd0, ldr_done, dl_seen_wr, dl_cycles, ldr_cycles }), .source()
 );
+// Instance O, 136 bits: the first tile each frame of a sprite with shadow
+// code 1, from the scan to its data (gx_obj dbg_shd; read_issp.tcl's fields_O)
+issp_probe #(.INSTANCE_ID("O"), .PROBE_W(136), .SOURCE_W(8)) u_issp_shd (
+	.clk(clk_vid), .probe(dbg_shd), .source()
+);
 issp_probe #(.INSTANCE_ID("J"), .PROBE_W(96), .SOURCE_W(8)) u_issp_obj (
 	.clk(clk_vid), .probe(dbg_obj), .source()
 );
@@ -533,11 +609,21 @@ issp_probe #(.INSTANCE_ID("I"), .PROBE_W(96), .SOURCE_W(8)) u_issp_esc (
 
 ///////////////////////   VIDEO   ////////////////////////////////
 
-arcade_video #(.WIDTH(288), .DW(24), .GAMMA(1)) arcade_video
+wire [23:0] rgb_x;
+gx_guns u_guns (
+	.clk(clk_vid), .rst(rst_vid), .joy0(joystick_0), .joy1(joystick_1),
+	.ana0(joystick_l_analog_0), .ana1(joystick_l_analog_1), .mouse(ps2_mouse),
+	.mode0(status[70:69]), .mode1(status[72:71]), .ms_who(status[74:73]),
+	.yrev(orient_fy), .gun_h, .gun_v, .trig(gun_trig),
+	.show(guns & status[68]), .pxl_cen, .lhbl(vid_lhbl), .lvbl(vid_lvbl), .vis_w,
+	.rgb_in(rgb), .rgb_out(rgb_x)
+);
+
+arcade_video #(.WIDTH(384), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_vid),
 	.ce_pix(pxl_cen),
-	.RGB_in(rgb),
+	.RGB_in(rgb_x),
 	.HBlank(~vid_lhbl),
 	.VBlank(~vid_lvbl),
 	.HSync(vid_hs),
@@ -592,12 +678,27 @@ screen_rotate_two u_rotate (
 	.DDRAM_RD(rot_DDRAM_RD)
 );
 
+// ------------------------------------------------------------ sound trace
+// the sound 68000's bus cycles into DDR3 at 0x34000000, on the rotator's
+// clock (both clk_vid) and in the clocks the rotator is not writing
+wire        tr_active, tr_DDRAM_WE;
+wire [28:0] tr_DDRAM_ADDR;
+wire [63:0] tr_DDRAM_DIN;
+gx_trace u_trace (
+	.clk(clk_vid), .rst(rst_vid), .enable(snd_trace_en && snd_real && !ldr_busy),
+	.valid(snd_tr_valid), .data(snd_tr_data),
+	.active(tr_active),
+	.DDRAM_WE(tr_DDRAM_WE), .DDRAM_ADDR(tr_DDRAM_ADDR), .DDRAM_DIN(tr_DDRAM_DIN),
+	.DDRAM_BUSY(DDRAM_BUSY), .other_we(rot_DDRAM_WE)
+);
+wire tr_owns = tr_active && !rot_DDRAM_WE && !ldr_busy;
+
 assign DDRAM_CLK      = ldr_busy ? clk_sys            : rot_DDRAM_CLK;
-assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
-assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
-assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
-assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : rot_DDRAM_BE;
-assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : tr_owns ? 8'd1          : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : tr_owns ? tr_DDRAM_ADDR : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : tr_owns ? tr_DDRAM_DIN  : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : tr_owns ? 8'hFF         : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : tr_owns ? tr_DDRAM_WE   : rot_DDRAM_WE;
 assign DDRAM_RD       = ldr_busy ? ldr_DDRAM_RD       : rot_DDRAM_RD;
 
 endmodule

@@ -43,7 +43,9 @@ set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/uaddrPla.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_k056800.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_k054539.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_trace.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_tms57002.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_snd_clear.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/sound/gx_sound.sv
 
 # jtframe primitives the vendored chip modules instantiate -- see
@@ -69,6 +71,7 @@ set_global_assignment -name VERILOG_FILE rtl/video/k054338/jt054338.v
 # The main board and the MiSTer side of it.
 set_global_assignment -name VERILOG_FILE rtl/gx_eeprom93c46.v
 set_global_assignment -name VERILOG_FILE rtl/gx_esc.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_guns.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/gx_romcache.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_main.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_board_cfg.sv

@@ -34,14 +34,18 @@
  * out and erase.
  *
  * INPUT word (wr_data), written by gx_obj.v for every drawn pixel:
- *   [4:0] pen  [6:5] shadow code  [8:7] shadow mode (0 none, 1 = pen 31 is
- *   shadow, 2 = every pen is shadow)  [9] mode1 (pen 31 not solid)
- *   [10] solid  [18:11] colour  [26:19] sprite index  [34:27] shadow
- *   priority  [42:35] priority  [50:43] z-code
+ *   [7:0] pen  [9:8] shadow code  [11:10] shadow mode (0 none, 1 = the
+ *   shadow pen is shadow, 2 = every pen is shadow)  [12] mode1 (the shadow
+ *   pen is not solid)  [13] solid  [21:14] colour  [29:22] sprite index
+ *   [37:30] shadow priority  [45:38] priority  [53:46] z-code  [61:54] the
+ *   layout's shadow pen (2^bpp - 1: 31 at 5 bpp, 255 at 8)  [62] the shadow
+ *   code is one SHD PRI SEL defers (MAME 5c75784 draws those after every
+ *   other shadow, so a stored shadow that is not deferred stands against one
+ *   that is, and replaces one that is)
  * OUTPUT word (rd_data):
- *   solid  [4:0] pen [12:5] colour [20:13] index [28:21] priority [36:29] z
- *   shadow [44:37] z [52:45] shadow priority [60:53] index [62:61] code
- *          [63] every-pen mode [64] valid
+ *   solid  [7:0] pen [15:8] colour [23:16] index [31:24] priority [39:32] z
+ *   shadow [47:40] z [55:48] shadow priority [63:56] index [65:64] code
+ *          [66] every-pen mode [67] valid
  *
  * Timing: the compare is one clock behind the write request, so a write
  * decided on the previous clock to the same address is forwarded -- the RAM
@@ -49,7 +53,7 @@
  */
 
 module gx_obj_linebuf #(parameter
-    DW        = 72,
+    DW        = 75,
     AW        = 10,
     ALPHAW    = 5,     // unused: the pen width is fixed by the layout above
     ALPHA     = 0,
@@ -68,7 +72,7 @@ module gx_obj_linebuf #(parameter
     output reg [DW-1:0] rd_data
 );
 
-localparam SW = 37, HW = 28;   // stored solid and shadow words
+localparam SW = 40, HW = 29;   // stored solid and shadow words
 
 reg line = 0, last_LHBL = 0;
 
@@ -78,22 +82,24 @@ always @(posedge clk) begin
 end
 
 // ---- decode the request
-wire [4:0] pen    = wr_data[4:0];
-wire [1:0] shcode = wr_data[6:5];
-wire [1:0] shmode = wr_data[8:7];
-wire       mode1  = wr_data[9];
-wire       solid  = wr_data[10];
-wire [7:0] color  = wr_data[18:11];
-wire [7:0] idx    = wr_data[26:19];
-wire [7:0] spri   = wr_data[34:27];
-wire [7:0] pri    = wr_data[42:35];
-wire [7:0] z      = wr_data[50:43];
+wire [7:0] pen    = wr_data[7:0];
+wire [1:0] shcode = wr_data[9:8];
+wire [1:0] shmode = wr_data[11:10];
+wire       mode1  = wr_data[12];
+wire       solid  = wr_data[13];
+wire [7:0] color  = wr_data[21:14];
+wire [7:0] idx    = wr_data[29:22];
+wire [7:0] spri   = wr_data[37:30];
+wire [7:0] pri    = wr_data[45:38];
+wire [7:0] z      = wr_data[53:46];
+wire [7:0] shpen  = wr_data[61:54];
+wire       defer  = wr_data[62];
 
-wire is_shpen  = (shmode==2'd1 && pen==5'd31) || (shmode==2'd2 && pen!=5'd0);
-wire s_req     = we && solid && pen!=5'd0 && !(mode1 && pen==5'd31);
+wire is_shpen  = (shmode==2'd1 && pen==shpen) || (shmode==2'd2 && pen!=8'd0);
+wire s_req     = we && solid && pen!=8'd0 && !(mode1 && pen==shpen);
 wire h_req     = we && shmode!=2'd0 && is_shpen;
 wire [SW-1:0] s_word = { z, pri, idx, color, pen };
-wire [HW-1:0] h_word = { 1'b1, shmode==2'd2, shcode, idx, spri, z };
+wire [HW-1:0] h_word = { defer, 1'b1, shmode==2'd2, shcode, idx, spri, z };
 
 // ---- stage 1
 reg  [AW-1:0] a1, a2;
@@ -105,13 +111,14 @@ wire [HW-1:0] hq0, hq1;
 
 // solid plane: old word, forwarded if written on the previous clock
 wire [SW-1:0] s_old   = ( sw2 && hh2==h1 && a2==a1 ) ? sd2 : ( h1 ? sq1 : sq0 );
-wire          s_blank = s_old[4:0] == 5'd0;
-wire          s_wr    = sv1 && ( s_blank || sd1[36:21] < s_old[36:21] );   // {z, pri}
+wire          s_blank = s_old[7:0] == 8'd0;
+wire          s_wr    = sv1 && ( s_blank || sd1[39:24] < s_old[39:24] );   // {z, pri}
 
 // shadow plane
 wire [HW-1:0] h_old   = ( hw2 && hh2==h1 && a2==a1 ) ? hd2 : ( h1 ? hq1 : hq0 );
 wire          h_blank = !h_old[27];
-wire          h_wr    = hv1 && ( h_blank || { hd1[15:8], hd1[7:0] } >= { h_old[15:8], h_old[7:0] } ); // {spri, z}
+wire          h_wr    = hv1 && ( h_blank || ( h_old[28] && !hd1[28] )
+                              || ( h_old[28] == hd1[28] && { hd1[15:8], hd1[7:0] } >= { h_old[15:8], h_old[7:0] } ) ); // {spri, z}
 
 always @(posedge clk) begin
     a1  <= wr_addr;
@@ -134,7 +141,7 @@ wire                 del = dly[0];
 
 always @(posedge clk) begin
     dly <= rd ? { 1'b1, {BLANK_DLY-1{1'b0}} } : dly >> 1;
-    if( del ) rd_data <= { {DW-SW-HW{1'b0}}, line ? hq0 : hq1, line ? sq0 : sq1 };
+    if( del ) rd_data <= { {DW-SW-HW+1{1'b0}}, line ? hq0[27:0] : hq1[27:0], line ? sq0 : sq1 };
 end
 
 // half h: drawn while line==h, shown while line!=h

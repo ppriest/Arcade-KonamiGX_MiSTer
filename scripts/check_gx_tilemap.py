@@ -37,7 +37,7 @@ OUT = REPO / "debug" / "gx_tilemap_tb"
 # (common_init: the same for every set)
 LAYER_OFFS = {s: ((-2, 0), (0, 0), (2, 0), (3, 0)) for s in
               ("daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
-               "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa")}
+               "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa", "tokkae", "tkmmpzdm")}
 
 
 def write_vectors(cap):
@@ -48,14 +48,28 @@ def write_vectors(cap):
     (OUT / "tbank.hex").write_text("".join(f"{v:02x}\n" for v in tb))
     pages = rm.k056832_pages(cap).reshape(-1)
     (OUT / "vram.hex").write_text("".join(f"{v:04x}\n" for v in pages))
-    offs = LAYER_OFFS[cap.set]
+    offs = rm.LAYER_OFFS_SET.get(cap.set, rm.LAYER_OFFS)             # common_init's, dragoonj's +1
     (OUT / "offs.hex").write_text("".join(f"{x & 0xff:02x}\n" for x, _ in offs)
                                   + "".join(f"{y & 0xff:02x}\n" for _, y in offs))
-    rom = np.frombuffer((REPO / "debug" / f"{cap.set}-rom" / "k056832.bin").read_bytes(),
-                        dtype=np.uint8)
-    rows = rom[:len(rom) // 40 * 40].reshape(-1, 5)
-    (OUT / "rom.hex").write_text("".join(r.tobytes().hex() + "\n" for r in rows))
+    rows = tile_rows(cap.set)
+    (OUT / "rom.hex").write_text(rows_hex(rows))
     return len(rows) // 8
+
+
+def tile_rows(set_name):
+    """The set's K056832 region as pixel rows of its depth's bytes (5, 6 or
+    8, render_model.TILE_BPP)."""
+    bpp = rm.TILE_BPP.get(set_name, 5)
+    rom = np.frombuffer((REPO / "debug" / f"{set_name}-rom" / "k056832.bin").read_bytes(),
+                        dtype=np.uint8)
+    return rom[:len(rom) // (8 * bpp) * (8 * bpp)].reshape(-1, bpp)
+
+
+def rows_hex(rows):
+    """rom.hex for the benches: a row a line, 64 bits, the row's byte 0 in
+    the top byte and unused bytes zero -- what gx_sdram_top's tile_data gives."""
+    pad = bytes(8 - rows.shape[1]).hex()
+    return "".join(r.tobytes().hex() + pad + "\n" for r in rows)
 
 
 def main():
@@ -68,7 +82,9 @@ def main():
 
     if not a.no_sim:
         ntiles = write_vectors(cap)
-        r = subprocess.run([GIT_BASH, "scripts/run_sim.sh", "gx_tilemap_tb", f"+NTILES={ntiles}", f"+ROM_LAT={a.rom_lat}"],
+        bpp = {5: 0, 6: 1, 8: 2}[rm.TILE_BPP.get(cap.set, 5)]
+        r = subprocess.run([GIT_BASH, "scripts/run_sim.sh", "gx_tilemap_tb", f"+NTILES={ntiles}", f"+ROM_LAT={a.rom_lat}",
+                            f"+BPP={bpp}", f"+VIS_X0={rm.VIS_X0}", f"+VIS_W={rm.VIS_W}"],
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "sim.log").write_text(log)
@@ -84,7 +100,7 @@ def main():
     rc = 0
     for layer in range(4):
         col6, pix = rm.layer_fields(cap, layer)
-        want = (col6.astype(np.int32) << 5) | pix
+        want = (col6.astype(np.int32) << 8) | pix
         ok = got[:, layer, :] == want
         n = int(ok.sum())
         print(f"{cap.set} frame {cap.manifest.get('frame')} layer {'ABCD'[layer]}: "
