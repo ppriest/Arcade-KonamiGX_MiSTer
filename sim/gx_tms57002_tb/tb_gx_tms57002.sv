@@ -46,7 +46,7 @@ gx_tms57002 dut (
     .h_ctrl_wr, .h_ctrl, .h_wr, .h_din, .h_rd, .h_dout, .status,
     .sync, .si, .so,
     .x_req, .x_we, .x_addr, .x_wdata, .x_wmask, .x_ack, .x_rdata,
-    .dbg
+    .dbg, .dbg_clr(1'b0)
 );
 
 // external memory: 256 KB, answers LAT clocks after a request

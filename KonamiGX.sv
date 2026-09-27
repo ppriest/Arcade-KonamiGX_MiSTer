@@ -443,6 +443,7 @@ gx_k056800 u_k056800 (
 );
 
 wire [63:0] snd_dbg, dsp_dbg;
+wire [31:0] snd_ovr;
 wire [49:0] k8_dbg;
 // the sound board's RAMs zeroed after each reset, gx_sound held meanwhile
 wire        clr_inval, clr_wreq;
@@ -461,6 +462,11 @@ assign snd_inval = s_inval   | clr_inval;
 assign dsp_inval = x_inval_s | clr_inval;
 assign pcm_inval = p_inval_s | clr_inval;
 
+`ifdef DEBUG_ISSP
+wire  [7:0] dsp_src;                    // probe D: [0] restarts the DSP's overrun counts
+`else
+wire  [7:0] dsp_src = 8'd0;
+`endif
 gx_sound u_sound (
 	.clk(clk_vid), .clk_cpu(clk_cpu), .rst(rst_vid || !snd_run), .rst_chip(rst_vid),
 	// where the sprite region's spread ends (gx_sdram_top's snd_base)
@@ -471,7 +477,7 @@ gx_sound u_sound (
 	.p_cs(pcm_cs), .p_addr(pcm_addr), .p_ok(pcm_ok), .p_data(pcm_data), .p_inval(p_inval_s),
 	.aud_l(snd_aud_l), .aud_r(snd_aud_r),
 	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
-	.dbg(snd_dbg), .dsp_dbg,
+	.dbg(snd_dbg), .dsp_dbg, .ovr_dbg(snd_ovr), .dsp_dbg_clr(dsp_src[0]),
 	.tr_valid(), .tr_data()
 );
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
@@ -603,13 +609,14 @@ issp_probe #(.INSTANCE_ID("N"), .PROBE_W(88), .SOURCE_W(32)) u_issp_mem (
 // Instance S, 116 bits: the sound board -- whether the 68000 is released
 // (bit 115, formerly "selected", is 1), where it is, how many accesses it
 // has made, its interrupts, and the K056800's six registers (fields_S).
-issp_probe #(.INSTANCE_ID("S"), .PROBE_W(116), .SOURCE_W(8)) u_issp_snd (
-	.clk(clk_vid), .probe({ 1'b1, snd_run, k8_dbg, snd_dbg }), .source()
+issp_probe #(.INSTANCE_ID("S"), .PROBE_W(148), .SOURCE_W(8)) u_issp_snd (
+	.clk(clk_vid), .probe({ snd_ovr, 1'b1, snd_run, k8_dbg, snd_dbg }), .source()
 );
 // Instance D, 64 bits: the TMS57002 (fields_D) -- whether a sample's
 // program fits its 1000 clocks with SDRAM behind it
+// source bit 0 restarts the DSP's longest-sample and overrun counts
 issp_probe #(.INSTANCE_ID("D"), .PROBE_W(64), .SOURCE_W(8)) u_issp_dsp (
-	.clk(clk_vid), .probe(dsp_dbg), .source()
+	.clk(clk_vid), .probe(dsp_dbg), .source(dsp_src)
 );
 issp_probe #(.INSTANCE_ID("L"), .PROBE_W(112), .SOURCE_W(8)) u_issp_mix (
 	.clk(clk_vid), .probe(dbg_mix), .source()

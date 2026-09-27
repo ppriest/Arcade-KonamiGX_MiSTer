@@ -94,6 +94,8 @@ module gx_sound (
     // held or a lost one
     output     [63:0] dbg,
     output     [63:0] dsp_dbg,      // gx_tms57002's
+    input             dsp_dbg_clr,  // probe D's source bit 0
+    output     [31:0] ovr_dbg,      // { #2, #1 }: K054539 samples that started late (probe S)
     // every bus cycle as it completes, for the bench's +SND_TRACE: { clk count[15:0],
     // fc, R/W, /UDS, /LDS, irq2, irq1, address[23:0], data[15:0] }
     output reg        tr_valid,
@@ -325,7 +327,7 @@ gx_tms57002 u_dsp (
     .sync(d_sync), .si(d_si), .so(d_so), .sim(d_sim),
     .x_req(dx_req), .x_we(dx_we), .x_addr(dx_addr), .x_wdata(dx_wdata), .x_wmask(dx_wmask),
     .x_ack(dx_wack || x_ok), .x_rdata(x_data),
-    .dbg(dsp_dbg)
+    .dbg(dsp_dbg), .dbg_clr(dsp_dbg_clr)
 );
 // reads straight to the port (it answers ok for one clock, and the DSP
 // drops the request on it); writes through the bus below
@@ -548,5 +550,6 @@ end
 reg  [15:0] acc_cnt;
 always @(posedge clk) if( rst ) acc_cnt <= 16'd0; else if( u_ack ) acc_cnt <= acc_cnt + 16'd1;
 assign dbg = { 9'd0, acc_cnt, irq2, k8_irq, rst, 4'd0, sctrl, a32[23:0] };
+assign ovr_dbg = { ko_ovr1, ko_ovr0 };
 
 endmodule

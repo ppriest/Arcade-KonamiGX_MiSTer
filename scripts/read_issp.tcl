@@ -159,6 +159,8 @@ set fields_S {
     {h2s0            106 113 hex}
     {snd_run         114 114 bit}
     {snd_real        115 115 bit}
+    {k539_1_late     116 131 dec}
+    {k539_2_late     132 147 dec}
 }
 
 # INSTANCE D, 64 bits: gx_tms57002's dbg

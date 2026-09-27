@@ -353,6 +353,7 @@ always @(posedge clk) if (snd_tf != 0 && snd_tr_valid)
 gx_sound u_sound (
     .clk, .clk_cpu, .rst(rst || !snd_run || snd_real == 0), .rst_chip(rst || snd_real == 0),
     .snd_base(26'd0), .snd_pcm(24'h400000),   // this model's layout: RAMs at 0x440000 and 0x450000
+    .dsp_dbg_clr(1'b0),
     .m_cs(sm_cs), .m_addr(sm_addr), .m_ok(sm_ok), .m_data(sm_data), .m_inval(sm_inval),
     .w_req(sm_wreq), .w_addr(sm_waddr), .w_data(sm_wdata), .w_we16(sm_we16), .w_busy(sm_wbusy),
     .x_cs(dx_cs), .x_addr(dx_addr), .x_ok(dx_ok), .x_data(dx_data), .x_inval(dx_inval),

@@ -76,7 +76,8 @@ module gx_tms57002 (
     input             x_ack,
     input      [63:0] x_rdata,
 
-    output     [63:0] dbg
+    output     [63:0] dbg,
+    input             dbg_clr       // probe: restart the longest-sample and overrun counts
 );
 
 // ---------------------------------------------------------------- state
@@ -698,12 +699,16 @@ always @(posedge clk) if( h_rd ) h_dout <= hostf ? host[hidx[1:0]] : 8'hff;
 
 // ---------------------------------------------------------------- probe
 // the longest sample (clocks from its sync being taken to idle, of 1000),
-// syncs that came while a sample was still running, samples run
+// syncs that came while a sample was still running, samples run. dbg_clr
+// restarts the first two: the boot's self-test does not idle between
+// samples and fills them before a game starts.
 reg [11:0] smp_clk, smp_max, ovr;
 reg [13:0] smps;
 always @(posedge clk) begin
     if( rst ) begin
         smp_clk <= 12'd0; smp_max <= 12'd0; ovr <= 12'd0; smps <= 14'd0;
+    end else if( dbg_clr ) begin
+        smp_max <= 12'd0; ovr <= 12'd0;
     end else begin
         if( st != S_HALT && smp_clk != 12'hfff ) smp_clk <= smp_clk + 12'd1;
         if( st == S_HALT && sync_pend && !pload && !host_wr ) begin

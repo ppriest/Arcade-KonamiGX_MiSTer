@@ -38,3 +38,39 @@ is still unimplemented in MAME, and there the core keeps the priority order as b
 | Which shadow a pixel keeps | `konamigx_mixer` draws the pool back to front; `zdrawgfxzoom32GP`'s shadow path skips a pixel whose shadow z-buffer holds a lower z-code or whose stored shadow priority is not higher, so of shadows at one priority the first drawn stands: the highest (shadow priority, z-code, offset). A lower-priority shadow can then stack on top of it. | `gx_obj_linebuf.v`'s shadow plane keeps the highest {shadow priority, z-code}, the later sprite winning a tie; one shadow per pixel. Frames 3600 and 6000 exercise the choice (12,872 shadow pixels). Twin Bee's `tbyahhoo-f3200` stacks two: a full-screen shadow (sprite 0) over the lower-left menu box's own shadows (sprites 28-32); MAME applies both and so dims the box's text, the RTL keeps the box's and leaves the text bright -- 4,371 pixels. The sprite chip's line buffer holds one shadow code a pixel, so the board may well show one; unverified. | A PCB capture of Twin Bee's attract (the "ためパンチ" demo screen) with the menu box on screen. |
 | Per-tile alpha uses the LAST such tile's mix code | `gx_draw_basic_tilemaps` draws the tiles that carry a mix code (category 1) in one pass with `alpha_of(m_last_alpha_tile_mix_code & ~VMIXON)` — the code of whichever tile the callback saw last, not each tile's; the source calls the two bits it packs into `mixerflags` a "hack". | `gx_tilemap.sv` carries each tile's own 2-bit mix code to `gx_mixer.v`, which picks that pixel's alpha from it. Sexy Parodius's smoke is the case (its ink is drawn with a mix code; MAME leaves the black opaque). | A PCB capture of Sexy Parodius's ink stage. |
 | Sprite full-shadow darkening | `konamigx_mixer_init`: shadow table 3 is a fixed −80 on each channel. | Same. Not exercised by type-2 sprites (`K055555_FULLSHADOW` never set). | — |
+
+## The ESC (056734): MAME against its manual
+
+`rtl/gx_esc.v` follows MAME's C (`konamigx.cpp`: `esc_w`, `konamigx_esc_alert`,
+`generate_sprites`), and so do the differences below. They were found against a
+description of the chip, [konami_056734_manual.md](https://github.com/rb6502/mame-ai-tips/blob/master/generated-gems/konami_056734_manual.md)
+(rb6502/mame-ai-tips, "generated-gems": AI-generated, so a secondary source), and weighed
+against the games' own code and captures. Nothing here has been changed in the core.
+
+| Behaviour | MAME and this core | Manual | Evidence |
+|---|---|---|---|
+| Sort | none (MAME's `qsort` is commented out) | sorts by priority into lists | gokuparo's 68020 routine (0x2A2504, the one MAME's C translates) sorts into 256 lists |
+| Word 0 of an output sprite | the priority | the output index | gokuparo writes a running counter (0xC0D732) |
+| Output buffer | fixed 0xD20000 (`gx_esc.v` :98) | p2, alternating 0xD20000 / 0xD21000 | daiskiss's RUN parameters (0xC0B7D4) hold p2 = 0xD20000 in f2400/f4800, 0xD21000 in f3600/f6000/title |
+| Entries scanned | 256 | 128 | daiskiss: entries 151-156 are the text-like sets behind the board runaway (ROADMAP); at 128 or above every entry yields nothing on all five captures |
+| 0xFFFF piece | jumps, count unchanged | jumps, count reloaded at the target | per game: daiskiss's targets point at a count word (0x2119F8 -> 0x2119D6 = `0002`); tbyahhoo's and sexyparo's point at a piece. No daiskiss capture walks a jump |
+| `color_set` of 0 | skipped | clears bits 4:0 | none |
+| x | as MAME | +0x14 | absorbed by the per-set sprite offsets (`obj_hadj`) |
+| Command packet | no state 1/3, no RESET reply, no RUN result at +0xC; an odd packet address is ignored (`gx_esc.v` :285) | states, replies, results; any address | nothing known depends on it |
+
+IRQ 4 on completion (gated by 0xD56001 bit 4) matches all three.
+
+**Patches.** The only program patches are tkmmpzdm's two (`scripts/build_mra.py` PATCHES,
+MAME `init_konamigx`): 0x21CBA9 `11 -> 1F`, the K055555 input-enable byte in a fade-in, and
+0x2043C7 `01 -> 00`, the checksum that rebalances it. They are not ESC workarounds and the
+manual gives no reason to drop them. Remove both or neither; the test is tkmmpzdm's boot on the
+core without them (do planes B-D return after the copyright screen?).
+
+**Changes proposed, in order, none made:**
+1. daiskiss `esc_count` 0x100 -> 0x80 (`gx_board_cfg.sv`): identical output on the captures,
+   and the ESC stops reading the entries behind the runaway.
+2. A per-set count reload on 0xFFFF, daiskiss only, once a capture walks a jump.
+3. The output buffer from p2 per set, only together with however the K053246 is pointed at a
+   buffer (unidentified).
+4. Leave the sort, word 0, the zoom rounding, `color_set` 0 and x+0x14: each would move the core
+   off MAME's pixels, and none has a PCB capture behind it.

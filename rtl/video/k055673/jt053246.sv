@@ -193,8 +193,8 @@ jtframe_dual_ram16 #(.AW(10)) u_even( // 10:0 -> 2kB
     .addr0  (dma_wr_addr[11:2]),
     .we0    ( {2{dma_wel}}   ),
     .q0     (                ),
-    // Port 1: scan
-    .clk1   ( clk            ),
+    // Port 1: scan, on the falling edge [GX] (jt053246_scan, cen2)
+    .clk1   ( ~clk           ),
     .data1  ( 16'd0          ),
     .addr1  ( scan_addr      ),
     .we1    ( 2'b0           ),
@@ -208,8 +208,8 @@ jtframe_dual_ram16 #(.AW(10)) u_odd( // 10:0 -> 2kB
     .addr0  (dma_wr_addr[11:2]),
     .we0    ( {2{dma_weh}}   ),
     .q0     (                ),
-    // Port 1: scan
-    .clk1   ( clk            ),
+    // Port 1: scan, on the falling edge [GX]
+    .clk1   ( ~clk           ),
     .data1  ( 16'd0          ),
     .addr1  ( scan_addr      ),
     .we1    ( 2'b0           ),

@@ -236,7 +236,7 @@ always @(posedge clk) if (line_stats != 0) begin
         ls_p2 = 0; ls_zm = 0; ls_dr = 0; ls_scan = 0; ls_wait = 0; ls_pix = 0; ls_rom = 0; ls_tiles = 0; ls_skip = 0; ls_rd = 0; ls_mv = 0;
     end else begin
         if (!dut.u_scan.u_scan.done) begin
-            if ({dut.u_scan.u_scan.indr, dut.u_scan.u_scan.scan_sub} >= 5) ls_wait++;
+            if ({dut.u_scan.u_scan.indr, dut.u_scan.u_scan.scan_sub} == 7) ls_wait++;   // the draw state
             else ls_scan++;
         end
         if (dut.u_draw.u_draw.buf_we) ls_pix++;

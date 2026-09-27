@@ -100,8 +100,16 @@ assign last_obj  = &scan_obj[7:0];
 assign nx_mir    = scan_even[15:14];
 assign {vsz,hsz} = size;
 
-(* direct_enable *) reg cen2=0;
-always @(negedge clk) cen2 <= ~cen2;
+// [GX] The scan steps every clock; it stepped on every other (cen2), which
+// gave the scan RAM's registered read a clock between address and data. The
+// RAM's scan port is clocked on the falling edge now (jt053246.sv), so a word
+// is there half a clock after its address. The zoom pipeline below is one
+// register a clock (vscl, ydiff_b, yz_add), so two wait steps (4, 5) put
+// the visibility test, old step 4 (now 6), four clocks after step 2 as
+// before; the draw state is 7. A candidate entry costs 7 clocks, was 10; an
+// empty one 1, was 2. Sexy Parodius's player select scans ~210 of its 256
+// entries a line and ran out of line time on the scan alone.
+wire cen2 = 1'b1;
 
 always @(posedge clk) begin
     xadj <= xoffset - HOFFSET - hoff_adj;   // [GX] was: xoffset - HOFFSET
@@ -274,7 +282,8 @@ always @(posedge clk) begin : A
                         if( last_obj ) done <= 1;
                     end
                 end
-                4: begin
+                4, 5: ;     // [GX] the zoom pipeline settles
+                6: begin    // [GX] was step 4
                     // Add the vertical offset to the code, must wait for zoom
                     // calculations, so it cannot be done at step 3
                     {code[5],code[3],code[1]} <= {code[5],code[3],code[1]} + vsum4;   // [GX] was: + vsum
@@ -292,7 +301,7 @@ always @(posedge clk) begin : A
                         2: if(hstep>=2) hhalf <= 1;
                         3: if(hstep>=4) hhalf <= 1;
                     endcase
-                    {indr, scan_sub} <= 5; // stay here
+                    {indr, scan_sub} <= 7; // stay here  [GX] was 5
                     if( (!dr_start && !dr_busy) || !inzone ) begin
                         {code[4],code[2],code[0]} <= hcode + hsum;
                         if( hstep==0 ) begin
@@ -316,9 +325,9 @@ always @(posedge clk) begin : A
     end
 end
 
-// [GX] valid in the draw state ({indr,scan_sub} >= 5), where the drawer is
+// [GX] valid in the draw state ({indr,scan_sub} == 7), where the drawer is
 // busy with the tile before it, or about to be given this one
-assign pf_on   = indr && scan_sub[0] && inzone && !done;
+assign pf_on   = indr && &scan_sub && inzone && !done;
 assign pf_code = { code[15:5], pf_h[2], code[3], pf_h[1], code[1], pf_h[0] };
 
 initial pzoffset ='{
