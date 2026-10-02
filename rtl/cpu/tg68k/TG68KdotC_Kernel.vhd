@@ -117,6 +117,8 @@
 -- no-op). Lines marked [GX]; PROVENANCE.md has the reason.                 --
 -- Modified 2026-09-19: FlagsSR_out, the status register's high byte, an   --
 -- output for the board's debug probe. Lines marked [GX].                   --
+-- Modified 2026-10-01: stop_out, high while STOP waits for an interrupt, --
+-- for the save-state engine. Lines marked [GX].                          --
 ------------------------------------------------------------------------------
 
 library ieee;
@@ -159,7 +161,8 @@ entity TG68KdotC_Kernel is
 		regin_out				: out std_logic_vector(31 downto 0);
 		CACR_out					: out std_logic_vector( 3 downto 0);
 		VBR_out					: out std_logic_vector(31 downto 0);
-		FlagsSR_out			: out std_logic_vector( 7 downto 0)	-- [GX] T.S.0III, for the board's probe
+		FlagsSR_out			: out std_logic_vector( 7 downto 0);	-- [GX] T.S.0III, for the board's probe
+		stop_out				: out std_logic	-- [GX] STOP waiting, for the save-state engine
 		);
 end TG68KdotC_Kernel;
 
@@ -4075,6 +4078,7 @@ PROCESS (clk, cpu, OP1out, OP2out, opcode, exe_condition, nextpass, micro_state,
   CACR_out <= CACR;
   VBR_out <= VBR;
   FlagsSR_out <= FlagsSR;	-- [GX]
+  stop_out <= '1' WHEN stop='1' ELSE '0';	-- [GX]
 -----------------------------------------------------------------------------
 -- Conditions
 -----------------------------------------------------------------------------

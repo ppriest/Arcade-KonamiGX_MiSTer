@@ -161,11 +161,35 @@ wire [7:0]  k8_host;
 wire        k8_wr, k8_rd, k8_irq;
 wire [2:0]  k8_addr;
 wire [7:0]  k8_din, k8_dout;
+// save states: the engine's wires (its instance is after the DUT's)
+int ss_save_at = -1, ss_load_at = -1;
+string ss_save_f, ss_load_f;
+wire        e_m_req, e_m_go, e_m_held, e_m_done, e_m_bwe, e_s_req, e_s_go, e_s_held, e_s_done, e_s_bwe;
+wire [ 4:0] e_m_bidx, e_s_bidx;
+wire [31:0] e_m_bd, e_m_bq, e_s_bd, e_s_bq;
+wire        e_mb_req, e_mb_we, e_mb_ack, e_sb_req, e_sb_we, e_sb_ack, e_sd_req, e_sd_we, e_sd_ack;
+wire [23:1] e_mb_addr, e_sb_addr;
+wire [ 1:0] e_mb_be;
+wire [15:0] e_mb_wd, e_mb_rd, e_sb_wd, e_sb_rd, e_sd_wd, e_sd_rd;
+wire [17:0] e_sd_addr;
+wire        e_snap, e_commit, e_freeze, e_ssen, e_sswe, e_step;
+wire [ 3:0] e_sssel;
+wire [11:0] e_ssaddr;
+wire [15:0] e_sswd, e_ssrd_main, e_ssrd_snd, e_ssrd_k8;
+wire [ 8:0] e_vpos, e_hpos;
+wire        e_esc_busy, e_dma_busy, e_busy, e_err;
+wire        sl_start, sl_save, sl_wv, sl_end, sl_rtake;
+wire [15:0] sl_wd;
+wire [31:0] sl_words;
+reg         e_save = 0, e_load = 0;
+
 gx_k056800 u_k056800 (
     .clk, .rst,
     .h_wr(snd_wr && snd_real != 0), .h_rd(snd_rd && snd_real != 0), .h_addr(snd_addr[2:0]),
     .h_din(snd_dout), .h_dout(k8_host),
-    .s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout), .irq(k8_irq)
+    .s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout), .irq(k8_irq),
+    .ss_snap(e_snap), .ss_commit(e_commit), .ss_sel(e_ssen && e_sssel == 4'd2), .ss_addr(e_ssaddr),
+    .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_k8)
 );
 
 localparam int SMEM = 'h490000 / 8;
@@ -288,14 +312,31 @@ longint frame_clk = 0;
 always @(posedge clk) frame_clk++;
 // +ESC_LOG=n: how long each of the first n ESC commands holds the CPU
 int esc_log = 0; longint esc_t0 = 0; reg esc_bl = 0; int esc_fr_clk = 0, esc_fr_n = 0;
+int esc_nw = 0, esc_nrom = 0, esc_nram = 0;
+int esc_af = 0; string esc_afn;
+initial if ($value$plusargs("ESC_ADDRS=%s", esc_afn)) esc_af = $fopen(esc_afn, "w");
 initial void'($value$plusargs("ESC_LOG=%d", esc_log));
 always @(posedge clk) begin
     esc_bl <= dut.esc_busy;
     if (dut.esc_busy && !esc_bl) esc_t0 = frame_clk;
     if (dut.esc_busy) esc_fr_clk++;
+    // the ESC's own accesses, by kind: reads of ROM, reads of RAM, writes
+    // +ESC_ADDRS=file: every ROM read of the ESC, its clock, while ESC_LOG counts
+    if (dut.esc_ack && !dut.esc_we && esc_af != 0 && esc_log > 0 && { dut.esc_addr, 1'b0 } < 24'h800000)
+        $fwrite(esc_af, "%0d %06x\n", frame_clk - esc_t0, { dut.esc_addr, 1'b0 });
+    if (dut.esc_ack) begin
+        if (dut.esc_we) esc_nw++;
+        else if ({ dut.esc_addr, 1'b0 } < 24'h800000) esc_nrom++;
+        else esc_nram++;
+    end
+    if (dut.esc_busy && !esc_bl) begin esc_nw = 0; esc_nrom = 0; esc_nram = 0; end
     if (!dut.esc_busy && esc_bl) begin
         esc_fr_n++;
-        if (esc_log > 0) begin $display("ESCLOG f%0d busy %0d clocks", frame, frame_clk - esc_t0); esc_log--; end
+        if (esc_log > 0) begin
+            $display("ESCLOG f%0d busy %0d clocks: %0d ROM reads, %0d RAM reads, %0d writes",
+                     frame, frame_clk - esc_t0, esc_nrom, esc_nram, esc_nw);
+            esc_log--;
+        end
     end
     if (!vid_lvbl && lvbl_st && (esc_fr_n != 0 || esc_fr_clk != 0) && esc_log != 0) begin
         $display("ESCFRAME f%0d commands %0d busy %0d clocks", frame, esc_fr_n, esc_fr_clk);
@@ -361,7 +402,15 @@ gx_sound u_sound (
     .aud_l(), .aud_r(),
     .k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
     .dbg(snd_dbg), .dsp_dbg(dsp_dbg),
-    .tr_valid(snd_tr_valid), .tr_data(snd_tr_data)
+    .tr_valid(snd_tr_valid), .tr_data(snd_tr_data),
+    .ss_s_req(e_s_req), .ss_s_go(e_s_go), .ss_s_held(e_s_held), .ss_s_done(e_s_done),
+    .ss_s_bidx(e_s_bidx), .ss_s_bwe(e_s_bwe), .ss_s_bd(e_s_bd), .ss_s_bq(e_s_bq),
+    .ss_sb_req(e_sb_req), .ss_sb_we(e_sb_we), .ss_sb_addr(e_sb_addr), .ss_sb_wd(e_sb_wd),
+    .ss_sb_ack(e_sb_ack), .ss_sb_rd(e_sb_rd),
+    .ss_sd_req(e_sd_req), .ss_sd_we(e_sd_we), .ss_sd_addr(e_sd_addr), .ss_sd_wd(e_sd_wd),
+    .ss_sd_ack(e_sd_ack), .ss_sd_rd(e_sd_rd),
+    .ss_freeze(e_freeze), .ss_snap(e_snap), .ss_commit(e_commit), .ss_step(e_step),
+    .ss_sel(e_sssel), .ss_en(e_ssen), .ss_addr(e_ssaddr), .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_snd)
 );
 initial begin
     string f;
@@ -522,8 +571,135 @@ gx_main dut (
     // read above the image's length returned what follows it in SDRAM --
     // with +ROM_JUNK_FROM, what the board did.
     .rom_top(26'(rom_top)), .pause_cpu(pause_cpu), .snd_run,
-    .mem_t(md_t), .mem_addr(23'(md_a)), .dbg_mem(dbg_mem)
+    .mem_t(md_t), .mem_addr(23'(md_a)), .dbg_mem(dbg_mem),
+    .ss_m_req(e_m_req), .ss_m_go(e_m_go), .ss_m_held(e_m_held), .ss_m_done(e_m_done),
+    .ss_m_bidx(e_m_bidx), .ss_m_bwe(e_m_bwe), .ss_m_bd(e_m_bd), .ss_m_bq(e_m_bq),
+    .ss_mb_req(e_mb_req), .ss_mb_we(e_mb_we), .ss_mb_addr(e_mb_addr), .ss_mb_be(e_mb_be),
+    .ss_mb_wd(e_mb_wd), .ss_mb_ack(e_mb_ack), .ss_mb_rd(e_mb_rd),
+    .ss_snap(e_snap), .ss_commit(e_commit),
+    .ss_sel(e_sssel), .ss_en(e_ssen), .ss_addr(e_ssaddr), .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_main),
+    .ss_vpos(e_vpos), .ss_hpos(e_hpos), .ss_esc_busy(e_esc_busy), .ss_dma_busy(e_dma_busy)
 );
+
+// ----------------------------------------------------------- save states
+// rtl/gx_savestate.sv with a slot in memory (docs/SAVESTATES.md):
+//   +SS_SAVE_AT=<frame> +SS_SAVE=<file>   save at that frame into a .ss file:
+//                                         Main_MiSTer's format (the slot's
+//                                         control word, then the data)
+//   +SS_LOAD_AT=<frame> +SS_LOAD=<file>   load one at that frame
+
+gx_savestate u_ssg (
+    .clk, .rst,
+    .save_req(e_save), .load_req(e_load), .set_id(8'(game)), .busy(e_busy), .err(e_err),
+    .esc_busy(e_esc_busy), .dma_busy(e_dma_busy), .vpos(e_vpos), .hpos({ 1'b0, e_hpos }),
+    .m_req(e_m_req), .m_go(e_m_go), .m_held(e_m_held), .m_done(e_m_done),
+    .m_bidx(e_m_bidx), .m_bwe(e_m_bwe), .m_bd(e_m_bd), .m_bq(e_m_bq),
+    .s_req(e_s_req), .s_go(e_s_go), .s_held(e_s_held), .s_done(e_s_done),
+    .s_bidx(e_s_bidx), .s_bwe(e_s_bwe), .s_bd(e_s_bd), .s_bq(e_s_bq),
+    .ss_snap(e_snap), .ss_commit(e_commit), .snd_freeze(e_freeze),
+    .ss_sel(e_sssel), .ss_en(e_ssen), .ss_addr(e_ssaddr), .ss_we(e_sswe), .ss_step(e_step), .ss_wd(e_sswd),
+    .ss_rd(e_ssrd_main | e_ssrd_snd | e_ssrd_k8),
+    .mb_req(e_mb_req), .mb_we(e_mb_we), .mb_addr(e_mb_addr), .mb_be(e_mb_be), .mb_wd(e_mb_wd),
+    .mb_ack(e_mb_ack), .mb_rd(e_mb_rd),
+    .sb_req(e_sb_req), .sb_we(e_sb_we), .sb_addr(e_sb_addr), .sb_wd(e_sb_wd), .sb_ack(e_sb_ack), .sb_rd(e_sb_rd),
+    .sd_req(e_sd_req), .sd_we(e_sd_we), .sd_addr(e_sd_addr), .sd_wd(e_sd_wd), .sd_ack(e_sd_ack), .sd_rd(e_sd_rd),
+    .sl_start, .sl_save, .sl_wv, .sl_wd, .sl_wready, .sl_end, .sl_words, .sl_idle,
+    .sl_rv, .sl_rd, .sl_rtake
+);
+
+// the slot in DDR3, as on the board: gx_ss_ddr against a model of the port
+// (BUSY for a clock in three, reads answered five clocks later), slot 0 at
+// 0x3C000000. A .ss file is the slot's bytes, as Main_MiSTer writes them.
+wire        sl_wready, sl_idle, sl_rv, ss_own;
+wire [15:0] sl_rd;
+wire  [7:0] sd_bc, sd_be;
+wire [28:0] sd_a;
+wire [63:0] sd_din;
+wire        sd_rd, sd_we;
+reg  [63:0] sd_dout = 0;
+reg         sd_rdy = 0;
+reg  [ 1:0] sd_ph = 0;
+wire        sd_busy = sd_ph == 2'd2;
+localparam int SS_DW = 1 << 17;                  // one slot, 1 MB
+logic [63:0] ss_ddr [0:SS_DW-1];
+localparam [28:0] SS_W0 = 29'h07800000;            // 0x3C000000 / 8
+reg  [ 2:0] sd_lat = 0;
+reg  [16:0] sd_ra;
+gx_ss_ddr u_ss_ddr (
+    .clk, .rst, .slot(2'd0), .active(e_busy),
+    .sl_start, .sl_save, .sl_wv, .sl_wd, .sl_wready, .sl_end, .sl_words, .sl_idle,
+    .sl_rv, .sl_rd, .sl_rtake, .own(ss_own),
+    .DDRAM_BUSY(sd_busy), .DDRAM_BURSTCNT(sd_bc), .DDRAM_ADDR(sd_a), .DDRAM_DOUT(sd_dout),
+    .DDRAM_DOUT_READY(sd_rdy), .DDRAM_RD(sd_rd), .DDRAM_DIN(sd_din), .DDRAM_BE(sd_be), .DDRAM_WE(sd_we)
+);
+always @(posedge clk) begin
+    sd_ph  <= sd_ph == 2'd2 ? 2'd0 : sd_ph + 2'd1;
+    sd_rdy <= 0;
+    if (sd_we && !sd_busy) begin
+        if (sd_a - SS_W0 >= SS_DW) $fatal(1, "slot write outside slot 0: %h", sd_a);
+        for (int k = 0; k < 8; k++)
+            if (sd_be[k]) ss_ddr[17'(sd_a - SS_W0)][8*k +: 8] <= sd_din[8*k +: 8];
+    end
+    if (sd_rd && !sd_busy) begin sd_ra <= 17'(sd_a - SS_W0); sd_lat <= 3'd5; end
+    else if (sd_lat != 0) begin
+        sd_lat <= sd_lat - 3'd1;
+        if (sd_lat == 3'd1) begin sd_dout <= ss_ddr[sd_ra]; sd_rdy <= 1; end
+    end
+end
+
+reg          e_busy_l = 0, e_saving = 0;
+longint      ss_t0 = 0;
+always @(posedge clk) begin
+    e_save <= 0; e_load <= 0;
+    e_busy_l <= e_busy;
+    if (!vid_lvbl && lvbl_st) begin
+        if (frame == ss_save_at) begin e_save <= 1; e_saving <= 1; ss_t0 = $time; end
+        if (frame == ss_load_at) begin e_load <= 1; e_saving <= 0; ss_t0 = $time; end
+    end
+    if (e_busy_l && !e_busy) begin
+        $display("SS %s done at frame %0d: raster %0d/%0d, err %0d, %0d us", e_saving ? "save" : "load",
+                 frame, u_ssg.r_v, u_ssg.r_h, e_err, ($time - ss_t0) / 1000000);
+        if (e_saving) ss_write();
+    end
+end
+
+// the slot as Main_MiSTer saves it: the control word, then size * 4 bytes
+task automatic ss_write();
+    int fd, n;
+    logic [63:0] w;
+    fd = $fopen(ss_save_f, "wb");
+    n = int'(ss_ddr[0][63:32]);
+    for (int k = 0; k < 1 + (n + 1) / 2; k++) begin
+        w = ss_ddr[k];
+        for (int b = 0; b < 8; b++) if (k == 0 || 8 * (k - 1) + b < 4 * n) $fwrite(fd, "%c", w[8*b +: 8]);
+    end
+    $fclose(fd);
+    $display("SS saved %0d 32-bit words (counter %0d) to %s", n, ss_ddr[0][31:0], ss_save_f);
+endtask
+
+// read at time 0, and again in a run restored from a snapshot (+RESTORE),
+// whose variables are the saved run's
+task automatic ss_args();
+    void'($value$plusargs("SS_SAVE_AT=%d", ss_save_at));
+    void'($value$plusargs("SS_LOAD_AT=%d", ss_load_at));
+    void'($value$plusargs("SS_SAVE=%s", ss_save_f));
+    if ($value$plusargs("SS_LOAD=%s", ss_load_f)) begin
+        int fd, c, k;
+        fd = $fopen(ss_load_f, "rb");
+        if (fd == 0) $fatal(1, "cannot open %s", ss_load_f);
+        k = 0;
+        while (k < 8 * SS_DW) begin
+            c = $fgetc(fd);
+            if (c < 0) break;
+            ss_ddr[k / 8][8 * (k % 8) +: 8] = c[7:0];
+            k++;
+        end
+        $fclose(fd);
+        $display("SS read %0d bytes from %s into slot 0", k, ss_load_f);
+    end
+endtask
+initial ss_args();
+always @(posedge clk) if (reopen) ss_args();
 
 // ----------------------------------------------------------- trace
 // The last column is the CPU's interrupt mask (SR bits 8-10), as MAME's

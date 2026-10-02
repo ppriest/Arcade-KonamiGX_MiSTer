@@ -35,3 +35,8 @@ packing them changes nothing else, and Quartus accepts either. Seta never met
 this because it only simulates fx68k in ModelSim; the board bench here runs
 it under Verilator, where ModelSim would take hours for the frames needed.
 Marked `[GX]` on each line.
+
+And `stop_out`, an output that is high while the instruction register (IRD)
+holds STOP (`4E72`), for the save-state engine (`rtl/cpu/gx_ss_m68k.sv`): only
+an interrupt ends a STOP, so IRD is STOP when one is taken exactly when the
+CPU was waiting in it. No logic changes. Marked `[GX]`.

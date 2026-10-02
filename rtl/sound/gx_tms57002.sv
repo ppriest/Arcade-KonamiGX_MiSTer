@@ -77,7 +77,19 @@ module gx_tms57002 (
     input      [63:0] x_rdata,
 
     output     [63:0] dbg,
-    input             dbg_clr       // probe: restart the longest-sample and overrun counts
+    input             dbg_clr,      // probe: restart the longest-sample and overrun counts
+
+    // save states (gx_savestate), while halted between samples: program
+    // RAM at 0x000 (two words an entry, high first), coefficients at 0x200,
+    // data at 0x400, then the registers at 0x800 as a shift chain (below).
+    // ss_freeze holds it halted: no sample starts.
+    input             ss_freeze,
+    input             ss_step,      // the word read has been taken: shift
+    input             ss_sel,
+    input      [11:0] ss_addr,
+    input             ss_we,
+    input      [15:0] ss_wd,
+    output     [15:0] ss_rd
 );
 
 // ---------------------------------------------------------------- state
@@ -102,6 +114,7 @@ reg [63:0] xg;                  // a read's granule
 reg        xg_ok;
 reg        xlate;               // a read has taken its last step, its data not yet come
 reg        sync_pend;
+reg  [2:0] ss_xlo;              // save states: the commit's place for xlo, which its own block sets
 
 assign so = { so_r[3], so_r[2], so_r[1], so_r[0] };
 assign sim = st0[3];
@@ -132,7 +145,17 @@ wire [23:0] p_q;
 reg         p_we;
 reg  [7:0]  p_wa;
 reg  [23:0] p_d;
-gx_sdpram #(.AW(8), .DW(24)) u_pmem ( .clk, .we(p_we), .wa(p_wa), .d(p_d), .ra(p_ra), .q(p_q) );
+// the state bus's memory writes: an entry's high word is held for its low
+wire        ss_mem = ss_sel && ss_addr < 12'h800;
+reg  [15:0] ss_hi;
+always @(posedge clk) if( ss_mem && ss_we && !ss_addr[0] ) ss_hi <= ss_wd;
+wire        ss_mw  = ss_mem && ss_we && ss_addr[0];
+wire        ss_pw  = ss_mw && ss_addr[11:9] == 3'd0;
+wire        ss_cw  = ss_mw && ss_addr[11:9] == 3'd1;
+wire        ss_dw  = ss_mw && ss_addr[11:10] == 2'd1;
+wire [7:0]  p_ra_x;
+gx_sdpram #(.AW(8), .DW(24)) u_pmem ( .clk, .we(p_we || ss_pw), .wa(ss_pw ? ss_addr[8:1] : p_wa),
+    .d(ss_pw ? { ss_hi[7:0], ss_wd } : p_d), .ra(ss_mem ? ss_addr[8:1] : p_ra_x), .q(p_q) );
 
 // the host's writes (only while loading, the DSP stopped) are registered;
 // stage A's go straight in, so they land at the end of A, before the next
@@ -165,13 +188,17 @@ wire [7:0]  a_cwa;
 wire [31:0] a_cd;
 wire [8:0]  a_dwa;
 wire [23:0] a_dd;
-gx_sdpram #(.AW(8), .DW(32)) u_cmem ( .clk, .we(c_we || a_cw), .wa(a_cw ? a_cwa : c_wa),
-    .d(a_cw ? a_cd : c_d), .ra(c_ra), .q(c_q) );
+wire [7:0]  c_ra_x;
+gx_sdpram #(.AW(8), .DW(32)) u_cmem ( .clk, .we(c_we || a_cw || ss_cw),
+    .wa(ss_cw ? ss_addr[8:1] : a_cw ? a_cwa : c_wa),
+    .d(ss_cw ? { ss_hi, ss_wd } : a_cw ? a_cd : c_d), .ra(ss_mem ? ss_addr[8:1] : c_ra_x), .q(c_q) );
 
 // dmem0 (256 words) and dmem1 (32) in one: bit 8 is the bank
 wire [8:0]  d_ra;
 wire [23:0] d_q;
-gx_sdpram #(.AW(9), .DW(24)) u_dmem ( .clk, .we(a_dw), .wa(a_dwa), .d(a_dd), .ra(d_ra), .q(d_q) );
+wire [8:0]  d_ra_x;
+gx_sdpram #(.AW(9), .DW(24)) u_dmem ( .clk, .we(a_dw || ss_dw), .wa(ss_dw ? ss_addr[9:1] : a_dwa),
+    .d(ss_dw ? { ss_hi[7:0], ss_wd } : a_dd), .ra(ss_mem ? ss_addr[9:1] : d_ra_x), .q(d_q) );
 
 // ---------------------------------------------------------------- decode
 // the operands each op takes (tmsmake.py: the ops whose body uses %c/%d),
@@ -485,7 +512,7 @@ wire [64:0] mv_c   = mv_f(mw, st1[12:11], st1[ST1_MOVM]);
 
 // ================================================================ reads
 // program: the word after this one, at the end of A; otherwise pc
-assign p_ra = st == S_A ? pc_n : pc;
+assign p_ra_x = st == S_A ? pc_n : pc;
 // operands: at the end of S_F (the first word) and of B (the next), from
 // the program word read then; held otherwise
 reg  [7:0] c_ra_r;
@@ -493,8 +520,8 @@ reg  [8:0] d_ra_r;
 wire       prep  = xen && ((st == S_F && s_r) || (st == S_B && !bstall));
 wire [7:0] c_ra_n = caddr(p_q, ca);
 wire [8:0] d_ra_n = daddr(p_q, id, st == S_B ? st1_n[ST1_DBP] : st1[ST1_DBP], ba0, ba1);
-assign c_ra = prep ? c_ra_n : c_ra_r;
-assign d_ra = prep ? d_ra_n : d_ra_r;
+assign c_ra_x = prep ? c_ra_n : c_ra_r;
+assign d_ra_x = prep ? d_ra_n : d_ra_r;
 
 // ================================================================ control
 wire run_ok  = !idle && !pload && !in_rst;
@@ -603,7 +630,7 @@ always @(posedge clk) begin
         if( xen ) case( st )
         S_HALT: begin
             s_r <= 1'b0;
-            if( sync_pend && !pload && !host_wr ) begin
+            if( sync_pend && !pload && !host_wr && !ss_freeze ) begin
                 sync_pend <= 1'b0;
                 pc <= 8'd0; ca <= 8'd0; id <= 8'd0;
                 if( !st0[0] ) begin ba0 <= ba0 - 8'd1; ba1 <= ba1 + 8'd1; end
@@ -676,12 +703,58 @@ always @(posedge clk) begin
         default: st <= S_HALT;
         endcase
     end
+    if( ss_sh ) begin
+        st <= S_HALT; s_r <= 1'b0; x_req <= 1'b0;
+        { pload, cload, in_rst, idle, hostf, upd, rd, wr, cval, su, st0, st1,
+          pc, ca, id, ba0, ba1, rptc, rptc_next, sa, aacc, macc, mw, xoa, xba, xwr, xrd,
+          hidx, uh, ut, xcnt, ss_xlo, xg, xg_ok, xlate, sync_pend } <= ss_n[463:0];   // xlo: its own block's
+        for( i=0; i<4; i=i+1 ) begin
+            host[i] <= ss_n[464 + 8*i +: 8];
+            so_r[i] <= ss_n[496 + 24*i +: 24];
+        end
+        for( i=0; i<16; i=i+1 ) upd_q[i] <= ss_n[592 + 32*i +: 32];
+    end
 end
+
+// ---------------------------------------------------------------- save states
+// The registers as one shift chain of whole words, as gx_k054539's: halted
+// and frozen, nothing else moves them, so they are read where they are; a
+// save shifts each word back in at the top, a load shifts the engine's in.
+// Not the instruction pacing (xacc), which every sample restarts.
+localparam SSW = 1104;           // 464 registers, host 32, so 96, updates 512: 69 words
+reg  [SSW-1:0] ss_d;
+wire           ss_v  = ss_sel && !ss_mem;
+wire           ss_sh = ss_v && (ss_we || ss_step);
+wire [SSW-1:0] ss_n  = { ss_we ? ss_wd : ss_d[15:0], ss_d[SSW-1:16] };
+always @* begin
+    ss_d = '0;
+    ss_d[463:0] = { pload, cload, in_rst, idle, hostf, upd, rd, wr, cval, su, st0, st1,
+                    pc, ca, id, ba0, ba1, rptc, rptc_next, sa, aacc, macc, mw, xoa, xba, xwr, xrd,
+                    hidx, uh, ut, xcnt, xlo, xg, xg_ok, xlate, sync_pend };
+    for( i=0; i<4; i=i+1 ) begin
+        ss_d[464 + 8*i +: 8]   = host[i];
+        ss_d[496 + 24*i +: 24] = so_r[i];
+    end
+    for( i=0; i<16; i=i+1 ) ss_d[592 + 32*i +: 32] = upd_q[i];
+end
+reg  [15:0] ss_vrd;
+always @(posedge clk) ss_vrd <= ss_v ? ss_d[15:0] : 16'd0;
+// the read, registered with the address: { a memory, which one (0 program,
+// 1 coefficients, 2 data) }, and the entry's half
+reg  [ 2:0] ss_ra;
+reg         ss_rlo;
+always @(posedge clk) begin
+    ss_ra  <= { ss_mem, ss_addr[11:10] == 2'd1 ? 2'd2 : { 1'b0, ss_addr[9] } };
+    ss_rlo <= ss_addr[0];
+end
+wire [31:0] ss_mq = ss_ra[1:0] == 2'd0 ? { 8'd0, p_q } : ss_ra[1:0] == 2'd1 ? c_q : { 8'd0, d_q };
+assign ss_rd = !ss_ra[2] ? ss_vrd : ss_rlo ? ss_mq[15:0] : ss_mq[31:16];
 
 // the access's address and bytes (xm_init; xm_step_write's bytes, all at
 // once: nothing else can touch memory before the steps are done)
 wire [31:0] xbyte = ( b_c + { 13'd0, xba } ) << xsh;
-always @(posedge clk) if( xen && st == S_B && !bstall && b_iss ) begin
+always @(posedge clk) if( ss_sh ) xlo <= ss_n[69:67];
+else if( xen && st == S_B && !bstall && b_iss ) begin
     x_addr <= xbyte[17:3];
     xlo    <= xbyte[2:0];
     for( int j=0; j<8; j=j+1 ) begin

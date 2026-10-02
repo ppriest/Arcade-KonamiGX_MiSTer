@@ -49,7 +49,16 @@ module gx_eeprom93c46 #(
     input      [15:0] load_data,
     input      [ 5:0] rd_addr,       // the save's read port
     output     [15:0] rd_data,
-    output reg        written        // a WRITE, ERASE, WRITEALL or ERASEALL changed the array
+    output reg        written,       // a WRITE, ERASE, WRITEALL or ERASEALL changed the array
+
+    // save states (gx_savestate): the 64 words, then the serial state
+    input             ss_snap,
+    input             ss_commit,
+    input             ss_sel,
+    input      [11:0] ss_addr,
+    input             ss_we,
+    input      [15:0] ss_wd,
+    output     [15:0] ss_rd
 );
 
 localparam [2:0] S_RESET = 0, S_START = 1, S_CMD = 2, S_READ = 3, S_DATA = 4, S_DONE = 5;
@@ -83,7 +92,24 @@ wire sk_rise = sk && !sk_l;
 wire [7:0] cmd_n = { cmd[6:0], di };
 
 integer i;
-assign rd_data = mem[rd_addr];
+// one read port: the NVRAM save's, or the save state's (never both at once)
+wire [5:0] ra = ss_sel && ss_addr < 12'd64 ? ss_addr[5:0] : rd_addr;
+assign rd_data = mem[ra];
+
+// save states
+wire [78:0] ss_q;
+wire [15:0] ss_vrd;
+reg  [15:0] ss_mq;
+reg         ss_m;
+always @(posedge clk) begin
+    ss_mq <= rd_data;
+    ss_m  <= ss_sel && ss_addr < 12'd64;
+end
+gx_ss_vec #(.W(79)) u_ss (
+    .clk(clk), .snap(ss_snap), .d({ st, cs_l, sk_l, locked, cmd, nbits, shreg, addr, op, busy }), .q(ss_q),
+    .sel(ss_sel && ss_addr >= 12'd64), .addr(ss_addr[9:0] - 10'd64), .we(ss_we), .wd(ss_wd), .rd(ss_vrd)
+);
+assign ss_rd = ss_m ? ss_mq : ss_vrd;
 always @(posedge clk) begin
     written <= 1'b0;
     if( !ready ) busy <= busy - 20'd1;
@@ -92,6 +118,7 @@ always @(posedge clk) begin
         mem[sweep] <= 16'hffff;
     end
     if( load_we ) mem[load_addr] <= load_data;
+    else if( ss_sel && ss_we && ss_addr < 12'd64 ) mem[ss_addr[5:0]] <= ss_wd;
     if( rst ) begin
         st     <= S_RESET;
         cs_l   <= 0;
@@ -157,6 +184,7 @@ always @(posedge clk) begin
             default: ;          // S_DONE: until CS falls
         endcase
     end
+    if( ss_commit ) { st, cs_l, sk_l, locked, cmd, nbits, shreg, addr, op, busy } <= ss_q;
 end
 
 assign dbg = { mem[63], mem[1], mem[0], 6'd0, sweep, locked, st };

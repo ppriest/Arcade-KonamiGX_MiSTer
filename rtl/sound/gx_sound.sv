@@ -99,7 +99,34 @@ module gx_sound (
     // every bus cycle as it completes, for the bench's +SND_TRACE: { clk count[15:0],
     // fc, R/W, /UDS, /LDS, irq2, irq1, address[23:0], data[15:0] }
     output reg        tr_valid,
-    output reg [63:0] tr_data
+    output reg [63:0] tr_data,
+
+    // save states (rtl/gx_savestate.sv): the 68000's registers, a master
+    // for its RAM and the SDRAM RAMs, the freeze, the state bus
+    input             ss_s_req, ss_s_go,
+    output            ss_s_held, ss_s_done,
+    input      [ 4:0] ss_s_bidx,
+    input             ss_s_bwe,
+    input      [31:0] ss_s_bd,
+    output     [31:0] ss_s_bq,
+    input             ss_sb_req, ss_sb_we,
+    input      [23:1] ss_sb_addr,
+    input      [15:0] ss_sb_wd,
+    output reg        ss_sb_ack,
+    output reg [15:0] ss_sb_rd,
+    input             ss_sd_req, ss_sd_we,
+    input      [17:0] ss_sd_addr,           // a word of the RAM area (RAM_OFF on)
+    input      [15:0] ss_sd_wd,
+    output reg        ss_sd_ack,
+    output reg [15:0] ss_sd_rd,
+    input             ss_freeze,            // no samples: the chips and the DSP stop between them
+    input             ss_snap, ss_commit, ss_step,
+    input      [ 3:0] ss_sel,
+    input             ss_en,
+    input      [11:0] ss_addr,
+    input             ss_we,
+    input      [15:0] ss_wd,
+    output     [15:0] ss_rd
 );
 
 localparam [25:0] PCM_OFF = 26'h040000;     // the samples, after the program
@@ -122,6 +149,8 @@ reg  [ 2:0] ipl_n;
 wire        en_phi1, en_phi2;
 
 wire        in_iack = !as_n && fc == 3'b111;
+wire        ss_hit, ss_rdy, ss_ipl7, cpu_stop;
+wire [15:0] ss_din;
 wire        dtack_n = !(acc_ready && !as_n && !in_iack);
 
 fx68k u_cpu (
@@ -132,7 +161,7 @@ fx68k u_cpu (
     .DTACKn(dtack_n), .VPAn(!in_iack), .BERRn(1'b1),
     .BRn(1'b1), .BGACKn(1'b1),
     .IPL0n(ipl_n[0]), .IPL1n(ipl_n[1]), .IPL2n(ipl_n[2]),
-    .iEdb(cpu_din), .oEdb(cpu_dout), .eab(eab)
+    .iEdb(cpu_din), .oEdb(cpu_dout), .eab(eab), .stop_out(cpu_stop)
 );
 
 // phase enables; the DTACK-sampling phi2 (the second after AS) waits for
@@ -164,7 +193,18 @@ end
 // never served -- the sound CPU hung on it (tokkae in the bench, and the
 // board with the 68000 selected).
 wire acc_active = !as_n && !in_iack && !(nUDS && nLDS);
-wire cpu_req_now = acc_active && !acc_busy && !acc_ready;
+wire cpu_req_raw = acc_active && !acc_busy && !acc_ready;
+// an access the save-state injector answers never reaches the bus below
+wire cpu_req_now = cpu_req_raw && !ss_hit;
+
+gx_ss_m68k #(.M020(0)) u_ss_cpu (
+    .clk, .rst,
+    .acc(acc_active), .take(cpu_req_raw && (!ss_hit || ss_rdy)), .a32, .wr(!rw_n),
+    .fc, .dout(cpu_dout), .iack7(in_iack && eab[3:1] == 3'd7), .stop_in(cpu_stop),
+    .req(ss_s_req), .ipl7(ss_ipl7), .hit(ss_hit), .rdy(ss_rdy), .din(ss_din),
+    .held(ss_s_held), .go(ss_s_go), .done(ss_s_done),
+    .b_idx(ss_s_bidx), .b_we(ss_s_bwe), .b_d(ss_s_bd), .b_q(ss_s_bq)
+);
 reg  u_take;
 always @(posedge clk) begin
     if( rst || as_n ) begin
@@ -172,6 +212,7 @@ always @(posedge clk) begin
     end else begin
         if( u_take ) acc_busy <= 1'b1;
         if( u_ack ) begin cpu_din <= u_din; acc_ready <= 1'b1; acc_busy <= 1'b0; end
+        if( cpu_req_raw && ss_hit && ss_rdy ) begin cpu_din <= ss_din; acc_ready <= 1'b1; end
     end
 end
 
@@ -210,6 +251,7 @@ wire [23:0] pcm_mask = snd_pcm - 24'd1;
 reg         kp_own;
 always @(posedge clk)
     if( rst_chip ) kp_own <= 1'b0;
+    else if( ss_commit ) kp_own <= ss_gq[242];
     else if( !(kp_own ? kp_cs1 : kp_cs0) ) kp_own <= kp_own ? !kp_cs0 : kp_cs1;
 assign p_cs   = kp_own ? kp_cs1   : kp_cs0;
 assign p_addr = kp_own ? kp_addr1 : kp_addr0;
@@ -225,7 +267,8 @@ gx_k054539 #(.CHIP(0)) u_k0 (
     .m_wdata(km_wdata0), .m_ack(km_ack0), .m_rdata(km_rdata),
     .smp(d_sync), .pcm_mask, .p_cs(kp_cs0), .p_addr(kp_addr0), .p_ok(p_ok && !kp_own), .p_data,
     .out_l(ko_l0), .out_r(ko_r0), .out_v(ko_v0), .ovr(ko_ovr0),
-    .r_req(kr_req0), .r_word(kr_word0), .r_data(kr_data0), .r_ack(kr_ack0)
+    .r_req(kr_req0), .r_word(kr_word0), .r_data(kr_data0), .r_ack(kr_ack0),
+    .ss_freeze, .ss_step, .ss_sel(ss_en && ss_sel == 4'd4), .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_k0)
 );
 gx_k054539 #(.CHIP(1)) u_k1 (
     .clk, .rst(rst_chip), .cs(kc_cs1), .we(kc_we), .addr(kc_addr), .din(kc_din), .dout(kc_dout1), .ack(kc_ack1),
@@ -234,7 +277,8 @@ gx_k054539 #(.CHIP(1)) u_k1 (
     .m_wdata(km_wdata1), .m_ack(km_ack1), .m_rdata(km_rdata),
     .smp(d_sync), .pcm_mask, .p_cs(kp_cs1), .p_addr(kp_addr1), .p_ok(p_ok && kp_own), .p_data,
     .out_l(ko_l1), .out_r(ko_r1), .out_v(ko_v1), .ovr(ko_ovr1),
-    .r_req(kr_req1), .r_word(kr_word1), .r_data(kr_data1), .r_ack(kr_ack1)
+    .r_req(kr_req1), .r_word(kr_word1), .r_data(kr_data1), .r_ack(kr_ack1),
+    .ss_freeze, .ss_step, .ss_sel(ss_en && ss_sel == 4'd5), .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_k1)
 );
 
 // the chip being served, as one set of wires
@@ -274,6 +318,8 @@ reg  [9:0]  smp_cnt;
 always @(posedge clk) begin
     d_sync <= 1'b0;
     if( rst_chip ) smp_cnt <= 10'd0;
+    else if( ss_commit ) smp_cnt <= ss_gq[9:0];
+    else if( ss_freeze ) ;
     else if( smp_cnt == 10'd999 ) begin smp_cnt <= 10'd0; d_sync <= 1'b1; end
     else smp_cnt <= smp_cnt + 10'd1;
 end
@@ -312,11 +358,12 @@ always @(posedge clk) begin
     end else begin
         if( ko_v0 ) begin kl0 <= ko_l0; kr0 <= ko_r0; end
         if( ko_v1 ) begin kl1 <= ko_l1; kr1 <= ko_r1; end
-        if( smp_cnt == 10'd999 ) begin
+        if( smp_cnt == 10'd999 && !ss_freeze ) begin
             d_si  <= { to_si(kr1, d_sim), to_si(kl1, d_sim), to_si(kr0, d_sim), to_si(kl0, d_sim) };
             aud_l <= sat16( mix_l );
             aud_r <= sat16( mix_r );
         end
+        if( ss_commit ) { kl0, kr0, kl1, kr1, d_si, aud_l, aud_r } <= ss_gq[241:10];
     end
 end
 
@@ -327,11 +374,24 @@ gx_tms57002 u_dsp (
     .sync(d_sync), .si(d_si), .so(d_so), .sim(d_sim),
     .x_req(dx_req), .x_we(dx_we), .x_addr(dx_addr), .x_wdata(dx_wdata), .x_wmask(dx_wmask),
     .x_ack(dx_wack || x_ok), .x_rdata(x_data),
-    .dbg(dsp_dbg), .dbg_clr(dsp_dbg_clr)
+    .dbg(dsp_dbg), .dbg_clr(dsp_dbg_clr),
+    .ss_freeze, .ss_step, .ss_sel(ss_en && ss_sel == 4'd6), .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_d)
 );
 // reads straight to the port (it answers ok for one clock, and the DSP
 // drops the request on it); writes through the bus below
-assign x_cs   = dx_req && !dx_we;
+// The DSP's writes are posted: taken into pw_* and acknowledged at once, then
+// written in the background (U_XW). The DSP runs at MAME's rate, 256 words a
+// sample, which its programs nearly fill; it starts an access every 8 words
+// (~31 clocks) and ran over (the audio droop) when one took longer, and a
+// write is one to four SDRAM writes (sim/gx_tms57002_tb: fantjour runs over
+// at a write latency of 32). A second write waits for the first to land; a
+// read of the granule being written waits until it has landed and the read
+// port's held granules have been dropped (x_inval), others go ahead.
+reg         pw_full = 1'b0;
+reg  [17:3] pw_addr;
+reg  [63:0] pw_data;
+reg  [ 7:0] pw_mask;
+assign x_cs   = dx_req && !dx_we && !((pw_full || x_inval) && dx_addr == pw_addr);
 assign x_addr = dx_addr;
 reg  [7:0] xw_mask;             // the write's bytes still to go
 
@@ -343,13 +403,28 @@ always @(posedge clk) begin
     if( rst ) irq2 <= 1'b0;
     else if( sctrl[0] && kc_timer0 && !tim_l ) irq2 <= 1'b1;
     else if( !sctrl[0] ) irq2 <= 1'b0;
-    ipl_n <= irq2 ? 3'b101 : k8_irq ? 3'b110 : 3'b111;     // levels 2, 1: active low
+    if( ss_commit ) { irq2, tim_l } <= ss_gq[244:243];
+    ipl_n <= ss_ipl7 ? 3'b000 : irq2 ? 3'b101 : k8_irq ? 3'b110 : 3'b111;     // levels 2, 1: active low
 end
+
+// ---------------------------------------------------------------- save states
+// this module's latches; the chips have their own (state bus selects 4-6)
+wire [252:0] ss_gq;
+wire [ 15:0] ss_rd_g, ss_rd_k0, ss_rd_k1, ss_rd_d;
+assign ss_rd = ss_rd_g | ss_rd_k0 | ss_rd_k1 | ss_rd_d;
+gx_ss_vec #(.W(253)) u_ss_glue (
+    .clk, .snap(ss_snap),
+    .d({ sctrl, irq2, tim_l, kp_own, kl0, kr0, kl1, kr1, d_si, aud_l, aud_r, smp_cnt }),
+    .q(ss_gq), .sel(ss_en && ss_sel == 4'd1), .addr(ss_addr[9:0]), .we(ss_we), .wd(ss_wd), .rd(ss_rd_g)
+);
 
 // ---------------------------------------------------------------- the bus
 localparam [4:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_K539 = 3, U_KMEM = 4, U_KWR = 5, U_RAM = 6,
                  U_WAIT2 = 7, U_RAM2 = 8, U_KWR2 = 9, U_DR = 10, U_DR2 = 11,
-                 U_XW = 12, U_XW1 = 13, U_XW2 = 14, U_RW1 = 15, U_RW2 = 16, U_KINV = 17;
+                 U_XW = 12, U_XW1 = 13, U_XW2 = 14, U_RW1 = 15, U_RW2 = 16, U_KINV = 17,
+                 U_SB = 18, U_SB2 = 19, U_SD = 20, U_SDR = 21, U_SDW1 = 22, U_SDW2 = 23;
+// the save-state engine's SDRAM word: its granule, and its byte
+wire [25:0] sd_byte = snd_base + RAM_OFF + { 7'd0, ss_sd_addr, 1'b0 };
 reg  [4:0] ust;
 reg  [2:1] u_w;                 // the word of the granule the ROM read wants
 wire [23:0] ub = { a32[23:1], 1'b0 };
@@ -367,7 +442,12 @@ always @(posedge clk) begin
     km_ack0 <= 1'b0; km_ack1 <= 1'b0;
     m_inval <= 1'b0;
     d_ctrl_wr <= 1'b0; d_wr <= 1'b0; d_rd <= 1'b0; dx_wack <= 1'b0; x_inval <= 1'b0;
+    if( dx_req && dx_we && !dx_wack && !pw_full ) begin    // post the DSP's write
+        pw_full <= 1'b1; pw_addr <= dx_addr; pw_data <= dx_wdata; pw_mask <= dx_wmask;
+        dx_wack <= 1'b1;
+    end
     u_take <= 1'b0;
+    ss_sb_ack <= 1'b0; ss_sd_ack <= 1'b0;
     kr_ack0 <= 1'b0; kr_ack1 <= 1'b0; p_inval <= 1'b0;
     if( kr_req0 ) kr_p0 <= 1'b1;
     if( kr_req1 ) kr_p1 <= 1'b1;
@@ -377,12 +457,12 @@ always @(posedge clk) begin
     // nothing while in it
     if( rst_chip ) begin
         ust <= U_IDLE; m_cs <= 1'b0; w_req <= 1'b0; sctrl <= 8'd0; k_acked <= 1'b0;
-        kr_p0 <= 1'b0; kr_p1 <= 1'b0;
+        kr_p0 <= 1'b0; kr_p1 <= 1'b0; pw_full <= 1'b0;
     end else case( ust )
     // the DSP's writes first: it may be holding its program for one, the
     // CPU only its bus cycle
-    U_IDLE: if( dx_req && dx_we && !dx_wack ) begin
-        xw_mask <= dx_wmask;
+    U_IDLE: if( pw_full ) begin
+        xw_mask <= pw_mask;
         ust <= U_XW;
     end else if( kr_p0 || kr_p1 ) begin
         // a K054539's reverb word, into its RAM
@@ -392,6 +472,24 @@ always @(posedge clk) begin
         w_data <= kr_p0 ? kr_data0 : kr_data1;
         if( kr_p0 ) kr_p0 <= 1'b0; else kr_p1 <= 1'b0;
         ust <= U_RW1;
+    end else if( ss_sb_req && !ss_sb_ack ) begin
+        // the save-state engine, the sound RAM: the CPU is held meanwhile
+        ram_a <= ss_sb_addr[15:1]; ram_d <= ss_sb_wd;
+        if( ss_sb_we ) begin ram_we_h <= 1'b1; ram_we_l <= 1'b1; ss_sb_ack <= 1'b1; end
+        else ust <= U_SB;
+    end else if( ss_sd_req && !ss_sd_ack ) begin
+        // ...and the RAMs in SDRAM: a read through the program port, its
+        // granule dropped first at each granule's first word (the DSP's
+        // writes do not drop this port's); a write through the write path
+        if( ss_sd_we ) begin
+            w_req <= 1'b1; w_we16 <= 1'b1; w_addr <= sd_byte;
+            w_data <= { ss_sd_wd[7:0], ss_sd_wd[15:8] };      // the even byte low
+            ust <= U_SDW1;
+        end else begin
+            if( ss_sd_addr[1:0] == 2'd0 ) m_inval <= 1'b1;
+            m_addr <= sd_byte[25:3];
+            ust <= U_SD;
+        end
     end else if( cpu_req_now && !u_ack && !u_take ) begin
         u_take <= 1'b1;
         u_w <= a32[2:1];
@@ -446,29 +544,29 @@ always @(posedge clk) begin
     // written, then its read port's held granules dropped
     U_XW: begin
         if( xw_mask == 8'd0 ) begin
-            x_inval <= 1'b1; dx_wack <= 1'b1;
+            x_inval <= 1'b1; pw_full <= 1'b0;
             ust <= U_IDLE;
         end else begin
             w_req <= 1'b1;
             if( xw_mask[1:0] != 2'b00 ) begin
-                w_addr <= snd_base + DSP_OFF + { 8'd0, dx_addr, 3'd0 } + { 25'd0, !xw_mask[0] };
+                w_addr <= snd_base + DSP_OFF + { 8'd0, pw_addr, 3'd0 } + { 25'd0, !xw_mask[0] };
                 w_we16 <= xw_mask[1:0] == 2'b11;
-                w_data <= xw_mask[0] ? dx_wdata[15:0] : { 8'd0, dx_wdata[15:8] };
+                w_data <= xw_mask[0] ? pw_data[15:0] : { 8'd0, pw_data[15:8] };
                 xw_mask[1:0] <= 2'b00;
             end else if( xw_mask[3:2] != 2'b00 ) begin
-                w_addr <= snd_base + DSP_OFF + { 8'd0, dx_addr, 3'd2 } + { 25'd0, !xw_mask[2] };
+                w_addr <= snd_base + DSP_OFF + { 8'd0, pw_addr, 3'd2 } + { 25'd0, !xw_mask[2] };
                 w_we16 <= xw_mask[3:2] == 2'b11;
-                w_data <= xw_mask[2] ? dx_wdata[31:16] : { 8'd0, dx_wdata[31:24] };
+                w_data <= xw_mask[2] ? pw_data[31:16] : { 8'd0, pw_data[31:24] };
                 xw_mask[3:2] <= 2'b00;
             end else if( xw_mask[5:4] != 2'b00 ) begin
-                w_addr <= snd_base + DSP_OFF + { 8'd0, dx_addr, 3'd4 } + { 25'd0, !xw_mask[4] };
+                w_addr <= snd_base + DSP_OFF + { 8'd0, pw_addr, 3'd4 } + { 25'd0, !xw_mask[4] };
                 w_we16 <= xw_mask[5:4] == 2'b11;
-                w_data <= xw_mask[4] ? dx_wdata[47:32] : { 8'd0, dx_wdata[47:40] };
+                w_data <= xw_mask[4] ? pw_data[47:32] : { 8'd0, pw_data[47:40] };
                 xw_mask[5:4] <= 2'b00;
             end else begin
-                w_addr <= snd_base + DSP_OFF + { 8'd0, dx_addr, 3'd6 } + { 25'd0, !xw_mask[6] };
+                w_addr <= snd_base + DSP_OFF + { 8'd0, pw_addr, 3'd6 } + { 25'd0, !xw_mask[6] };
                 w_we16 <= xw_mask[7:6] == 2'b11;
-                w_data <= xw_mask[6] ? dx_wdata[63:48] : { 8'd0, dx_wdata[63:56] };
+                w_data <= xw_mask[6] ? pw_data[63:48] : { 8'd0, pw_data[63:56] };
                 xw_mask[7:6] <= 2'b00;
             end
             ust <= U_XW1;
@@ -481,6 +579,17 @@ always @(posedge clk) begin
         p_inval <= 1'b1;                    // the sample port may hold the granule
         if( kr_w ) kr_ack1 <= 1'b1; else kr_ack0 <= 1'b1;
         ust <= U_IDLE;
+    end
+    U_SB:    ust <= U_SB2;
+    U_SB2:   begin ss_sb_rd <= { ram_qh, ram_ql }; ss_sb_ack <= 1'b1; ust <= U_IDLE; end
+    U_SD:    begin m_cs <= 1'b1; ust <= U_SDR; end
+    U_SDR:   if( m_ok ) begin
+        m_cs <= 1'b0; ss_sd_rd <= word( m_data, sd_byte[2:1] ); ss_sd_ack <= 1'b1; ust <= U_IDLE;
+    end
+    U_SDW1:  if( w_busy ) begin w_req <= 1'b0; ust <= U_SDW2; end
+    U_SDW2:  if( !w_busy ) begin
+        m_inval <= 1'b1; x_inval <= 1'b1; p_inval <= 1'b1;
+        ss_sd_ack <= 1'b1; ust <= U_IDLE;
     end
     U_RAM:   ust <= U_RAM2;
     U_RAM2:  begin u_din <= { ram_qh, ram_ql }; u_ack <= 1'b1; ust <= U_IDLE; end
@@ -536,6 +645,7 @@ always @(posedge clk) begin
     end
     default: ust <= U_IDLE;
     endcase
+    if( ss_commit ) sctrl <= ss_gq[252:245];
 end
 
 // ---------------------------------------------------------------- trace

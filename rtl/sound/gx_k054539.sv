@@ -99,7 +99,18 @@ module gx_k054539 #(
     output reg        r_req,
     output reg [12:0] r_word,
     output reg [15:0] r_data,
-    input             r_ack
+    input             r_ack,
+
+    // save states (gx_savestate): the register file at 0x000-0x4ff, then
+    // the rest of the chip's state as a shift chain, 16 bits a word (below).
+    // ss_freeze stops the chip between samples, the timer with it.
+    input             ss_freeze,
+    input             ss_step,      // the word read has been taken: shift
+    input             ss_sel,
+    input      [11:0] ss_addr,
+    input             ss_we,
+    input      [15:0] ss_wd,
+    output     [15:0] ss_rd
 );
 
 // ---------------------------------------------------------------- registers
@@ -315,13 +326,17 @@ typedef enum logic [1:0] { K_IDLE, K_RD, K_MEM } kst_t;
 kst_t st;
 
 reg [7:0] act_n;
+reg        rf_we;
+reg [10:0] rf_a;
+reg [ 7:0] rf_d;
 integer i;
 
 always @(posedge clk) begin
     ack   <= 1'b0;
     out_v <= 1'b0;
     r_req <= 1'b0;
-    rq    <= regs[addr];
+    rq    <= regs[ss_sel ? ss_addr[10:0] : addr];
+    rf_we  = 1'b0; rf_a = addr; rf_d = din;
     act_n = act;
     if( rst ) begin
         st <= K_IDLE; m_req <= 1'b0; timer_out <= 1'b0; t_run <= 1'b0;
@@ -334,7 +349,7 @@ always @(posedge clk) begin
         end
     end else begin
         // the timer
-        if( t_run ) begin
+        if( t_run && !ss_freeze ) begin
             if( tacc + { 15'd0, tstep } >= TPER ) begin
                 tacc <= tacc + { 15'd0, tstep } - TPER;
                 if( r22f[5] ) timer_out <= ~timer_out;
@@ -488,7 +503,7 @@ always @(posedge clk) begin
             if( we ) begin
                 if( latch && a_pos ) hpos[a_n] <= setb( hpos[a_n], a_pb, din );
                 else begin
-                    regs[addr] <= din;
+                    rf_we = 1'b1;
                     if( a_pos ) cpos[a_n] <= setb( cpos[a_n], a_pb, din );
                 end
                 if( a_ch ) case( a_off )
@@ -558,6 +573,47 @@ always @(posedge clk) begin
         endcase
     end
     act <= act_n;
+    // one write port: the CPU's, or the engine's
+    if( ss_sel && ss_we && ss_addr < 12'h500 ) regs[ss_addr[10:0]] <= ss_wd[7:0];
+    else if( rf_we ) regs[rf_a] <= rf_d;
+    if( ss_sh ) begin
+        for( i=0; i<8; i=i+1 ) begin
+            { delta[i], vol[i], pan[i], rvl[i], rdl[i], lpos[i], cpos[i], hpos[i], ctype[i] } <= ss_n[144*i +: 144];
+            { vpos[i], vpf[i], vval[i], vpval[i] } <= ss_n[1152 + 72*i +: 72];
+        end
+        { lflag, act, r22f, rom_addr, cur_ptr, tstep, tacc, t_run, timer_out, rpos, out_l, out_r } <= ss_n[1728 +: 149];
+        ss_pad <= ss_n[SSC-1 -: SSC-SSW];
+        vgv <= 8'd0; pend <= 1'b0;
+    end
 end
+
+// ---------------------------------------------------------------- save states
+// The chip's state other than the register file, as one shift chain of
+// whole words: frozen, nothing else moves it, so it is read where it is.
+// Each word taken shifts the chain down 16 bits; a save shifts the word
+// back in at the top (after the last word the chain is as it was), a load
+// shifts the engine's in. No copy is kept: a copy cost an ALM a bit.
+localparam SSW = 1877;
+localparam SSC = 16 * ((SSW + 15) / 16);
+reg  [SSW-1:0] ss_d;
+reg  [SSC-SSW-1:0] ss_pad;
+wire           ss_v  = ss_sel && ss_addr >= 12'h500;
+wire           ss_sh = ss_v && (ss_we || ss_step);
+wire [SSC-1:0] ss_c  = { ss_pad, ss_d };
+wire [SSC-1:0] ss_n  = { ss_we ? ss_wd : ss_c[15:0], ss_c[SSC-1:16] };
+always @* begin
+    for( i=0; i<8; i=i+1 ) begin
+        ss_d[144*i +: 144]       = { delta[i], vol[i], pan[i], rvl[i], rdl[i], lpos[i], cpos[i], hpos[i], ctype[i] };
+        ss_d[1152 + 72*i +: 72]  = { vpos[i], vpf[i], vval[i], vpval[i] };
+    end
+    ss_d[1728 +: 149] = { lflag, act, r22f, rom_addr, cur_ptr, tstep, tacc, t_run, timer_out, rpos, out_l, out_r };
+end
+reg  [15:0] ss_vrd;
+reg         ss_rf;                       // the read was of the register file
+always @(posedge clk) begin
+    ss_rf  <= ss_sel && ss_addr < 12'h500;
+    ss_vrd <= ss_v ? ss_c[15:0] : 16'd0;
+end
+assign ss_rd = ss_rf ? { 8'd0, rq } : ss_vrd;
 
 endmodule

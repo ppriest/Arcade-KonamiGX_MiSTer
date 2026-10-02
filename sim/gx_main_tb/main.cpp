@@ -55,6 +55,8 @@ int main(int argc, char** argv) {
         ctx->time(t);
         os.close();
         ctx->commandArgs(argc, argv);                  // this run's plusargs, not the saved run's
+        ctx->gotFinish(false);                         // a snapshot taken at its run's last frame
+                                                       // was saved with $finish already called
         top->reopen = 1;
         rises = top->clk_cpu ? 1 : 0;                  // keep the two clocks' phase
         std::printf("restored %s\n", restore.c_str());

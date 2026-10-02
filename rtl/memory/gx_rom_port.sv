@@ -36,15 +36,6 @@ module gx_rom_port #(
     parameter AW = 21,              // granule (8-byte) address bits from the client
     parameter PAIR = 0,             // 1: fetch a row's other half, and take hints
     parameter NS = 4,               // granules held
-    // 1: the done toggle comes back through two clk registers, for a client
-    // whose fetches can take a clock more. The clocks are phase aligned but
-    // clk's tree arrives ~1 ns after clk_mem's, and when the fitter packs
-    // done_t and done_s into one LAB (a 0.6 ns hop) done_s catches the
-    // toggle on the edge it changes and the fetch is never seen done: seeds
-    // 4, 5 and 3 of the CRT Adjust build, u_snd, hold -0.18 to -0.71 ns. With
-    // SYNC the first stage is a synchroniser (KonamiGX.sdc false-paths it)
-    // and done is decided wholly in clk.
-    parameter SYNC = 0,
     // 1: a fetch outside halfsel asks the arbiter for the granule and its
     // pair (addr ^ 1) in one double read, and both are kept: a 5, 6 or 8 bpp
     // sprite row is two granules, and one SDRAM access for both costs four
@@ -116,10 +107,8 @@ reg  [AW-1:0] ans_addr;
 reg  [63:0]   data_m;
 reg  [63:0]   data_f;           // halfsel: the whole granule; DBL: the pair's other granule
 wire [VW-1:0] vic2 = vic==VW'(NS-1) ? {VW{1'b0}} : vic + 1'd1;
-reg           req_t = 0, done_t = 0, done_s = 0, done_s1 = 0;
-wire          done_c = SYNC ? done_s1 : done_t;
-wire          done   = done_c != done_s;
-always @(posedge clk) done_s1 <= done_t;
+reg           req_t = 0, done_t = 0, done_s = 0;
+wire          done   = done_t != done_s;
 
 wire [AW-1:0] pair_a = { ans_addr[AW-1:1], ~ans_addr[0] };
 wire          want   = cs && !(ansd && addr==ans_addr);
@@ -128,7 +117,7 @@ wire          pf_hint = PAIR==1 && hint_cs && !held(hint_addr) && !(busy && a_l=
 
 always @(posedge clk) begin
     ok     <= 0;
-    done_s <= done_c;
+    done_s <= done_t;
     if( rst ) begin
         busy <= 0; s_val <= {NS{1'b0}}; vic <= 0; ansd <= 0;
     end else begin
@@ -181,11 +170,31 @@ end
 reg  req_s = 0;
 wire start = req_t != req_s;
 
+// The answer comes back only on a clk_mem edge midway between two clk
+// edges. clk's tree arrives ~1 ns after clk_mem's, and a done_t that
+// changed on an edge the two share could reach done_s in the same edge
+// when the fitter put them side by side (a 0.6 ns hop; four builds failed
+// hold there, on u_snd and u_tile): the fetch was then never seen done.
+// Changing only midway gives done_s half a clk period of setup and of
+// hold; KonamiGX.sdc false-paths the hold check, which cannot know it.
+// tv toggles on every clk edge and tv_m follows it on clk_mem, so they
+// differ just before each midway edge (tv -> tv_m is launched by the later
+// clock: safe for hold). data_m and data_f are taken with the answer and
+// are read only once done is seen, a clk later.
+reg  tv = 0, tv_m = 0, got = 0;
+always @(posedge clk)     tv   <= ~tv;
+always @(posedge clk_mem) tv_m <= tv;
+wire midway = tv != tv_m;
+
 always @(posedge clk_mem) begin
     req_s <= req_t;
     if( rst ) begin
-        c_req <= 0;
+        c_req <= 0; got <= 0;
     end else begin
+        if( got && midway ) begin
+            done_t <= ~done_t;
+            got    <= 0;
+        end
         if( start ) begin
             c_req  <= 1;
             c_dbl  <= DBL && !halfsel;
@@ -198,7 +207,8 @@ always @(posedge clk_mem) begin
             data_m <= halfsel ? ( a_l[0] ? { 32'd0, c_rdata[63:32] } : { 32'd0, c_rdata[31:0] } ) :
                       DBL     ? ( a_l[0] ? c_rdata2 : c_rdata ) : c_rdata;
             data_f <= halfsel ? c_rdata : a_l[0] ? c_rdata : c_rdata2;
-            done_t <= ~done_t;
+            if( midway ) done_t <= ~done_t;     // on this edge, or the next midway one
+            else         got    <= 1;
         end
     end
 end

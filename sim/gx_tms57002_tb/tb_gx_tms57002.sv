@@ -49,9 +49,12 @@ gx_tms57002 dut (
     .dbg, .dbg_clr(1'b0)
 );
 
-// external memory: 256 KB, answers LAT clocks after a request
+// external memory: 256 KB, answers LAT clocks after a read and WLAT after a
+// write (+WLAT, default LAT: on the board a write is one to four SDRAM
+// writes through gx_sound's write path, each waited out)
 reg [7:0] xram [0:262143];
-integer lat = 12, lc = 0;
+integer lat = 12, wlat = -1, lc = 0;
+initial void'($value$plusargs("WLAT=%d", wlat));
 // +XLOG=n: the first n external-memory transactions, as tb_gx_main's
 int xlog = 0;
 initial void'($value$plusargs("XLOG=%d", xlog));
@@ -63,7 +66,7 @@ end
 always @(posedge clk) begin
     x_ack <= 0;
     if( x_req && !x_ack ) begin
-        if( lc == lat ) begin
+        if( lc == (x_we && wlat >= 0 ? wlat : lat) ) begin
             lc <= 0;
             x_ack <= 1;
             for( int k=0; k<8; k++ ) begin

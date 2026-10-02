@@ -8,14 +8,17 @@ derive_clock_uncertainty
 # the board (clk_vid), the 68EC020 (clk_cpu) and the memory (clk_sys) is
 # timed at the two clocks' closest edges: rtl/gx_main.sv's cpu_cen and
 # rtl/memory/gx_rom_port.sv are written for related clocks, not for
-# asynchronous ones. One exception, below.
+# asynchronous ones. The exception, below: gx_rom_port's answer, hold only.
 # ---------------------------------------------------------------------------
 
-# gx_rom_port with SYNC=1 (the sound board's ports and the ROM readback)
-# brings its done toggle back through two clk_vid registers; the first is a
-# synchroniser, and its hold against clk_sys is what failed when the fitter
-# put done_t and it side by side (gx_rom_port.sv, SYNC)
-set_false_path -from [get_registers {*|gx_rom_port:*|done_t}] -to [get_registers {*|gx_rom_port:*|done_s1}]
+# gx_rom_port's answer (done_t, data_m, data_f) changes only on a clk_sys
+# edge midway between two clk_vid edges, so clk_vid has half its period of
+# hold on it; the same-edge hold check STA makes cannot happen (it failed on
+# four builds where the fitter put done_t and done_s side by side).
+# Setup stays timed.
+set_false_path -hold -from [get_registers {*|gx_rom_port:*|done_t}]
+set_false_path -hold -from [get_registers {*|gx_rom_port:*|data_m[*]}]
+set_false_path -hold -from [get_registers {*|gx_rom_port:*|data_f[*]}]
 
 # The game selector is static: the .mra mod byte, latched during the download
 set_false_path -from [get_registers {*mod_byte*}]
@@ -84,3 +87,25 @@ set_multicycle_path -hold  1 -from [get_clocks {sdram_clk_pin}] -to $sdram_dq_re
 set sdram_outs [get_ports {SDRAM_A[*] SDRAM_BA[*] SDRAM_DQ[*] SDRAM_DQML SDRAM_DQMH SDRAM_nRAS SDRAM_nCAS SDRAM_nWE SDRAM_nCS SDRAM_CKE}]
 set_output_delay -clock sdram_clk_pin -max [expr {$sdram_tDS + $sdram_board}]      $sdram_outs
 set_output_delay -clock sdram_clk_pin -min [expr {-$sdram_tDH + $sdram_board_min}] $sdram_outs
+
+# ---------------------------------------------------------------------------
+# DDRAM_CLK is a clock mux in logic (KonamiGX.sv): clk_sys while the ROM
+# loader has DDR3, CLK_VIDEO (clk_vid) otherwise, and the rotator is held off
+# DDR3 while the loader runs. Without this STA times the loader against the
+# sysmem bridge clocked by clk_vid and the rotator against it clocked by
+# clk_sys, neither of which can happen; builds failed hold there (-0.387 and
+# -0.293 ns on seed 3 of 39185b1). One generated clock per mux input, the two
+# physically exclusive, each exclusive of the framework's other clock groups
+# (sys_top.sdc's list) and of the other input's domain. The pin is the mux's
+# LUT output as Quartus 17 names it.
+# ---------------------------------------------------------------------------
+set gx_sys_clk {emu|pll|pll_inst|altera_pll_i|general[0].gpll~PLL_OUTPUT_COUNTER|divclk}
+set gx_vid_clk {emu|pll|pll_inst|altera_pll_i|general[2].gpll~PLL_OUTPUT_COUNTER|divclk}
+create_generated_clock -name ddram_ldr -source [get_pins $gx_sys_clk] [get_pins {emu|DDRAM_CLK|combout}]
+create_generated_clock -name ddram_rot -add -source [get_pins $gx_vid_clk] [get_pins {emu|DDRAM_CLK|combout}]
+set_clock_groups -physically_exclusive -group [get_clocks ddram_ldr] -group [get_clocks ddram_rot]
+set_clock_groups -exclusive    -group [get_clocks {ddram_ldr ddram_rot}]    -group [get_clocks { pll_hdmi|pll_hdmi_inst|altera_pll_i|*[0].*|divclk}]    -group [get_clocks { pll_audio|pll_audio_inst|altera_pll_i|*[0].*|divclk}]    -group [get_clocks { spi_sck}]    -group [get_clocks { hdmi_sck}]    -group [get_clocks { *|h2f_user0_clk}]    -group [get_clocks { FPGA_CLK1_50 }]    -group [get_clocks { FPGA_CLK2_50 }]    -group [get_clocks { FPGA_CLK3_50 }]
+set_false_path -from [get_clocks $gx_vid_clk] -to [get_clocks ddram_ldr]
+set_false_path -from [get_clocks ddram_ldr]   -to [get_clocks $gx_vid_clk]
+set_false_path -from [get_clocks $gx_sys_clk] -to [get_clocks ddram_rot]
+set_false_path -from [get_clocks ddram_rot]   -to [get_clocks $gx_sys_clk]

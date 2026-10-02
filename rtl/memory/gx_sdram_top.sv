@@ -266,7 +266,7 @@ sdram_arbiter #(.N(4)) u_arb1 (
     .dl_busy(snd_wbusy)
 );
 
-gx_rom_port #(.AW(23), .SYNC(1)) u_gfx (
+gx_rom_port #(.AW(23)) u_gfx (
     .clk, .clk_mem, .rst(reset),
     .cs(gfx_cs), .addr(gfx_addr), .ok(gfx_ok), .data(gfx_data),
     .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(1'b0),
@@ -274,7 +274,7 @@ gx_rom_port #(.AW(23), .SYNC(1)) u_gfx (
     .c_req(arb1_req[0]), .c_addr(arb1_addr[25:0]), .c_valid(arb1_valid[0]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
-gx_rom_port #(.AW(23), .SYNC(1)) u_snd (
+gx_rom_port #(.AW(23)) u_snd (
     .clk, .clk_mem, .rst(reset),
     .cs(snd_cs), .addr(snd_addr), .ok(snd_ok), .data(snd_data),
     .hint_cs(1'b0), .hint_addr(23'd0), .halfsel(1'b0), .inval(snd_inval),
@@ -282,7 +282,7 @@ gx_rom_port #(.AW(23), .SYNC(1)) u_snd (
     .c_req(arb1_req[1]), .c_addr(arb1_addr[51:26]), .c_valid(arb1_valid[1]), .c_rdata(arb1_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
 
-gx_rom_port #(.AW(15), .SYNC(1)) u_dsp (
+gx_rom_port #(.AW(15)) u_dsp (
     .clk, .clk_mem, .rst(reset),
     .cs(dsp_cs), .addr(dsp_addr), .ok(dsp_ok), .data(dsp_data),
     .hint_cs(1'b0), .hint_addr(15'd0), .halfsel(1'b0), .inval(dsp_inval),
@@ -291,7 +291,7 @@ gx_rom_port #(.AW(15), .SYNC(1)) u_dsp (
 );
 
 // the voices keep a granule per channel themselves (gx_k054539), so one here
-gx_rom_port #(.AW(21), .NS(1), .SYNC(1)) u_pcm (
+gx_rom_port #(.AW(21), .NS(1)) u_pcm (
     .clk, .clk_mem, .rst(reset),
     .cs(pcm_cs), .addr(pcm_addr), .ok(pcm_ok), .data(pcm_data),
     .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(pcm_inval),

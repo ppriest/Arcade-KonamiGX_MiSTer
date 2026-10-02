@@ -73,7 +73,8 @@ assign VIDEO_ARY = (!ar) ? base_ary : 12'd0;
 
 `include "build_id.v"
 localparam CONF_STR = {
-	"KonamiGX;;",
+	// SS: four save-state slots of 1 MB in DDR3 from 0x3C000000 (rtl/gx_ss_ddr.sv)
+	"KonamiGX;SS3C000000:100000;",
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
@@ -99,6 +100,11 @@ localparam CONF_STR = {
 	"H1O[70:69],P1 stick,Auto,Aim,D-pad;",
 	"H1O[72:71],P2 stick,Auto,Aim,D-pad;",
 	"H1O[74:73],Mouse aims,P1,P2,Off;",
+	"-;",
+	// save states (docs/SAVESTATES.md): the slot, and save/restore it
+	"O[100:99],Save state slot,1,2,3,4;",
+	"R[101],Save state;",
+	"R[102],Restore state;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -439,10 +445,35 @@ gx_k056800 u_k056800 (
 	.h_wr(snd_wr), .h_rd(snd_rd), .h_addr(snd_addr[2:0]),
 	.h_din(snd_dout), .h_dout(k8_host),
 	.s_wr(k8_wr), .s_rd(k8_rd), .s_addr(k8_addr), .s_din(k8_din), .s_dout(k8_dout),
-	.irq(k8_irq), .dbg(k8_dbg)
+	.irq(k8_irq), .dbg(k8_dbg),
+	.ss_snap, .ss_commit, .ss_sel(ss_en && ss_sel == 4'd2), .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_k8)
 );
 
 wire [63:0] snd_dbg, dsp_dbg;
+
+// save states: the engine's wires (gx_savestate below gx_main)
+wire        ss_busy, ss_own, ss_snap, ss_commit, ss_freeze, ss_en, ss_we, ss_step;
+wire [ 3:0] ss_sel;
+wire [11:0] ss_addr;
+wire [15:0] ss_wd, ss_rd_main, ss_rd_snd, ss_rd_k8;
+wire        ss_m_req, ss_m_go, ss_m_held, ss_m_done, ss_m_bwe;
+wire        ss_s_req, ss_s_go, ss_s_held, ss_s_done, ss_s_bwe;
+wire [ 4:0] ss_m_bidx, ss_s_bidx;
+wire [31:0] ss_m_bd, ss_m_bq, ss_s_bd, ss_s_bq;
+wire        ss_mb_req, ss_mb_we, ss_mb_ack, ss_sb_req, ss_sb_we, ss_sb_ack, ss_sd_req, ss_sd_we, ss_sd_ack;
+wire [23:1] ss_mb_addr, ss_sb_addr;
+wire [ 1:0] ss_mb_be;
+wire [15:0] ss_mb_wd, ss_mb_rd, ss_sb_wd, ss_sb_rd, ss_sd_wd, ss_sd_rd;
+wire [17:0] ss_sd_addr;
+wire [ 8:0] ss_vpos, ss_hpos;
+wire        ss_esc_busy, ss_dma_busy;
+wire        sl_start, sl_save, sl_wv, sl_wready, sl_end, sl_idle, sl_rv, sl_rtake;
+wire [15:0] sl_wd, sl_rd;
+wire [31:0] sl_words;
+wire  [7:0] ss_DDRAM_BURSTCNT, ss_DDRAM_BE;
+wire [28:0] ss_DDRAM_ADDR;
+wire [63:0] ss_DDRAM_DIN;
+wire        ss_DDRAM_RD, ss_DDRAM_WE;
 wire [31:0] snd_ovr;
 wire [49:0] k8_dbg;
 // the sound board's RAMs zeroed after each reset, gx_sound held meanwhile
@@ -478,7 +509,11 @@ gx_sound u_sound (
 	.aud_l(snd_aud_l), .aud_r(snd_aud_r),
 	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
 	.dbg(snd_dbg), .dsp_dbg, .ovr_dbg(snd_ovr), .dsp_dbg_clr(dsp_src[0]),
-	.tr_valid(), .tr_data()
+	.tr_valid(), .tr_data(),
+	.ss_s_req, .ss_s_go, .ss_s_held, .ss_s_done, .ss_s_bidx, .ss_s_bwe, .ss_s_bd, .ss_s_bq,
+	.ss_sb_req, .ss_sb_we, .ss_sb_addr, .ss_sb_wd, .ss_sb_ack, .ss_sb_rd,
+	.ss_sd_req, .ss_sd_we, .ss_sd_addr, .ss_sd_wd, .ss_sd_ack, .ss_sd_rd,
+	.ss_freeze, .ss_snap, .ss_commit, .ss_step, .ss_sel, .ss_en, .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_snd)
 );
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
 wire [63:0] dbg_ee, dbg_irq;
@@ -535,7 +570,56 @@ gx_main u_board (
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
 	.rom_top(tile_base), .pause_cpu(pause_cpu), .snd_run,
 	.tile_base, .obj_base, .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
-	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem)
+	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem),
+	.ss_m_req, .ss_m_go, .ss_m_held, .ss_m_done, .ss_m_bidx, .ss_m_bwe, .ss_m_bd, .ss_m_bq,
+	.ss_mb_req, .ss_mb_we, .ss_mb_addr, .ss_mb_be, .ss_mb_wd, .ss_mb_ack, .ss_mb_rd,
+	.ss_snap, .ss_commit, .ss_sel, .ss_en, .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_main),
+	.ss_vpos, .ss_hpos, .ss_esc_busy, .ss_dma_busy
+);
+
+///////////////////////   SAVE STATES   //////////////////////////
+// docs/SAVESTATES.md. The OSD's Save/Restore (status 101/102, held while
+// the OSD shows them) start gx_savestate on clk_vid; it takes the CPUs,
+// walks rtl/gx_ss_layout.svh through the board's channels, and moves the
+// image to or from the selected slot in DDR3 (gx_ss_ddr), where
+// Main_MiSTer keeps the four slots' files. Not while the sound CPU is in
+// reset or the Pause button holds the 68020: neither CPU could be taken.
+reg  [2:0] ss_sv_s = 0, ss_ld_s = 0;
+reg        ss_save = 0, ss_load = 0;
+always @(posedge clk_vid) begin
+	ss_sv_s <= { ss_sv_s[1:0], status[101] };
+	ss_ld_s <= { ss_ld_s[1:0], status[102] };
+	ss_save <= ss_sv_s[2:1] == 2'b01 && snd_run && !pause_cpu && !rst_vid;
+	ss_load <= ss_ld_s[2:1] == 2'b01 && snd_run && !pause_cpu && !rst_vid;
+end
+wire [1:0] ss_slot = status[100:99];
+
+gx_savestate u_ss (
+	.clk(clk_vid), .rst(rst_vid),
+	.save_req(ss_save), .load_req(ss_load), .set_id(mod_byte), .busy(ss_busy), .err(),
+	.esc_busy(ss_esc_busy), .dma_busy(ss_dma_busy), .vpos(ss_vpos), .hpos({ 1'b0, ss_hpos }),
+	.m_req(ss_m_req), .m_go(ss_m_go), .m_held(ss_m_held), .m_done(ss_m_done),
+	.m_bidx(ss_m_bidx), .m_bwe(ss_m_bwe), .m_bd(ss_m_bd), .m_bq(ss_m_bq),
+	.s_req(ss_s_req), .s_go(ss_s_go), .s_held(ss_s_held), .s_done(ss_s_done),
+	.s_bidx(ss_s_bidx), .s_bwe(ss_s_bwe), .s_bd(ss_s_bd), .s_bq(ss_s_bq),
+	.ss_snap, .ss_commit, .snd_freeze(ss_freeze),
+	.ss_sel, .ss_en, .ss_addr, .ss_we, .ss_step, .ss_wd, .ss_rd(ss_rd_main | ss_rd_snd | ss_rd_k8),
+	.mb_req(ss_mb_req), .mb_we(ss_mb_we), .mb_addr(ss_mb_addr), .mb_be(ss_mb_be), .mb_wd(ss_mb_wd),
+	.mb_ack(ss_mb_ack), .mb_rd(ss_mb_rd),
+	.sb_req(ss_sb_req), .sb_we(ss_sb_we), .sb_addr(ss_sb_addr), .sb_wd(ss_sb_wd), .sb_ack(ss_sb_ack), .sb_rd(ss_sb_rd),
+	.sd_req(ss_sd_req), .sd_we(ss_sd_we), .sd_addr(ss_sd_addr), .sd_wd(ss_sd_wd), .sd_ack(ss_sd_ack), .sd_rd(ss_sd_rd),
+	.sl_start, .sl_save, .sl_wv, .sl_wd, .sl_wready, .sl_end, .sl_words, .sl_idle,
+	.sl_rv, .sl_rd, .sl_rtake
+);
+
+gx_ss_ddr u_ss_ddr (
+	.clk(clk_vid), .rst(rst_vid), .slot(ss_slot), .active(ss_busy),
+	.sl_start, .sl_save, .sl_wv, .sl_wd, .sl_wready, .sl_end, .sl_words, .sl_idle,
+	.sl_rv, .sl_rd, .sl_rtake,
+	.own(ss_own),
+	.DDRAM_BUSY(DDRAM_BUSY), .DDRAM_BURSTCNT(ss_DDRAM_BURSTCNT), .DDRAM_ADDR(ss_DDRAM_ADDR),
+	.DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY), .DDRAM_RD(ss_DDRAM_RD),
+	.DDRAM_DIN(ss_DDRAM_DIN), .DDRAM_BE(ss_DDRAM_BE), .DDRAM_WE(ss_DDRAM_WE)
 );
 
 ///////////////////////   PROBES   ///////////////////////////////
@@ -730,9 +814,9 @@ screen_rotate_two u_rotate (
 	.FB_BASE(FB_BASE), .FB_STRIDE(FB_STRIDE),
 	.FB_VBL(FB_VBL), .FB_LL(FB_LL),
 
-	// held off the bus while the ROM loader has it
+	// held off the bus while the ROM loader or the save states have it
 	.DDRAM_CLK(rot_DDRAM_CLK),
-	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy | ss_own),
 	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
 	.DDRAM_ADDR(rot_DDRAM_ADDR),
 	.DDRAM_DIN(rot_DDRAM_DIN),
@@ -742,11 +826,13 @@ screen_rotate_two u_rotate (
 );
 
 assign DDRAM_CLK      = ldr_busy ? clk_sys            : rot_DDRAM_CLK;
-assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
-assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : rot_DDRAM_ADDR;
-assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : rot_DDRAM_DIN;
-assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : rot_DDRAM_BE;
-assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : rot_DDRAM_WE;
-assign DDRAM_RD       = ldr_busy ? ldr_DDRAM_RD       : rot_DDRAM_RD;
+// after the load the port is the rotator's, on its clock (clk_vid), except
+// while gx_ss_ddr owns it (the same clock)
+assign DDRAM_BURSTCNT = ldr_busy ? ldr_DDRAM_BURSTCNT : ss_own ? ss_DDRAM_BURSTCNT : rot_DDRAM_BURSTCNT;
+assign DDRAM_ADDR     = ldr_busy ? ldr_DDRAM_ADDR     : ss_own ? ss_DDRAM_ADDR     : rot_DDRAM_ADDR;
+assign DDRAM_DIN      = ldr_busy ? ldr_DDRAM_DIN      : ss_own ? ss_DDRAM_DIN      : rot_DDRAM_DIN;
+assign DDRAM_BE       = ldr_busy ? ldr_DDRAM_BE       : ss_own ? ss_DDRAM_BE       : rot_DDRAM_BE;
+assign DDRAM_WE       = ldr_busy ? ldr_DDRAM_WE       : ss_own ? ss_DDRAM_WE       : rot_DDRAM_WE;
+assign DDRAM_RD       = ldr_busy ? ldr_DDRAM_RD       : ss_own ? ss_DDRAM_RD       : rot_DDRAM_RD;
 
 endmodule

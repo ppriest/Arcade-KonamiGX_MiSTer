@@ -139,6 +139,8 @@ module gx_video #(
     output            unsupported,
     output            obj_dma_busy,
     output            obj_ln_short,       // the sprite scan did not finish a line (probe)
+    output     [ 8:0] ss_vpos,            // the raster, for the save-state engine: vdump
+    output     [ 8:0] ss_hpos,            // ...and the pixel since LHBL rose
     input             tm_blank_skip,      // gx_tilemap's blank-row skip on
     output reg [131:0] dbg_line           // line time, tilemap and sprites (probe T)
 );
@@ -178,6 +180,9 @@ always @(posedge clk) if( pxl_cen ) begin
         vdump    <= ( lvbl && !lvbl_hsf ) ? 9'h110 : vdump == 9'h1FF ? 9'h0F8 : vdump + 9'd1;
     end
 end
+
+assign ss_vpos = vdump;
+assign ss_hpos = pcnt;
 
 wire [9:0] hd0 = 10'h058 + vis_x0 + { 1'b0, p };
 always @* hdump = { 1'b0, p } < hc - 10'd64 ? hd0[8:0] : 9'(hd0 - hc);

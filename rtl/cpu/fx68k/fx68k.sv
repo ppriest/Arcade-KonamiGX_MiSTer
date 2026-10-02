@@ -6,6 +6,12 @@
 // 
 // TODO:
 // - Everything except bus retry already implemented.
+//
+// MODIFIED for Arcade-KonamiGX_MiSTer (GPLv3 section 5(a) notice). Lines
+// marked [GX]; rtl/cpu/fx68k/PROVENANCE.md has the reasons.
+// Modified 2026-09-22: the three structs declared packed, for Verilator.
+// Modified 2026-10-01: stop_out, high while IRD holds STOP, for the
+// save-state engine.
 
 `timescale 1 ns / 1 ns
 
@@ -159,7 +165,8 @@ module fx68k(
 	input BRn, BGACKn,
 	input IPL0n, input IPL1n, input IPL2n,
 	input [15:0] iEdb, output [15:0] oEdb,
-	output [23:1] eab
+	output [23:1] eab,
+	output stop_out				// [GX] IRD is STOP: an interrupt now ends a STOP
 	);
 	
 	// wire clock = Clks.clk;
@@ -305,6 +312,7 @@ module fx68k(
 
 	reg [15:0] ftu;
 	reg [15:0] Irc, Ir, Ird;
+	assign stop_out = Ird == 16'h4E72;	// [GX]
 	
 	wire [15:0] alue;
 	wire [15:0] Abl;

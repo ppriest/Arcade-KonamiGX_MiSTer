@@ -1,0 +1,3 @@
+obj_verilator/tg68k_ghdl/TG68KdotC_Kernel.v
+rtl/cpu/gx_ss_m68k.sv
+sim/gx_ss_cpu_tb/tb_gx_ss_cpu.sv

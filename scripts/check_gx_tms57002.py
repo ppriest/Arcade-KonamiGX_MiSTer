@@ -21,6 +21,7 @@ def main():
     ap.add_argument("log")
     ap.add_argument("--seconds", type=float)
     ap.add_argument("--lat", type=int, default=12)
+    ap.add_argument("--wlat", type=int, help="a write's latency (default: --lat)")
     ap.add_argument("--lock", help="lockstep against this scripts/tms57002.py lock output")
     ap.add_argument("--samples", type=int)
     a = ap.parse_args()
@@ -47,7 +48,8 @@ def main():
     sys.path.insert(0, str(REPO / "scripts"))
     import check_gx_obj
     r = subprocess.run([check_gx_obj.GIT_BASH, "scripts/run_verilator.sh", "gx_tms57002_tb",
-                        "+EVENTS=" + str(out.relative_to(REPO)).replace("\\", "/"), "+LAT=%d" % a.lat], cwd=REPO)
+                        "+EVENTS=" + str(out.relative_to(REPO)).replace("\\", "/"), "+LAT=%d" % a.lat]
+                       + (["+WLAT=%d" % a.wlat] if a.wlat is not None else []), cwd=REPO)
     sys.exit(r.returncode)
 
 

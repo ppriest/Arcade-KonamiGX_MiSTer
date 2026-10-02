@@ -13,6 +13,7 @@ DE10-nano.
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
+  - [Save states](#save-states)
   - [CRT Adjust](#crt-adjust)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
@@ -25,6 +26,12 @@ DE10-nano.
 - [License](#license)
 
 ## History
+
+* **Arcade-KonamiGX_20261002**
+  * Save states: four slots
+    * States can be converted to and from MAME 0.289 for the same set (`scripts/gxss.py`)
+  * Faster sprite list generation (ESC): Daisu-Kiss's title screen no longer runs at half speed
+  * Sound DSP writes no longer stall it (for the reported audio droop; not yet confirmed)
 
 * **Arcade-KonamiGX_20260928**
   * Sprites now keep up on busy lines due to various optimisations: Fixes Crazy Cross intro, Dragoon, Salamnder 2 later levels
@@ -52,6 +59,22 @@ Known issues:
   word 0; that check fails on the core although the EEPROM it leaves passes it, and the boot, which
   reads with the same routine, does not fail. Not yet explained; the 93C46's busy time did not fix
   it.
+* **Gokujou Parodius: a second settings save from the service menu leaves an EEPROM error** at the
+  next power-on check, which then loops. Deleting the `.nvm` file, or holding the service button
+  at start-up (which initialises the EEPROM), clears it. The first save works; Fantastic Journey,
+  Salamander 2 and Sexy Parodius do not show it. The same fault as Dragoon Might's save.
+
+Reported by players against the 20260928 release, compared with the original PCB; not yet
+reproduced here:
+* Fantastic Journey and Gokujou Parodius:
+  * stage 2's clouds, and the dive into the water, flicker when many sprites are on screen
+    (sprite line time: the scan and zoom changes since 20260928 are expected to cover it);
+  * the big ship boss's flames above and below appear briefly, then vanish; they should appear at
+    once and stay. In Gokujou Parodius they also fade in slowly at the end of the stage and vanish
+    at once, where they should fade out;
+  * at the last stage's big dancer the background should turn black; it is a brighter colour that
+    does not match the spotlights;
+  * some sound effects and parts of the music are too loud.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
 `docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
@@ -115,6 +138,19 @@ per frame, from the K053252's own registers:
 
 288 × 224 visible. MAME's `konamigx()` declares `set_raw(8000000, 512, ...)`, 60 Hz; the values
 above are what the game programs into the CRTC.
+
+### Save states
+
+From Arcade-KonamiGX_20261002. Saving and restoring has been tried on the board with Daisu-Kiss. The OSD's *Save state slot*,
+*Save state* and *Restore state* use four slots, which MiSTer keeps as files on the SD card. The
+picture holds for about three frames while a state is written or read; the game itself does not
+see a save.
+
+States convert to and from MAME 0.289's (`.sta`, for the same set), so a moment can be taken in
+MAME and looked at on the core, or the other way: `python scripts/gxss.py from-mame` and
+`to-mame`. What MAME does not keep (the K053252's registers, the K054539 voices' fractions,
+some timers' phases) starts afresh. [docs/SAVESTATES.md](docs/SAVESTATES.md) has the design and
+what has been checked.
 
 ## Screenshots
 
@@ -200,7 +236,9 @@ To run a development build:
 ### Todo
 
 - [ ] Dragoon Might's DSP RAM test on first boot
-- [ ] Dragoon Might's settings save: the EEPROM read-back check
+- [ ] Dragoon Might's settings save: the EEPROM read-back check (and Gokujou Parodius's second save)
+- [ ] Fantastic Journey / Gokujou Parodius: the big ship's flames, the dancer stage's background
+- [ ] Sound mix levels against the PCB
 - [ ] The K055673 and K056832 ROM readback windows, screen flip, `hiscore.v`
 
 ### Resource usage

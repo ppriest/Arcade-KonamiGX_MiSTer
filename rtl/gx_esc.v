@@ -217,38 +217,23 @@ always @* begin
     ys = flip_y ? glob_y - y : glob_y + y;
 end
 
-// ---------------------------------------------------------- divider
-// q = trunc(|n| / d), one bit a clock; the caller applies the sign. C:
-// y = y*0x40/zoom_y with y short and zoom u16, so the result is truncated
-// toward zero and then to 16 bits.
-reg         dv_go, dv_busy;
-reg  [21:0] dv_n, dv_q;
-reg  [15:0] dv_d;
-reg  [22:0] dv_r;
-reg  [4:0]  dv_k;
-reg  [22:0] dv_t;
-
-always @(posedge clk) begin
-    if( rst ) dv_busy <= 0;
-    else if( dv_go ) begin
-        dv_busy <= 1; dv_r <= 0; dv_q <= 0; dv_k <= 5'd21;
-    end else if( dv_busy ) begin
-        dv_t = { dv_r[21:0], dv_n[dv_k] };
-        if( dv_t >= { 7'd0, dv_d } ) begin
-            dv_r <= dv_t - { 7'd0, dv_d };
-            dv_q[dv_k] <= 1'b1;
-        end else dv_r <= dv_t;
-        if( dv_k == 0 ) dv_busy <= 0;
-        else dv_k <= dv_k - 5'd1;
-    end
-end
-
-wire [15:0] dv_mag = dv_q[15:0];
-
-// ---------------------------------------------------------- the machine
-reg        dv_neg, dv_wait;
+// ---------------------------------------------------------- dividers
+// q = trunc(|n| / d); the caller applies the sign. C: y = y*0x40/zoom_y
+// with y short and zoom u16, so the result is truncated toward zero and
+// then to 16 bits. y and x are divided at once, two quotient bits a clock
+// (gx_esc_div): a title screen of zoomed sprites walks some ten thousand
+// pieces a command, and one bit a clock, y then x, was most of its time.
+reg         dv_go, dv_wait, dv_ny, dv_nx, dv_on_y, dv_on_x;
+wire        dvy_busy, dvx_busy;
+wire [15:0] dvy_q, dvx_q;
 wire [15:0] y_abs = y[15] ? -y : y;
 wire [15:0] x_abs = x[15] ? -x : x;
+reg  [15:0] x_in;                // x as it is read, for the divider's start
+wire [15:0] x_in_abs = x_in[15] ? -x_in : x_in;
+gx_esc_div u_dvy ( .clk(clk), .rst(rst), .go(dv_go && dv_on_y), .n({ y_abs, 6'd0 }),    .d(zoom_y), .busy(dvy_busy), .q(dvy_q) );
+gx_esc_div u_dvx ( .clk(clk), .rst(rst), .go(dv_go && dv_on_x), .n({ x_in_abs, 6'd0 }), .d(zoom_x), .busy(dvx_busy), .q(dvx_q) );
+
+// ---------------------------------------------------------- the machine
 
 always @(posedge clk) begin
     irq   <= 0;
@@ -522,29 +507,18 @@ always @(posedge clk) begin
         end
         S_Y: if( m_ack ) begin y <= m_din; rd( set + 24'd8 ); st <= S_X; end
         S_X: if( m_ack ) begin
-            x <= m_din;
-            if( zoom_y != 16'h40 ) begin
-                dv_neg <= y[15]; dv_n <= { y_abs, 6'd0 }; dv_d <= zoom_y;
-                dv_go <= 1; dv_wait <= 0; st <= S_DIVY;
-            end else if( zoom_x != 16'h40 ) begin
-                dv_neg <= m_din[15]; dv_n <= { m_din[15] ? -m_din : m_din, 6'd0 }; dv_d <= zoom_x;
-                dv_go <= 1; dv_wait <= 0; st <= S_DIVX;
-            end else st <= S_POS;
+            x <= m_din; x_in <= m_din;
+            dv_on_y <= zoom_y != 16'h40; dv_ny <= y[15];
+            dv_on_x <= zoom_x != 16'h40; dv_nx <= m_din[15];
+            if( zoom_y != 16'h40 || zoom_x != 16'h40 ) begin dv_go <= 1; dv_wait <= 0; st <= S_DIVY; end
+            else st <= S_POS;
         end
+        // both quotients (each divider only where its zoom is not 0x40)
         S_DIVY: if( !dv_go ) begin
-            if( !dv_wait ) dv_wait <= 1;                 // the divider starts this clock
-            else if( !dv_busy ) begin
-                y <= dv_neg ? -dv_mag : dv_mag;
-                if( zoom_x != 16'h40 ) begin
-                    dv_neg <= x[15]; dv_n <= { x_abs, 6'd0 }; dv_d <= zoom_x;
-                    dv_go <= 1; dv_wait <= 0; st <= S_DIVX;
-                end else st <= S_POS;
-            end
-        end
-        S_DIVX: if( !dv_go ) begin
-            if( !dv_wait ) dv_wait <= 1;
-            else if( !dv_busy ) begin
-                x <= dv_neg ? -dv_mag : dv_mag;
+            if( !dv_wait ) dv_wait <= 1;                 // the dividers start this clock
+            else if( !dvy_busy && !dvx_busy ) begin
+                if( dv_on_y ) y <= dv_ny ? -dvy_q : dvy_q;
+                if( dv_on_x ) x <= dv_nx ? -dvx_q : dvx_q;
                 st <= S_POS;
             end
         end
@@ -597,4 +571,44 @@ always @(posedge clk) begin
     end
 end
 
+endmodule
+
+// q = trunc(n / d), two bits a clock: 11 clocks for the 22-bit dividend,
+// busy from the clock after go. The ESC's two zoom divisions use one each.
+module gx_esc_div (
+    input             clk,
+    input             rst,
+    input             go,
+    input      [21:0] n,
+    input      [15:0] d,
+    output reg        busy,
+    output     [15:0] q
+);
+reg  [21:0] nr, qr;
+reg  [15:0] dr;
+reg  [22:0] r;
+reg  [ 3:0] k;                   // step: bits 2k+1, 2k
+reg  [22:0] t1, t2, r1, r2;
+reg         b1, b2;
+assign q = qr[15:0];
+always @(*) begin
+    t1 = { r[21:0], nr[2*k+1] };
+    b1 = t1 >= { 7'd0, dr };
+    r1 = b1 ? t1 - { 7'd0, dr } : t1;
+    t2 = { r1[21:0], nr[2*k] };
+    b2 = t2 >= { 7'd0, dr };
+    r2 = b2 ? t2 - { 7'd0, dr } : t2;
+end
+always @(posedge clk) begin
+    if( rst ) busy <= 1'b0;
+    else if( go ) begin
+        busy <= 1'b1; r <= 23'd0; qr <= 22'd0; k <= 4'd10; nr <= n; dr <= d;
+    end else if( busy ) begin
+        r <= r2;
+        qr[2*k+1] <= b1;
+        qr[2*k]   <= b2;
+        if( k == 4'd0 ) busy <= 1'b0;
+        else k <= k - 4'd1;
+    end
+end
 endmodule

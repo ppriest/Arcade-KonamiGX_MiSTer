@@ -1,0 +1,5 @@
+rtl/cpu/fx68k/fx68k.sv
+rtl/cpu/fx68k/fx68kAlu.sv
+rtl/cpu/fx68k/uaddrPla.sv
+rtl/cpu/gx_ss_m68k.sv
+sim/gx_ss_fx_tb/tb_gx_ss_fx.sv

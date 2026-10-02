@@ -49,6 +49,7 @@ licence terms rather than comments to tidy away.
 | `TG68K_ALU.vhd`, `TG68KdotC_Kernel.vhd` | explicit zero initializers on signal declarations — see below |
 | `TG68KdotC_Kernel.vhd` | `MOVEC Rn,ISP` writes the supervisor A7 — see below |
 | `TG68KdotC_Kernel.vhd` | `FlagsSR_out`: the status register's high byte (T.S.0III) as an output, for the board's ISSP probe; no logic changes |
+| `TG68KdotC_Kernel.vhd` | `stop_out`: the kernel's `stop` (a STOP waiting for an interrupt) as an output, for the save-state engine; no logic changes |
 | `TG68K_Pack.vhd`, `TG68K.vhd` | none; verbatim |
 
 ### Explicit zero initializers

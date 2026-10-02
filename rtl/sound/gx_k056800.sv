@@ -35,7 +35,16 @@ module gx_k056800 (
 
     output reg       irq,           // the sound CPU's IRQ 1
     // { host_to_snd 0-3, snd_to_host 0-1, int_en, int_pend }, for a probe
-    output    [49:0] dbg
+    output    [49:0] dbg,
+
+    // save states (gx_savestate)
+    input            ss_snap,
+    input            ss_commit,
+    input            ss_sel,
+    input     [11:0] ss_addr,
+    input            ss_we,
+    input     [15:0] ss_wd,
+    output    [15:0] ss_rd
 );
 
 reg [7:0] h2s [0:3];
@@ -66,7 +75,14 @@ always @(posedge clk) begin
             end
         end
     end
+    if( ss_commit ) { h2s[0], h2s[1], h2s[2], h2s[3], s2h[0], s2h[1], int_en, int_pend, irq } <= ss_q;
 end
+
+wire [50:0] ss_q;
+gx_ss_vec #(.W(51)) u_ss (
+    .clk, .snap(ss_snap), .d({ h2s[0], h2s[1], h2s[2], h2s[3], s2h[0], s2h[1], int_en, int_pend, irq }),
+    .q(ss_q), .sel(ss_sel), .addr(ss_addr[9:0]), .we(ss_we), .wd(ss_wd), .rd(ss_rd)
+);
 
 // reads answer the clock after, as the access units expect
 always @(posedge clk) begin

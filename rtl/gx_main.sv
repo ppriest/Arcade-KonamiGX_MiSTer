@@ -173,7 +173,31 @@ module gx_main (
     input      [63:0] gfx_data,
     input             mem_t,
     input      [23:1] mem_addr,
-    output     [87:0] dbg_mem                // { addr, done, the four words }
+    output     [87:0] dbg_mem,               // { addr, done, the four words }
+
+    // save states (rtl/gx_savestate.sv): the 68020's registers, a bus
+    // master, this module's latches on the state bus, and the raster
+    input             ss_m_req, ss_m_go,
+    output            ss_m_held, ss_m_done,
+    input      [ 4:0] ss_m_bidx,
+    input             ss_m_bwe,
+    input      [31:0] ss_m_bd,
+    output     [31:0] ss_m_bq,
+    input             ss_mb_req, ss_mb_we,
+    input      [23:1] ss_mb_addr,
+    input      [ 1:0] ss_mb_be,
+    input      [15:0] ss_mb_wd,
+    output            ss_mb_ack,
+    output     [15:0] ss_mb_rd,
+    input             ss_snap, ss_commit,
+    input      [ 3:0] ss_sel,
+    input             ss_en,
+    input      [11:0] ss_addr,
+    input             ss_we,
+    input      [15:0] ss_wd,
+    output     [15:0] ss_rd,
+    output     [ 8:0] ss_vpos, ss_hpos,
+    output            ss_esc_busy, ss_dma_busy
 );
 
 // ------------------------------------------------------------ clocks
@@ -226,7 +250,9 @@ wire        fast_rdy;                       // the unit's ack, straight to the k
 // places that retire an ack on a kernel edge wait for the pause to lift as
 // well; otherwise the ack is lost and the kernel repeats the access when it
 // wakes -- the fault the ESC's release had (LESSONS_LEARNED).
-wire        cpu_clkena = (!mem_needed || ready || fast_rdy) && !pause_cpu;
+wire        ss_hit, ss_rdy, ss_ipl7, cpu_stop;
+wire [15:0] ss_din;
+wire        cpu_clkena = (!mem_needed || ready || fast_rdy || ss_rdy) && !pause_cpu;
 wire        cpu_take   = cpu_cen && !pause_cpu;
 
 TG68KdotC_Kernel #(
@@ -235,12 +261,24 @@ TG68KdotC_Kernel #(
     .BarrelShifter(0), .MUL_Hardware(1)
 ) u_cpu (
     .clk(clk_cpu), .nReset(~rst), .clkena_in(cpu_clkena),
-    .data_in(fast_rdy ? u_din : cpu_din), .IPL(ipl_n), .IPL_autovector(1'b1), .berr(1'b0),
+    .data_in(ss_hit ? ss_din : fast_rdy ? u_din : cpu_din), .IPL(ipl_n), .IPL_autovector(1'b1), .berr(1'b0),
     .CPU(2'b11),
     .addr_out(a32), .data_write(cpu_dout),
     .nWr(nWr), .nUDS(nUDS), .nLDS(nLDS),
     .busstate(busstate), .longword(), .nResetOut(), .FC(fc),
-    .clr_berr(), .skipFetch(), .regin_out(), .CACR_out(cacr), .VBR_out(), .FlagsSR_out(cpu_sr)
+    .clr_berr(), .skipFetch(), .regin_out(), .CACR_out(cacr), .VBR_out(), .FlagsSR_out(cpu_sr),
+    .stop_out(cpu_stop)
+);
+
+// Save states: the kernel's registers through its own bus (gx_ss_m68k).
+// While it answers an access, the access unit never sees it.
+gx_ss_m68k #(.M020(1)) u_ss_cpu (
+    .clk, .rst,
+    .acc(mem_needed), .take(cpu_cen && mem_needed && cpu_clkena), .a32, .wr(busstate == 2'b11),
+    .fc, .dout(cpu_dout), .iack7(1'b0), .stop_in(cpu_stop),
+    .req(ss_m_req), .ipl7(ss_ipl7), .hit(ss_hit), .rdy(ss_rdy), .din(ss_din),
+    .held(ss_m_held), .go(ss_m_go), .done(ss_m_done),
+    .b_idx(ss_m_bidx), .b_we(ss_m_bwe), .b_d(ss_m_bd), .b_q(ss_m_bq)
 );
 
 // ------------------------------------------------------------ registers
@@ -319,15 +357,21 @@ gx_video u_video (
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
     .pal_we(pl_we[2:0]), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }), .pal_q,
-    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short
+    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short,
+    .ss_vpos, .ss_hpos
 );
+assign ss_esc_busy = esc_busy;
+assign ss_dma_busy = obj_dma_busy;
 
 // ------------------------------------------------------------ EEPROM
 wire ee_do;
+wire [15:0] ss_rd_ee, ss_rd_b;
+assign ss_rd = ss_rd_ee | ss_rd_b;
 gx_eeprom93c46 u_ee (
     .rst, .clk, .blank(ee_blank), .cs(wrport1_0[1]), .sk(wrport1_0[2]), .di(wrport1_0[0]), .dout(ee_do), .dbg(dbg_ee),
     .load_we(ee_load_we), .load_addr(ee_load_addr), .load_data(ee_load_data),
-    .rd_addr(ee_rd_addr), .rd_data(ee_rd_data), .written(ee_written)
+    .rd_addr(ee_rd_addr), .rd_data(ee_rd_data), .written(ee_written),
+    .ss_snap, .ss_commit, .ss_sel(ss_en && ss_sel == 4'd3), .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_ee)
 );
 
 // ------------------------------------------------------------ ESC
@@ -397,7 +441,7 @@ reg        esc_seen;
 localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
-reg         u_ack, u_esc, u_md;             // whose access is in progress
+reg         u_ack, u_esc, u_md, u_ss;       // whose access is in progress
 reg  [23:1] ua_r;                           // the request, held for the access
 reg  [ 1:0] ube_r;
 reg         uwe_r;
@@ -415,12 +459,14 @@ wire        cpu_req_now;
 // ua/ube/uwe/ud are the source while idle and the held request after.
 wire        take_esc = ust == U_IDLE && esc_req && !u_ack;
 wire        take_md  = ust == U_IDLE && !take_esc && md_req && !u_ack;
-wire        take_cpu = ust == U_IDLE && !take_esc && !take_md && cpu_req_now;
-wire        take     = take_esc || take_md || take_cpu;
-wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_md ? md_addr : a32[23:1];
-wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11   : { ~nUDS, ~nLDS };
-wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_md ? 1'b0    : !nWr;
-wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_md ? 16'd0   : cpu_dout;
+// the save-state engine, while it holds the CPU (which then asks for nothing)
+wire        take_ss  = ust == U_IDLE && !take_esc && !take_md && ss_mb_req && !u_ack;
+wire        take_cpu = ust == U_IDLE && !take_esc && !take_md && !take_ss && cpu_req_now;
+wire        take     = take_esc || take_md || take_ss || take_cpu;
+wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_md ? md_addr : take_ss ? ss_mb_addr : a32[23:1];
+wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11   : take_ss ? ss_mb_be   : { ~nUDS, ~nLDS };
+wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_md ? 1'b0    : take_ss ? ss_mb_we   : !nWr;
+wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_md ? 16'd0   : take_ss ? ss_mb_wd   : cpu_dout;
 wire [23:0] ub  = { ua, 1'b0 };             // byte address of the word
 
 // ---- the register copy, for a capture from the board
@@ -454,6 +500,7 @@ always @* begin
     else if( ub >= 24'hd80000 && ub < 24'hd80020 ) rg_wa = 9'h0c4 + 9'(ua[4:1]);
     else if( ub >= 24'hd56000 && ub < 24'hd56004 ) rg_wa = 9'h0d4 + 9'(ua[1]);
     else if( ub >= 24'hd58000 && ub < 24'hd58004 ) rg_wa = 9'h0d6 + 9'(ua[1]);
+    else if( take_ss && ub >= 24'he00000 && ub < 24'he00400 ) rg_wa = ua[9:1];   // a load, raw
     else begin rg_wa = 9'd0; rg_in = 1'b0; end
 end
 wire        rg_we = take && uwe && rg_in && !take_md;
@@ -463,6 +510,8 @@ gx_sdpram #(.AW(9), .DW(8)) u_rgh ( .clk, .we(rg_we && ube[1]), .wa(rg_wa), .d(u
 gx_sdpram #(.AW(9), .DW(8)) u_rgl ( .clk, .we(rg_we && ube[0]), .wa(rg_wa), .d(ud[ 7:0]), .ra(rg_ra), .q(rg_ql) );
 assign esc_ack = u_ack && u_esc;
 assign md_ack  = u_ack && u_md;
+assign ss_mb_ack = u_ack && u_ss;
+assign ss_mb_rd  = u_din;
 
 // The CPU addresses the packed image actually backs: the BIOS, and 0x200000
 // up to the image's length. konamigx.cpp maps the whole region and leaves
@@ -575,6 +624,7 @@ reg  esc_started;                           // the CPU's write started the ESC
 reg  [ 4:0] rom_wc;
 reg         rom_slow, rom_got;
 reg  [15:0] rom_q;
+reg         ss_ack2 = 1'b0;                 // save states: INT2's acknowledge, the clock after INT1's
 
 always @(posedge clk) begin
     u_ack <= 0;
@@ -607,7 +657,7 @@ always @(posedge clk) begin
         if( cst == C_ESC ) esc_started <= 0;
         // the ESC while it is busy, the CPU otherwise: decode and issue
         if( take ) begin
-            u_esc <= take_esc; u_md <= take_md;
+            u_esc <= take_esc; u_md <= take_md; u_ss <= take_ss;
             ua_r <= ua; ube_r <= ube; uwe_r <= uwe; ud_r <= ud;
             ust     <= U_WAIT;
             bus_d16 <= ud;
@@ -615,8 +665,13 @@ always @(posedge clk) begin
             ucnt    <= 3'd1;                     // default: done next clock
             if( take_cpu && fc == 3'b111 ) begin
                 usrc <= R_ZERO;                  // interrupt acknowledge
-            end else if( take_md && ub >= 24'he00000 && ub < 24'he00400 ) begin
+            end else if( (take_md || take_ss) && ub >= 24'he00000 && ub < 24'he00400 ) begin
                 rg_ra <= ua[9:1]; usrc <= R_REGS; ucnt <= 3'd2;      // the register copy
+            end else if( take_ss && ub >= 24'he20000 && ub < 24'he40000 ) begin
+                // all of the K056832's VRAM, without the bank register
+                vram_addr <= ua[16:1]; vram_be <= ube;
+                if( uwe ) vram_we <= 1; else vram_rd <= 1;
+                usrc <= R_VRAM; ucnt <= 3'd3;
             end else if( ub < 24'h800000 ) begin
                 if( rom_backed ) begin
                     cr_addr <= ua[22:1]; cr_cs <= 1; ust <= U_ROM;
@@ -773,20 +828,31 @@ always @(posedge clk) begin
     end
     default: ust <= U_IDLE;
     endcase
+    if( ss_commit )
+        { wrport1_0, wrport1_1, wrport2, vram_bank, esc_hi, p4_op, p4_op_v, p4_clk, rom_half } <= ss_bq[66:0];
+    // The K053252's INT lines hold until acknowledged, and only a vblank
+    // (an INT2 count) raises them: one that is up now but was down in the
+    // state is acknowledged here, INT1 then INT2, as the game would.
+    ss_ack2 <= 1'b0;
+    if( ss_commit ) begin
+        if( !ss_bq[121] && int1 ) begin crtc_cs <= 1; crtc_addr <= 4'd14; end
+        ss_ack2 <= !ss_bq[120] && int2;
+    end
+    if( ss_ack2 ) begin crtc_cs <= 1; crtc_addr <= 4'd15; end
 end
 
 // ------------------------------------------------------------ the CPU side
 // C_IDLE: a new access goes to the unit. On its ack: ready, unless it was
 // the ESC's starting write, which waits for the ESC.
-assign cpu_req_now = cst == C_IDLE && mem_needed && !ready && !esc_busy;
-assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !u_md && !esc_started;
+assign cpu_req_now = cst == C_IDLE && mem_needed && !ready && !esc_busy && !ss_hit;
+assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !u_md && !u_ss && !esc_started;
 
 always @(posedge clk) begin
     if( rst ) begin
         cst <= C_IDLE; ready <= 0; esc_seen <= 0;
     end else case( cst )
         C_IDLE: if( take_cpu ) cst <= C_BUSY;
-        C_BUSY: if( u_ack && !u_esc && !u_md ) begin
+        C_BUSY: if( u_ack && !u_esc && !u_md && !u_ss ) begin
             cpu_din <= u_din;
             if( esc_started ) begin cst <= C_ESC; esc_seen <= 0; end
             else if( cpu_take ) cst <= C_IDLE;     // taken this clock (fast_rdy)
@@ -827,6 +893,7 @@ always @(posedge clk) begin
             if( hs_cnt == 2'd1 && esc_busy ) dma_pend <= 1;           // the copy's moment, held off
         end
         if( dma_pend && !esc_busy ) begin dma_pend <= 0; obj_dma_trig <= 1; end
+        if( ss_commit ) { dma_pend, hs_cnt, lvbl_dt, hs_dt } <= ss_bq[119:115];
     end
 end
 
@@ -834,7 +901,7 @@ end
 reg  [23:0] dma_t;
 reg         lvbl_l, irq3, irq4, dma_run;
 reg         int1_l, int2_l, pend1, pend2;     // syncen bits 0/1, taken at an INT edge
-wire        iack = cst == C_BUSY && u_ack && !u_esc && !u_md && fc == 3'b111;
+wire        iack = cst == C_BUSY && u_ack && !u_esc && !u_md && !u_ss && fc == 3'b111;
 wire [ 2:0] iack_lvl = a32[3:1];
 wire [23:0] dma_len = wrport2[0] ? 24'd13824 : 24'd18432;   // (256+32) / (342+42) us at 48 MHz
 
@@ -881,8 +948,23 @@ always @(posedge clk) begin
         if( (iack && iack_lvl == 3'd2) || !int2 ) pend2 <= 0;
         if( iack && iack_lvl == 3'd3 ) irq3 <= 0;
         if( iack && iack_lvl == 3'd4 ) irq4 <= 0;
+        if( ss_commit )
+            { rdport1_3, syncen, irq3, irq4, dma_run, int1_l, int2_l, pend1, pend2, lvbl_l, dma_t } <= ss_bq[114:67];
     end
 end
+
+// ------------------------------------------------------------ save states
+// The latches above as one vector for gx_savestate: snapped when the CPU is
+// taken, committed back by each block that owns them.
+wire [121:0] ss_bq;
+gx_ss_vec #(.W(122)) u_ss_board (
+    .clk, .snap(ss_snap),
+    .d({ int1, int2, dma_pend, hs_cnt, lvbl_dt, hs_dt,
+         rdport1_3, syncen, irq3, irq4, dma_run, int1_l, int2_l, pend1, pend2, lvbl_l, dma_t,
+         wrport1_0, wrport1_1, wrport2, vram_bank, esc_hi, p4_op, p4_op_v, p4_clk, rom_half }),
+    .q(ss_bq),
+    .sel(ss_en && ss_sel == 4'd0), .addr(ss_addr[9:0]), .we(ss_we), .wd(ss_wd), .rd(ss_rd_b)
+);
 
 wire irq1 = pend1;
 wire irq2 = pend2;
@@ -892,6 +974,7 @@ always @* begin
     if( irq2 ) ipl_n = ~3'd2;
     if( irq3 ) ipl_n = ~3'd3;
     if( irq4 ) ipl_n = ~3'd4;
+    if( ss_ipl7 ) ipl_n = 3'b000;
 end
 
 // ------------------------------------------------------------ observation
@@ -958,7 +1041,7 @@ always @(posedge clk)
         end
     end
 
-assign dbg_access = u_ack;                // CPU and ESC: MAME's write tap sees both
+assign dbg_access = u_ack && !u_ss;       // CPU and ESC: MAME's write tap sees both
 assign dbg_addr   = { ua_r, 1'b0 };
 assign dbg_we     = uwe_r;
 assign dbg_be     = ube_r;
