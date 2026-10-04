@@ -92,7 +92,12 @@ reg  [ 8:0] zoffset [0:255];
 reg  [ 3:0] pzoffset[0:15 ];
 integer     missing;
 
-assign hflip     = ghf ^ pre_hf ^ hmir_eff;
+// [GX] With the x mirror the sprite's own x flip, and the global one, do not
+// apply: the left half is drawn as it is and the right half mirrored (MAME:
+// "if (mirrorx) flipx = 0; // only applies to x mirror, proven", and flipscreen
+// leaves a mirrored sprite's flipx alone). With both set the halves came out
+// swapped, ")(" for "()": Magical Twin Bee's bomb target marker.
+assign hflip     = hmir ? hmir_eff : ghf ^ pre_hf;
 assign attr_full = { vmir, hmir, reserved, shd, attr };
 assign scan_addr = { scan_obj, scan_sub };
 assign ysub      = ydiff[3:0];

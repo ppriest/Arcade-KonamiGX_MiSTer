@@ -16,6 +16,9 @@
 `timescale 1ns/1ps
 
 module tb_gx_video;
+// +SPR_MIX=0: gx_mixer's spr_mix_on off -- no sprite blended, as MAME draws
+int spr_mix_sel = 1;
+initial void'($value$plusargs("SPR_MIX=%d", spr_mix_sel));
 // +OBJ_HADJ=n: the set's K055673 dx less daiskiss's -26 (gx_board_cfg obj_hadj)
 int obj_hadj = 0, tile_bpp = 0, obj_layout = 0, obj_pri_raw = 0, vis_x0 = 24, vis_w = 288, vmirror = 0;
 initial void'($value$plusargs("VMIRROR=%d", vmirror));
@@ -103,7 +106,7 @@ gx_video dut (
     .rmrd_addr(), .tile_gfx_bank(),
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pal_we, .pal_addr, .pal_din,
-    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy(), .tm_blank_skip(1'b1), .dbg_line()
+    .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy(), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_line()
 );
 
 // ----------------------------------------------------------- vectors, ROMs

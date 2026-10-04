@@ -1480,6 +1480,17 @@ screen. Modelled for IRQ 3 at first and not for 1 and 2, because Daisu-Kiss neve
 enable. A latch the emulator documents as "ensure each IRQ is triggered at least once after
 being enabled" is part of the specification until a board says otherwise.
 
+It also fires where the game has turned the interrupt off. Dragoon Might's EEPROM save clears
+bit 7, writes, sets it (arming), clears it and reads back; Gokujou Parodius's vblank handler writes
+90 then 91 each frame (arming) and its save writes 90. Under MAME's rule the vblank handler runs
+during both saves, and its `d56000` write drops the 93C46's CS mid-command: a read-back fails
+(Dragoon, all three tries on the core, the first in MAME) or a write is lost (Gokujou, both). Found
+by jumping MAME into the save from the service menu, saving a `.sta`, and running it on the bench
+(`gxss.py from-mame`, `+B1_AT`, `+EE_LOG`). The core now holds an armed interrupt while bit 7 is
+clear and does not arm from the level's own handler; Twin Bee, Crazy Cross, Tokimeki Memorial,
+Dragoon Might and Winning Spike keep their vblank and DMA handlers every frame from a MAME state.
+No hardware source for the arming was found (`docs/MAME_KLUDGES.md`).
+
 ### [GX] `.mra` `default=` maps pad buttons to the NAMED buttons only
 
 `<buttons names="B1,B2,B3,-,-,-,Start,Coin,Pause,Service">` keeps the bit positions, but

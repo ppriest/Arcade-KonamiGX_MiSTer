@@ -45,9 +45,10 @@
 //            object DMA's (95); the handler wrote back 90, IRQ 3 never came,
 //            and the game stopped with a black screen.
 //            syncen bit 0, set by any write of wrport1_1 with bit 7 and bit
-//            0, lets the next INT1 through once even if the enable has been
+//            0, lets the next INT1 through once even if bit 0 has been
 //            cleared since: tbyahhoo writes 91, d1, then 90 and waits for
-//            the vblank handler, which writes 91 back.
+//            the vblank handler, which writes 91 back. Not while bit 7 is
+//            clear (MAME's does; see the INT edge below).
 //   level 2  the K053252's INT2, gated by 0x82 (ack: register 0x0f), with
 //            syncen bit 1 as bit 0 for level 1.
 //   level 3  object DMA end: MAME's dmastart/dmaend -- at vblank start the
@@ -156,6 +157,7 @@ module gx_main (
     output    [111:0] dbg_mix,               // the mixer's registers (probe L)
     output    [131:0] dbg_line,              // line time, tilemap and sprites (probe T)
     input             tm_blank_skip,         // gx_tilemap's blank-row skip on
+    input             spr_mix_on,            // gx_mixer: a sprite's effect bits are its mix code (OSD)
     output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
     input             peek_t,                // JTAG: read one granule of the packed image
     input      [19:0] peek_addr,
@@ -197,7 +199,22 @@ module gx_main (
     input      [15:0] ss_wd,
     output     [15:0] ss_rd,
     output     [ 8:0] ss_vpos, ss_hpos,
-    output            ss_esc_busy, ss_dma_busy
+    output            ss_esc_busy, ss_dma_busy,
+
+    // cheats (KonamiGX.sv, from the .mra): a code with its strobe in bit 128,
+    // and the list's clear, from clk_sys
+    input     [128:0] cheat_code,
+    input             cheat_clr,
+
+    // hiscore.v (KonamiGX.sv): while hs_hold the access unit takes nothing new;
+    // while hs_on the work RAM's port is hiscore's, a byte at hs_addr (offset
+    // from 0xc00000), read back on hs_q two clocks later
+    input             hs_hold,
+    input             hs_on,
+    input      [16:0] hs_addr,
+    input             hs_we,
+    input      [ 7:0] hs_wd,
+    output reg [ 7:0] hs_q
 );
 
 // ------------------------------------------------------------ clocks
@@ -301,8 +318,19 @@ reg         wr_we_h, wr_we_l;
 reg  [15:0] wr_a;
 reg  [15:0] wr_d;
 wire [ 7:0] wr_qh, wr_ql;
-gx_sdpram #(.AW(16), .DW(8)) u_wram_h ( .clk, .we(wr_we_h), .wa(wr_a), .d(wr_d[15:8]), .ra(wr_a), .q(wr_qh) );
-gx_sdpram #(.AW(16), .DW(8)) u_wram_l ( .clk, .we(wr_we_l), .wa(wr_a), .d(wr_d[ 7:0]), .ra(wr_a), .q(wr_ql) );
+// hiscore.v borrows the port while the CPU is paused (hs_on); the 68000 is
+// big-endian, so an even byte is the high lane
+wire [15:0] wr_pa   = hs_on ? hs_addr[16:1] : wr_a;
+wire [15:0] wr_pd   = hs_on ? { hs_wd, hs_wd } : wr_d;
+wire        wr_pwh  = hs_on ? hs_we && !hs_addr[0] : wr_we_h;
+wire        wr_pwl  = hs_on ? hs_we &&  hs_addr[0] : wr_we_l;
+gx_sdpram #(.AW(16), .DW(8)) u_wram_h ( .clk, .we(wr_pwh), .wa(wr_pa), .d(wr_pd[15:8]), .ra(wr_pa), .q(wr_qh) );
+gx_sdpram #(.AW(16), .DW(8)) u_wram_l ( .clk, .we(wr_pwl), .wa(wr_pa), .d(wr_pd[ 7:0]), .ra(wr_pa), .q(wr_ql) );
+reg         hs_odd;
+always @(posedge clk) begin
+    hs_odd <= hs_addr[0];
+    hs_q   <= hs_odd ? wr_ql : wr_qh;
+end
 
 // palette, 0xd90000-0xd97fff: 8K x 32 in four byte lanes. The colour bytes
 // live in gx_mixer's palette, which the CPU writes and reads back through
@@ -351,7 +379,7 @@ gx_video u_video (
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj,
-    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip,
+    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip, .spr_mix_on,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .rmrd_addr, .tile_gfx_bank,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
@@ -452,16 +480,28 @@ localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6
 
 reg  [15:0] io_q;
 
+// Cheats on work RAM: values replaced as they are read, nothing written
+// (rtl/cheat/cheatengine.sv), up to 16 codes (the .mra's <cheats max>)
+reg  [ 1:0] ch_clr_s = 2'b00;
+always @(posedge clk) ch_clr_s <= { ch_clr_s[0], cheat_clr };
+wire [15:0] ch_wram;
+cheatengine_32_16 #(.ADDR_WIDTH(24), .MAX_CODES(16)) u_cheat (
+    .clk, .reset(ch_clr_s[1]), .enable(1'b1), .available(), .code(cheat_code),
+    .addr_in({ ua_r, 1'b0 }), .data_in({ wr_qh, wr_ql }), .data_out(ch_wram)
+);
+
+
 wire        cpu_req_now;
 // A request is decoded on the clock it is taken, straight from its source,
 // so a RAM access answers two clocks after the kernel's address -- in time
 // for the next cpu_cen: one wait state, Phase 0's budget (docs/ROADMAP.md).
 // ua/ube/uwe/ud are the source while idle and the held request after.
-wire        take_esc = ust == U_IDLE && esc_req && !u_ack;
-wire        take_md  = ust == U_IDLE && !take_esc && md_req && !u_ack;
+// nothing new while hiscore.v holds the work RAM (hs_hold)
+wire        take_esc = ust == U_IDLE && !hs_hold && esc_req && !u_ack;
+wire        take_md  = ust == U_IDLE && !hs_hold && !take_esc && md_req && !u_ack;
 // the save-state engine, while it holds the CPU (which then asks for nothing)
-wire        take_ss  = ust == U_IDLE && !take_esc && !take_md && ss_mb_req && !u_ack;
-wire        take_cpu = ust == U_IDLE && !take_esc && !take_md && !take_ss && cpu_req_now;
+wire        take_ss  = ust == U_IDLE && !hs_hold && !take_esc && !take_md && ss_mb_req && !u_ack;
+wire        take_cpu = ust == U_IDLE && !hs_hold && !take_esc && !take_md && !take_ss && cpu_req_now;
 wire        take     = take_esc || take_md || take_ss || take_cpu;
 wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_md ? md_addr : take_ss ? ss_mb_addr : a32[23:1];
 wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11   : take_ss ? ss_mb_be   : { ~nUDS, ~nLDS };
@@ -802,7 +842,9 @@ always @(posedge clk) begin
         ucnt <= ucnt - 3'd1;
         if( ucnt == 3'd1 ) begin
             case( usrc )
-                R_WRAM: u_din <= { wr_qh, wr_ql };
+                // the CPU's and the ESC's reads see the cheats; the save
+                // state's and the JTAG reader's see the RAM
+                R_WRAM: u_din <= u_ss || u_md ? { wr_qh, wr_ql } : ch_wram;
                 R_PAL:  u_din <= ua_r[1] ? { pl_q[1], pl_q[0] } : { pl_q[3], pl_q[2] };
                 R_VRAM: u_din <= vram_dout;
                 R_SPR:  u_din <= spr_ram_dout;
@@ -912,10 +954,19 @@ always @(posedge clk) begin
     end else begin
         lvbl_l <= vid_lvbl;
         int1_l <= int1; int2_l <= int2;
-        // eeprom_w: syncen makes each IRQ fire at least once after it is enabled
+        // eeprom_w: syncen makes each IRQ fire at least once after it is enabled,
+        // except that a write from that level's own handler (the CPU's mask
+        // at that level) does not arm it: Gokujou Parodius's vblank handler
+        // writes 90 then 91 every frame, and its EEPROM save writes 90 to
+        // stop the handler, whose d56000 write drops the 93C46's CS. With the
+        // handler's 91 arming syncen the interrupt kept coming and writes
+        // were lost. Twin Bee arms it from its main program (d1, mask 0).
         if( take && uwe && ub >= 24'hd56000 && ub < 24'hd56004
             && !ub[1] && ube[0] && ud[7] )
-            syncen <= syncen | { 3'b000, ud[4:0] };
+            syncen <= syncen | { 3'b000, ud[4:3],
+                                 ud[2] && cpu_sr[2:0] != 3'd3,
+                                 ud[1] && cpu_sr[2:0] != 3'd2,
+                                 ud[0] && cpu_sr[2:0] != 3'd1 };
         // dmastart_callback at vblank, dmaend_callback dma_len later
         if( !vid_lvbl && lvbl_l ) begin
             rdport1_3 <= rdport1_3 | 8'h02;
@@ -924,7 +975,7 @@ always @(posedge clk) begin
             if( dma_t == 0 ) begin
                 dma_run <= 0;
                 rdport1_3 <= rdport1_3 & ~8'h02;
-                if( (wrport1_1 & 8'h84) == 8'h84 || syncen[2] ) begin
+                if( (wrport1_1 & 8'h84) == 8'h84 || (syncen[2] && wrport1_1[7]) ) begin
                     syncen[2] <= 0;
                     rdport1_3 <= rdport1_3 & ~8'h82;
                     irq3 <= 1;
@@ -936,11 +987,16 @@ always @(posedge clk) begin
             irq4 <= 1;
         end
         // MAME's vblank/hblank callbacks, at the INT edge: the level's
-        // enable, or a set syncen bit (consumed), raises it
-        if( int1 && !int1_l && ((wrport1_1 & 8'h81) == 8'h81 || syncen[0]) ) begin
+        // enable, or a set syncen bit (consumed), raises it. A syncen bit
+        // waits while bit 7, the master enable, is clear. MAME lets it
+        // through, and that interrupts Dragoon Might's EEPROM save (0x243b1e:
+        // it clears bit 7, writes, sets it, clears it again and reads every
+        // word back) mid-read: the vblank handler's watchdog write drops CS,
+        // the read-back sum fails, and on the core all three tries fail.
+        if( int1 && !int1_l && ((wrport1_1 & 8'h81) == 8'h81 || (syncen[0] && wrport1_1[7])) ) begin
             syncen[0] <= 0; pend1 <= 1;
         end
-        if( int2 && !int2_l && ((wrport1_1 & 8'h82) == 8'h82 || syncen[1]) ) begin
+        if( int2 && !int2_l && ((wrport1_1 & 8'h82) == 8'h82 || (syncen[1] && wrport1_1[7])) ) begin
             syncen[1] <= 0; pend2 <= 1;
         end
         // cleared by the acknowledge cycle, or the K053252's (INT falls)

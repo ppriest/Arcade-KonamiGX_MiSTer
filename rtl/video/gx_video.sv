@@ -142,6 +142,7 @@ module gx_video #(
     output     [ 8:0] ss_vpos,            // the raster, for the save-state engine: vdump
     output     [ 8:0] ss_hpos,            // ...and the pixel since LHBL rose
     input             tm_blank_skip,      // gx_tilemap's blank-row skip on
+    input             spr_mix_on,         // gx_mixer: a sprite's effect bits are its mix code
     output reg [131:0] dbg_line           // line time, tilemap and sprites (probe T)
 );
 
@@ -278,6 +279,7 @@ gx_tilemap u_tm (
 wire        s_valid, h_valid, h_full;
 wire [12:0] s_pen;
 wire [ 7:0] s_pri, s_z, s_idx, h_idx, h_pri, h_z;
+wire [ 1:0] s_mix;
 wire [ 1:0] h_code;
 
 gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
@@ -291,7 +293,7 @@ gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .shadowon, .shdpri0(k55[37]), .shdpri1(k55[38]), .shdpri2(k55[39]), .spri_min, .obj_layout, .vmirror(obj_vmirror), .shd_defer, .obj_pri_raw,
     .rom_addr(obj_rom_addr), .rom_cs(obj_rom_cs), .rom_ok(obj_rom_ok), .rom_data(obj_rom_data),
     .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs), .rmrd_out(rmrd_addr),
-    .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx),
+    .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx), .pxl_mix(s_mix),
     .shd_valid(h_valid), .shd_full(h_full), .shd_code(h_code), .shd_idx(h_idx),
     .shd_pri(h_pri), .shd_z(h_z), .dma_busy(obj_dma_busy), .ln_short(obj_ln_short),
     .ln_start(o_start), .ln_busy(o_busy)
@@ -305,7 +307,7 @@ gx_mixer u_mix (
     .pal_we, .pal_addr, .pal_din, .pal_q,
     .bx, .by,
     .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]),
-    .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx),
+    .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx), .spr_mix(s_mix), .spr_mix_on,
     .shd_valid(h_valid), .shd_code(h_code), .shd_pri(h_pri), .shd_z(h_z), .shd_idx(h_idx),
     .rgb, .unsupported
 );

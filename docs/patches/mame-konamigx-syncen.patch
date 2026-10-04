@@ -1,0 +1,119 @@
+From b02865e98e4d9a48a5dd7aac4aed628017da26f8 Mon Sep 17 00:00:00 2001
+From: Paul Priest <ppriest@users.noreply.github.com>
+Date: Fri, 2 Oct 2026 20:58:52 +0100
+Subject: [PATCH] konami/konamigx.cpp: Don't let the IRQ "syncen" latch fire
+ into code that has disabled interrupts. [Paul Priest]
+
+m_gx_syncen arms one interrupt per enabled level on any write of the IRQ
+enable register with bit 7 set, and delivers it at the next vblank (DMA end
+for IRQ 3) even if the game has since cleared the enable bit or bit 7.  Two
+EEPROM save routines are then interrupted, and the vblank handler's write to
+the EEPROM port (0xd56000) drops the 93C46's CS mid-command:
+
+- dragoona/dragoonj: the service-menu save (0x243b1e) clears bit 7, writes,
+  sets bit 7 (arming), clears it again and reads every word back.  The
+  vblank handler interrupts the read-back, the byte sum fails, and the save
+  is retried; three failures show "EEPROM CHECKSUM ERROR".
+- gokuparo/fantjour: the vblank handler writes 0x90 then 0x91 every frame
+  (arming), and the save writes 0x90 to stop it.  The handler keeps running
+  and some EEPROM writes are lost; when the lost word is one that changed,
+  the next boot fails its EEPROM check.
+
+Now an armed interrupt waits while bit 7 is clear, and a write made by a
+level's own handler (the CPU's interrupt mask at that level) does not arm
+that level.  Writes from the main program still arm it, which tbyahhoo
+needs (it writes 0x91, 0xd1, then 0x90 and waits for its vblank handler).
+
+There is no hardware documentation for syncen (it has been in the driver
+since 0.68 without a stated reason); the K053252's INT1 is a level held
+until register 0x0e is written (furrtek's die trace), and the other
+K053252 drivers gate on the current enable bits only.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/mame/konami/konamigx.cpp | 29 +++++++++++++++++++++--------
+ 1 file changed, 21 insertions(+), 8 deletions(-)
+
+diff --git a/src/mame/konami/konamigx.cpp b/src/mame/konami/konamigx.cpp
+index 959331008ac..dd56829b712 100644
+--- a/src/mame/konami/konamigx.cpp
++++ b/src/mame/konami/konamigx.cpp
+@@ -513,9 +513,19 @@ void konamigx_state::eeprom_w(offs_t offset, u32 data, u32 mem_mask)
+ 		m_gx_wrport1_1 = (data>>16)&0xff;
+ //      logerror("write %x to IRQ register (PC=%x)\n", m_gx_wrport1_1, m_maincpu->pc());
+ 
+-		// m_gx_syncen is to ensure each IRQ is triggered at least once after being enabled
++		// m_gx_syncen is to ensure each IRQ is triggered at least once after being enabled.
++		// A write made by a level's own handler (the CPU's interrupt mask at that level)
++		// does not arm that level: Gokujou Parodius's vblank handler writes 0x90 then
++		// 0x91 every frame, and its EEPROM save writes 0x90 to stop the handler, whose
++		// write to the EEPROM port would drop the 93C46's CS mid-command.
+ 		if (m_gx_wrport1_1 & 0x80)
+-			m_gx_syncen |= m_gx_wrport1_1 & 0x1f;
++		{
++			u8 arm = m_gx_wrport1_1 & 0x1f;
++			const int imask = (m_maincpu->state_int(M68K_SR) >> 8) & 7;
++			if (imask >= 1 && imask <= 3)
++				arm &= ~(1 << (imask - 1));
++			m_gx_syncen |= arm;
++		}
+ 	}
+ }
+ 
+@@ -601,7 +611,7 @@ TIMER_CALLBACK_MEMBER(konamigx_state::dmaend_callback)
+ 	m_gx_rdport1_3 &= ~2;
+ 
+ 	// IRQ 3 is the "object DMA end" IRQ also happens during vblank
+-	if ((m_gx_wrport1_1 & 0x84) == 0x84 || (m_gx_syncen & 4))
++	if ((m_gx_wrport1_1 & 0x84) == 0x84 || ((m_gx_syncen & 4) && (m_gx_wrport1_1 & 0x80)))
+ 	{
+ 		m_gx_syncen &= ~4;
+ 
+@@ -645,12 +655,15 @@ INTERRUPT_GEN_MEMBER(konamigx_state::konamigx_type2_vblank_irq)
+ 		machine().scheduler().trigger(m_resume_trigger);
+ 	}
+ 
+-	// IRQ 1 is the main 60hz vblank interrupt
++	// IRQ 1 is the main 60hz vblank interrupt.  An armed (m_gx_syncen) IRQ waits while
++	// bit 7 is clear: Dragoon Might's EEPROM save clears bit 7, writes, sets it (arming),
++	// clears it and reads every word back; the vblank handler's EEPROM-port write would
++	// drop CS mid-read and fail the read-back checksum ("EEPROM CHECKSUM ERROR").
+ 	if (m_gx_syncen & 0x20)
+ 	{
+ 		m_gx_syncen &= ~0x20;
+ 
+-		if ((m_gx_wrport1_1 & 0x81) == 0x81 || (m_gx_syncen & 1))
++		if ((m_gx_wrport1_1 & 0x81) == 0x81 || ((m_gx_syncen & 1) && (m_gx_wrport1_1 & 0x80)))
+ 		{
+ 			m_gx_syncen &= ~1;
+ 			// TODO: enabling ASSERT_LINE breaks opengolf, annoying.
+@@ -671,7 +684,7 @@ TIMER_DEVICE_CALLBACK_MEMBER(konamigx_state::konamigx_type2_scanline)
+ 		{
+ 			m_gx_syncen &= ~0x40;
+ 
+-			if ((m_gx_wrport1_1 & 0x82) == 0x82 || (m_gx_syncen & 2))
++			if ((m_gx_wrport1_1 & 0x82) == 0x82 || ((m_gx_syncen & 2) && (m_gx_wrport1_1 & 0x80)))
+ 			{
+ 				popmessage("HBlank IRQ enabled, contact MAMEdev");
+ 				m_gx_syncen &= ~2;
+@@ -706,7 +719,7 @@ TIMER_DEVICE_CALLBACK_MEMBER(konamigx_state::konamigx_type4_scanline)
+ 		{
+ 			m_gx_syncen &= ~0x20;
+ 
+-			if ((m_gx_wrport1_1 & 0x81) == 0x81 || (m_gx_syncen & 1))
++			if ((m_gx_wrport1_1 & 0x81) == 0x81 || ((m_gx_syncen & 1) && (m_gx_wrport1_1 & 0x80)))
+ 			{
+ 				m_gx_syncen &= ~1;
+ 				m_maincpu->set_input_line(1, HOLD_LINE);
+@@ -723,7 +736,7 @@ TIMER_DEVICE_CALLBACK_MEMBER(konamigx_state::konamigx_type4_scanline)
+ 		{
+ 			m_gx_syncen &= ~0x40;
+ 
+-			if ((m_gx_wrport1_1 & 0x82) == 0x82 || (m_gx_syncen & 2))
++			if ((m_gx_wrport1_1 & 0x82) == 0x82 || ((m_gx_syncen & 2) && (m_gx_wrport1_1 & 0x80)))
+ 			{
+ 				m_gx_syncen &= ~2;
+ 				m_maincpu->set_input_line(2, HOLD_LINE);
+-- 
+2.49.0.windows.1
+

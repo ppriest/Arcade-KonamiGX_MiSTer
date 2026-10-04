@@ -37,5 +37,7 @@ rtl/gx_ss_vec.sv
 rtl/cpu/gx_ss_m68k.sv
 rtl/gx_savestate.sv
 rtl/gx_ss_ddr.sv
+rtl/cheat/cheatengine.sv
 rtl/gx_main.sv
 sim/gx_main_tb/tb_gx_main.sv
+rtl/hiscore/hiscore.v

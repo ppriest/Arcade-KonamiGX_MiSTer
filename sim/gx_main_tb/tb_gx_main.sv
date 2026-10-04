@@ -55,6 +55,9 @@ string            od = SD;                    // +OUT=<dir/>: this run's trace a
 string            set_name = "daiskiss";      // +SET=<name>: its ROM image, EEPROM image and trace name
 
 reg rst = 1;
+// +SPR_MIX=0: gx_mixer's spr_mix_on off -- no sprite blended, as MAME draws
+int spr_mix_sel = 1;
+initial void'($value$plusargs("SPR_MIX=%d", spr_mix_sel));
 
 // ----------------------------------------------------------- program ROM
 // gx_main asks for granules of the packed SDRAM image (gx_sdram_top.sv):
@@ -450,14 +453,17 @@ final if (aud_fd != 0) $fclose(aud_fd);
 // +COIN_AT=f / +START_AT=f: coin 1, then player 1's start, held for eight
 // RTL frames from that frame (active low, as KonamiGX.sv's ports), to reach
 // the screens after coin-up
-int coin_at = -1, start_at = -1;
+// +B1_AT=f: player 1's button 1 the same way (a service-menu choice)
+int coin_at = -1, start_at = -1, b1_at = -1;
 initial begin
     void'($value$plusargs("COIN_AT=%d", coin_at));
     void'($value$plusargs("START_AT=%d", start_at));
+    void'($value$plusargs("B1_AT=%d", b1_at));
 end
 wire        coin_on  = coin_at  >= 0 && frame >= coin_at  && frame < coin_at + 8;
 wire        start_on = start_at >= 0 && frame >= start_at && frame < start_at + 8;
-wire [31:0] tb_inputs = { !start_on, 31'h7FFF_FFFF };
+wire        b1_on    = b1_at    >= 0 && frame >= b1_at    && frame < b1_at + 8;
+wire [31:0] tb_inputs = { !start_on, 2'b11, !b1_on, 28'hFFF_FFFF };
 wire [ 7:0] tb_coins  = { 7'h3F, !coin_on };
 
 wire [7:0]  snd_din_mux = snd_real != 0 ? k8_host : snd_stub != 0 ? stub_dout : snd_din;
@@ -546,6 +552,86 @@ wire [ 1:0] dbg_be;
 wire [15:0] dbg_data;
 
 wire [15:0] dbg_rom_hits, dbg_rom_misses;
+// ----------------------------------------------------------- hiscore.v
+// As KonamiGX.sv has it, with the HPS played here. +HS_CFG=file: the .mra's
+// <rom index="3"> bytes (hex, whitespace between), downloaded before rst
+// falls; +HS_DUMP=file: the hiscore part of the <nvram> file, sent after
+// the EEPROM's 128 (zero) bytes as index 4. +HS_OSD_AT=f: the OSD opens at
+// frame f (autosave on); an upload the module then asks for is printed as
+// HS_UPLOAD lines. +HS_PEEK_AT=f: each entry's bytes in work RAM at frame f,
+// as HS_RAM lines.
+wire [16:0] hs_addr;
+wire  [7:0] hs_wd, hs_q, hs_to_hps;
+wire        hs_we, hs_rd, hs_wi, hs_pause, hs_configured, hs_upload_req;
+reg         hs_dl = 0, hs_ul = 0, hs_wr = 0, hs_osd = 0;
+reg  [7:0]  hs_index = 0, hs_dout = 0;
+reg  [24:0] hs_ioaddr = 0;
+wire        hs_nv = hs_index == 8'd4;
+hiscore #(.HS_ADDRESSWIDTH(17), .HS_SCOREWIDTH(9), .CFG_ADDRESSWIDTH(2), .CFG_LENGTHWIDTH(2)) u_hiscore (
+    .clk, .paused(pause_cpu | hs_pause), .reset(rst), .autosave(1'b1),
+    .ioctl_upload(hs_ul), .ioctl_upload_req(hs_upload_req), .ioctl_download(hs_dl), .ioctl_wr(hs_wr),
+    .ioctl_addr(hs_nv ? hs_ioaddr - 25'd128 : hs_ioaddr),
+    .ioctl_index(hs_nv && hs_ioaddr < 25'd128 ? 8'hfe : hs_index),
+    .OSD_STATUS(hs_osd), .data_from_hps(hs_dout), .data_from_ram(hs_q), .ram_address(hs_addr),
+    .data_to_hps(hs_to_hps), .data_to_ram(hs_wd), .ram_write(hs_we), .ram_intent_read(hs_rd),
+    .ram_intent_write(hs_wi), .pause_cpu(hs_pause), .configured(hs_configured)
+);
+byte unsigned hs_cfg [0:255];
+byte unsigned hs_dump[0:1023];
+int  hs_cfg_n = 0, hs_dump_n = 0, hs_osd_at = -1, hs_peek_at = -1;
+byte unsigned hs_tmp [0:1023];
+function automatic int hs_read(string plus);
+    string f; int fd, v, n = 0;
+    if (!$value$plusargs(plus, f)) return 0;
+    fd = $fopen(f, "r");
+    if (fd == 0) $fatal(1, "%s: cannot open %s", plus, f);
+    while ($fscanf(fd, "%h", v) == 1) begin hs_tmp[n] = 8'(v); n++; end
+    $fclose(fd);
+    return n;
+endfunction
+initial begin
+    hs_cfg_n = hs_read("HS_CFG=%s");  for (int i = 0; i < hs_cfg_n; i++) hs_cfg[i] = hs_tmp[i];
+    hs_dump_n = hs_read("HS_DUMP=%s"); for (int i = 0; i < hs_dump_n; i++) hs_dump[i] = hs_tmp[i];
+    void'($value$plusargs("HS_OSD_AT=%d", hs_osd_at));
+    void'($value$plusargs("HS_PEEK_AT=%d", hs_peek_at));
+end
+// the HPS: config, then <nvram>, a byte every 4 clocks; later the upload
+int  hs_ph = 0, hs_i = 0, hs_c = 0, hs_ul_n = 0;
+wire hs_dl_busy = hs_cfg_n != 0 && hs_ph < 3;
+always @(posedge clk) begin
+    hs_wr <= 0;
+    hs_c  <= hs_c + 1;
+    case (hs_ph)
+    0: if (hs_cfg_n != 0) begin hs_ph <= 1; hs_i <= 0; hs_c <= 0; hs_index <= 8'd3; hs_dl <= 1; end
+    1, 2: if (hs_c == 3) begin
+        hs_c <= 0;
+        if (hs_i == (hs_ph == 1 ? hs_cfg_n : 128 + hs_dump_n)) begin
+            hs_dl <= 0; hs_i <= 0;
+            if (hs_ph == 1 && hs_dump_n != 0) begin hs_ph <= 2; hs_index <= 8'd4; end
+            else hs_ph <= 3;
+        end else begin
+            if (hs_i == 0 && hs_ph == 2) hs_dl <= 1;
+            hs_ioaddr <= 25'(hs_i);
+            hs_dout   <= hs_ph == 1 ? hs_cfg[hs_i] : hs_i < 128 ? 8'd0 : hs_dump[hs_i - 128];
+            hs_wr     <= 1;
+            hs_i      <= hs_i + 1;
+        end
+    end
+    3: if (hs_upload_req) begin hs_ph <= 4; hs_index <= 8'd4; hs_ul <= 1; hs_i <= 0; hs_c <= 0; hs_ioaddr <= 0; end
+    4: if (hs_c == 6) begin
+        hs_c <= 0;
+        if (hs_i >= 128) $display("HS_UPLOAD %0d %02x", hs_i - 128, hs_to_hps);
+        if (hs_i + 1 == 128 + hs_ul_n) begin hs_ul <= 0; hs_ph <= 3; end
+        else begin hs_i <= hs_i + 1; hs_ioaddr <= 25'(hs_i + 1); end
+    end
+    endcase
+end
+// the upload's length: the entries' lengths in the config
+always @* begin
+    hs_ul_n = 0;
+    for (int e = 16; e + 8 <= hs_cfg_n; e += 8) hs_ul_n += { hs_cfg[e+4], hs_cfg[e+5] };
+end
+
 gx_main dut (
     .rst, .clk, .clk_cpu,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
@@ -565,12 +651,12 @@ gx_main dut (
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
-    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
+    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
     // sets it larger to get the behaviour before gx_main bounded it, when a
     // read above the image's length returned what follows it in SDRAM --
     // with +ROM_JUNK_FROM, what the board did.
-    .rom_top(26'(rom_top)), .pause_cpu(pause_cpu), .snd_run,
+    .rom_top(26'(rom_top)), .pause_cpu(pause_cpu | hs_pause), .snd_run,
     .mem_t(md_t), .mem_addr(23'(md_a)), .dbg_mem(dbg_mem),
     .ss_m_req(e_m_req), .ss_m_go(e_m_go), .ss_m_held(e_m_held), .ss_m_done(e_m_done),
     .ss_m_bidx(e_m_bidx), .ss_m_bwe(e_m_bwe), .ss_m_bd(e_m_bd), .ss_m_bq(e_m_bq),
@@ -578,8 +664,42 @@ gx_main dut (
     .ss_mb_wd(e_mb_wd), .ss_mb_ack(e_mb_ack), .ss_mb_rd(e_mb_rd),
     .ss_snap(e_snap), .ss_commit(e_commit),
     .ss_sel(e_sssel), .ss_en(e_ssen), .ss_addr(e_ssaddr), .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_main),
-    .ss_vpos(e_vpos), .ss_hpos(e_hpos), .ss_esc_busy(e_esc_busy), .ss_dma_busy(e_dma_busy)
+    .ss_vpos(e_vpos), .ss_hpos(e_hpos), .ss_esc_busy(e_esc_busy), .ss_dma_busy(e_dma_busy),
+    .cheat_code(tb_cheat), .cheat_clr(tb_cheat_clr),
+    .hs_hold(hs_pause), .hs_on(hs_rd | hs_wi), .hs_addr(hs_addr), .hs_we(hs_we), .hs_wd(hs_wd), .hs_q(hs_q)
 );
+
+// +CHEATS=file: cheat codes as the .mra gives them (32 hex digits a line:
+// flags, address, compare, data), loaded at frame 2 the way KonamiGX.sv
+// loads Main_MiSTer's: cleared, then each code with its strobe
+reg [128:0] tb_cheat = 129'd0;
+reg         tb_cheat_clr = 1'b0;
+logic [127:0] tb_codes [0:15];
+int  tb_ncodes = 0, tb_ci = 0, tb_cph = 0;
+string tb_cheat_f;
+initial if ($value$plusargs("CHEATS=%s", tb_cheat_f)) begin
+    int fd; string ln;
+    fd = $fopen(tb_cheat_f, "r");
+    while (fd != 0 && !$feof(fd) && tb_ncodes < 16) begin
+        if ($fgets(ln, fd) > 0 && ln.len() >= 32) begin
+            void'($sscanf(ln, "%h", tb_codes[tb_ncodes]));
+            tb_ncodes++;
+        end
+    end
+    if (fd != 0) $fclose(fd);
+    $display("CHEATS %0d codes from %s", tb_ncodes, tb_cheat_f);
+end
+always @(posedge clk) if (tb_ncodes != 0 && frame >= 2 && tb_ci <= tb_ncodes) begin
+    tb_cph <= tb_cph + 1;
+    if (tb_ci == 0) begin
+        tb_cheat_clr <= tb_cph < 8;
+        if (tb_cph == 16) begin tb_ci <= 1; tb_cph <= 0; end
+    end else begin
+        if (tb_cph == 0) tb_cheat <= { 1'b0, tb_codes[tb_ci - 1] };
+        if (tb_cph == 4) tb_cheat[128] <= 1'b1;
+        if (tb_cph == 12) begin tb_cheat[128] <= 1'b0; tb_ci <= tb_ci + 1; tb_cph <= 0; end
+    end
+end
 
 // ----------------------------------------------------------- save states
 // rtl/gx_savestate.sv with a slot in memory (docs/SAVESTATES.md):
@@ -701,6 +821,56 @@ endtask
 initial ss_args();
 always @(posedge clk) if (reopen) ss_args();
 
+// +PROBE_PIX=x,y,f: at bitmap pixel (x, y) of frame f, what each tilemap
+// layer gives the mixer -- { colour[5:0], pixel[7:0] } -- with the K055555's
+// display mask and mix enables and the K054338's blend words, a line each
+int pp_x = -1, pp_y = -1, pp_f = -1;
+initial begin
+    string ps;
+    if ($value$plusargs("PROBE_PIX=%s", ps)) void'($sscanf(ps, "%d,%d,%d", pp_x, pp_y, pp_f));
+end
+always @(posedge clk)
+    if (frame == pp_f && dut.u_video.u_mix.pxl_cen && dut.u_video.u_mix.bx == 10'(pp_x) && dut.u_video.u_mix.by == 10'(pp_y))
+        $display("PROBE_PIX f%0d (%0d,%0d) A %04x B %04x C %04x D %04x spr %0d/%04x disp %02x vinmix %02x vmixon %02x r13 %04x r14 %04x k55_bg %02x %02x grad %0d",
+                 frame, pp_x, pp_y, dut.u_video.u_mix.lyr_a, dut.u_video.u_mix.lyr_b, dut.u_video.u_mix.lyr_c, dut.u_video.u_mix.lyr_d,
+                 dut.u_video.u_mix.spr_valid, dut.u_video.u_mix.spr_pen,
+                 dut.u_video.u_mix.k55[45], dut.u_video.u_mix.k55[33], dut.u_video.u_mix.k55[34],
+                 dut.u_video.u_mix.k338[13], dut.u_video.u_mix.k338[14], dut.u_video.u_mix.k55[0], dut.u_video.u_mix.k55[1],
+                 dut.u_video.u_mix.bg_grad);
+always @(posedge clk)
+    if (frame == pp_f && dut.u_video.u_mix.pxl_cen && dut.u_video.u_mix.bx == 10'(pp_x) && dut.u_video.u_mix.by == 10'(pp_y))
+        $display("PROBE_OBJ opset %04x coregshift %0d coreg %04x oinprion %02x ocblk %02x",
+                 dut.u_video.u_obj.opset, dut.u_video.u_obj.coregshift, dut.u_video.u_obj.coreg,
+                 dut.u_video.u_obj.oinprion, dut.u_video.u_obj.ocblk);
+
+// +EE_LOG=file: the 93C46's pins, a line per change of CS/SK/DI or DO:
+// "frame clk cs sk di do". +PC_HIT=hex: a line each time the main CPU
+// fetches an opcode there (+PC_HIT2: a second address).
+int ee_fd = 0;
+longint ee_clk = 0;
+reg [3:0] ee_pins_l = 4'hf;
+wire [3:0] ee_pins = { dut.u_ee.cs, dut.u_ee.sk, dut.u_ee.di, dut.u_ee.dout };
+initial begin
+    string f;
+    if ($value$plusargs("EE_LOG=%s", f)) ee_fd = $fopen(f, "w");
+end
+always @(posedge clk) begin
+    ee_clk <= ee_clk + 1;
+    ee_pins_l <= ee_pins;
+    if (ee_fd != 0 && ee_pins != ee_pins_l)
+        $fwrite(ee_fd, "%0d %0d %b %b %b %b\n", frame, ee_clk, ee_pins[3], ee_pins[2], ee_pins[1], ee_pins[0]);
+end
+final if (ee_fd != 0) $fclose(ee_fd);
+
+reg [31:0] pc_hit = 32'hffffffff, pc_hit2 = 32'hffffffff;
+initial begin
+    void'($value$plusargs("PC_HIT=%h", pc_hit));
+    void'($value$plusargs("PC_HIT2=%h", pc_hit2));
+end
+always @(posedge clk)
+    if (dut.cpu_cen && dut.busstate == 2'b00 && dut.cpu_clkena && (dut.a32 == pc_hit || dut.a32 == pc_hit2))
+        $display("PC_HIT %06x frame %0d clk %0d", dut.a32, frame, ee_clk);
+
 // ----------------------------------------------------------- trace
 // The last column is the CPU's interrupt mask (SR bits 8-10), as MAME's
 // trace has it: check_gx_main.py compares each level as its own stream.
@@ -797,6 +967,16 @@ always @(posedge clk) if (!rst) begin
     end
     if (!vid_lvbl && lvbl_l) begin
         frame++;
+        hs_osd <= hs_osd_at >= 0 && frame >= hs_osd_at && frame < hs_osd_at + 2;
+        if (frame == hs_peek_at)
+            for (int e = 16; e + 8 <= hs_cfg_n; e += 8) begin
+                int a, n;                           // assigned, not initialised: these are static
+                a = { hs_cfg[e+1], hs_cfg[e+2], hs_cfg[e+3] } - 24'hc00000;
+                n = { hs_cfg[e+4], hs_cfg[e+5] };
+                for (int i = 0; i < n; i++)
+                    $display("HS_RAM %06x %02x", 24'hc00000 + a + i,
+                             (a + i) % 2 ? dut.u_wram_l.mem[(a + i) / 2] : dut.u_wram_h.mem[(a + i) / 2]);
+            end
         // paused for +PAUSE_FOR frames (10 by default), then released: the
         // writes either side must still be MAME's, in MAME's order, or an
         // ack was dropped over the pause
@@ -928,7 +1108,7 @@ end
 // the EEPROM for hundreds of frames.
 byte unsigned ee [0:127];
 int          setup_n = 0;
-always @(posedge clk) if (setup_n < 160) begin
+always @(posedge clk) if (setup_n < 160 && !(setup_n == 79 && hs_dl_busy)) begin
     setup_n <= setup_n + 1;
     if (setup_n == 79) rst <= 0;
     ee_we   <= setup_n >= 84 && setup_n < 148;

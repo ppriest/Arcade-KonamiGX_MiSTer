@@ -13,7 +13,10 @@ DE10-nano.
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
+  - [Keyboard](#keyboard)
   - [Save states](#save-states)
+  - [High scores](#high-scores)
+  - [Cheats](#cheats)
   - [CRT Adjust](#crt-adjust)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
@@ -26,6 +29,17 @@ DE10-nano.
 - [License](#license)
 
 ## History
+
+* **Arcade-KonamiGX_20261004**
+  * OSD *Invert P1/P2*
+  * Cheats: Added cheats, converted from Pugsy's MAME cheats, in every set. Note that MiSTer isn't as flexible, and so you may find issues (e.g. only enable them when in-game as I found it disabled some inputs in menus...)
+  * High scores
+  * Keyboard: MAME's default keys alongside the pads
+  * Fix: Can save states when paused
+  * Fix: EPROM saving in Dragoon Might's Gokujou Parodius's
+  * Fix: Twin Bee: the bomb target marker is a circle again (mirrored sprites)
+  * Fix: Fantastic Journey / Gokujou Parodius: flame fade
+  * Fix: Fantastic Journey / Gokujou Parodius:* Sprite blend* (Effect bits) shows the dancer stage's background gradient
 
 * **Arcade-KonamiGX_20261002**
   * Save states: four slots
@@ -50,31 +64,26 @@ DE10-nano.
 Graphically, they're still WIP - but MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
 
 Known issues:
-* **Dragoon Might's power-on memory check can fail 4F and 4H**, the sound DSP's RAM test: the DSP
-  has not finished it when the sound CPU gives up waiting. Resetting the core from the OSD passes
-  it.
-* **Saving settings in Dragoon Might's service menu stops on "EEPROM CHECKSUM ERROR"** and the game
-  has to be reset. The settings are written: opening the OSD saves them, and they are there on the
-  next launch. The save routine (0x243b1e) reads every word back and compares the byte sum with
-  word 0; that check fails on the core although the EEPROM it leaves passes it, and the boot, which
-  reads with the same routine, does not fail. Not yet explained; the 93C46's busy time did not fix
-  it.
-* **Gokujou Parodius: a second settings save from the service menu leaves an EEPROM error** at the
-  next power-on check, which then loops. Deleting the `.nvm` file, or holding the service button
-  at start-up (which initialises the EEPROM), clears it. The first save works; Fantastic Journey,
-  Salamander 2 and Sexy Parodius do not show it. The same fault as Dragoon Might's save.
+* **Dragoon Might's and Gokujou Parodius's power-on memory check can fail 4F and 4H**, the sound
+  DSP's RAM: the sound CPU stops waiting for the DSP's RAM test before it finishes. Resetting the
+  core from the OSD passes it.
+* **EEPROM settings saves** (Dragoon Might's "EEPROM CHECKSUM ERROR", Gokujou Parodius's error
+  after a second save): fixed in Arcade-KonamiGX_20261004 on the bench (the vblank interrupt
+  dropped the EEPROM's chip select mid-save; docs/patches/mame-konamigx-syncen.md), not yet
+  confirmed on the board.
 
-Reported by players against the 20260928 release, compared with the original PCB; not yet
-reproduced here:
+Reported by players against the 20260928 release, compared with the original PCB:
 * Fantastic Journey and Gokujou Parodius:
-  * stage 2's clouds, and the dive into the water, flicker when many sprites are on screen
-    (sprite line time: the scan and zoom changes since 20260928 are expected to cover it);
-  * the big ship boss's flames above and below appear briefly, then vanish; they should appear at
-    once and stay. In Gokujou Parodius they also fade in slowly at the end of the stage and vanish
-    at once, where they should fade out;
-  * at the last stage's big dancer the background should turn black; it is a brighter colour that
-    does not match the spotlights;
+  * the big ship boss's flames: fixed (the additive layer's level is no longer inverted), checked
+    on the board in Fantastic Journey; Salamander 2's effects still to be checked with it;
+  * at the last stage's big dancer the background gradient is covered by a sprite: the OSD's
+    *Sprite blend* (Effect bits) shows it, as the PCB does; off by default until more games have
+    been played with it (docs/MAME_KLUDGES.md);
+  * stage 2's clouds flickering: not seen since the sprite line-time changes; sprite draw time
+    can still run short in busy scenes;
   * some sound effects and parts of the music are too loud.
+* Twin Bee Yahhoo! / Magical Twin Bee: a bomb target marker drawn as ')(': fixed (a mirrored
+  sprite ignores its x flip, as MAME's rule), checked on the board.
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
 `docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
@@ -139,6 +148,21 @@ per frame, from the K053252's own registers:
 288 × 224 visible. MAME's `konamigx()` declares `set_raw(8000000, 512, ...)`, 60 Hz; the values
 above are what the game programs into the CRTC.
 
+### Keyboard
+
+MAME's default keys, alongside the pads:
+
+| | Player 1 | Player 2 |
+|---|---|---|
+| Move | arrows | R F D G |
+| Buttons 1-6 | Left Ctrl, Left Alt, Space, Left Shift, Z, X | A, S, Q, W, E |
+| Start | 1 | 2 |
+| Coin | 5 | 6 |
+
+F2 is the service (test) switch, 9 and 0 the service coins, P pause.
+
+The OSD's *Invert P1/P2* swaps the two players' controls: pads, keys and sticks.
+
 ### Save states
 
 From Arcade-KonamiGX_20261002. Saving and restoring has been tried on the board with Daisu-Kiss. The OSD's *Save state slot*,
@@ -151,6 +175,26 @@ MAME and looked at on the core, or the other way: `python scripts/gxss.py from-m
 `to-mame`. What MAME does not keep (the K053252's registers, the K054539 voices' fractions,
 some timers' phases) starts afresh. [docs/SAVESTATES.md](docs/SAVESTATES.md) has the design and
 what has been checked.
+
+### High scores
+
+From Arcade-KonamiGX_20261004. The sets MAME's `hiscore.dat` covers -- Gokujou Parodius, Fantastic Journey,
+Sexy Parodius, Twin Bee Yahhoo!, Dragoon Might (ver JAA), Salamander 2 (ver JAA) and Lethal
+Enforcers II (ver EAA, UAA) -- keep their high-score tables (`hiscore.v`, from the MiSTer hiscore
+project). The table is read from work RAM when the OSD opens and saved, with *Autosave Hiscores*
+on, in the same `.nvm` file as the EEPROM, after it; it is written back once the game has set up
+its own table after power-on.
+
+### Cheats
+
+From Arcade-KonamiGX_20261004. The OSD's *Cheats* lists the set's cheats from its `.mra`, converted from
+[Pugsy's MAME cheats](https://www.mamecheat.co.uk/) (cheat0279) by `scripts/mame_cheats.py`;
+every set has some. A cheat does not
+write memory: the value is replaced as the main CPU reads it (wickerwaka's engine, from the
+Irem M92 core), so switching it off leaves no trace. Up to 16 codes at once. MAME cheats that
+need conditions or arithmetic are not converted. A cheat MAME applies once (the "... Now!"
+cheats) is held while it is on here; turn it off once it has done its job. Cheats on during the
+power-on tests can make them fail.
 
 ## Screenshots
 
@@ -239,18 +283,18 @@ To run a development build:
 - [ ] Dragoon Might's settings save: the EEPROM read-back check (and Gokujou Parodius's second save)
 - [ ] Fantastic Journey / Gokujou Parodius: the big ship's flames, the dancer stage's background
 - [ ] Sound mix levels against the PCB
-- [ ] The K055673 and K056832 ROM readback windows, screen flip, `hiscore.v`
+- [ ] The K055673 and K056832 ROM readback windows, screen flip
 
 ### Resource usage
 
-The release build (`KonamiGX`, commit `edd366c`, fitter seed 3) on the DE10-nano's Cyclone V
+The release build (`KonamiGX`, commit `98ca190`, fitter seed 3) on the DE10-nano's Cyclone V
 5CSEBA6, speed grade 7, timing met on every clock:
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 30,791 (73%) | 41,910 |
-| Block memory bits | 4,308,365 (76%) | 5,662,720 |
-| RAM blocks | 539 (97%) | 553 |
+| Logic (ALMs) | 36,916 (88%) | 41,910 |
+| Block memory bits | 4,324,909 (76%) | 5,662,720 |
+| RAM blocks | 545 (99%) | 553 |
 | DSP blocks | 75 (67%) | 112 |
 | PLLs | 3 | 6 |
 

@@ -167,6 +167,20 @@ if #presses > 0 then
     end))
 end
 
+-- GX_POKES="c0044a=00,c0044b=02": bytes written by the main CPU's program
+-- space every frame (a MAME cheat's constant stores), to survive to a later
+-- stage for a capture.
+local pokes = {}
+for a, v in (os.getenv("GX_POKES") or ""):gmatch("(%x+)=(%x+)") do
+    pokes[#pokes + 1] = { tonumber(a, 16), tonumber(v, 16) }
+end
+if #pokes > 0 then
+    local space = m.devices[":maincpu"].spaces["program"]
+    subs[#subs + 1] = emu.add_machine_frame_notifier(guard("pokes", function()
+        for _, p in ipairs(pokes) do space:write_u8(p[1], p[2]) end
+    end))
+end
+
 local done = false
 subs[#subs + 1] = emu.add_machine_frame_notifier(guard("frame", function()
     if done then return end

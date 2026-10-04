@@ -42,3 +42,7 @@ sim/k053252_tb/test.v -text
 rtl/video/k055673/** -text
 rtl/video/k056832/** -text
 tools/jtframe/src/** -text
+rtl/hiscore/*.v* -text
+
+# Patches for other repositories apply byte-for-byte (git am / patch).
+docs/patches/*.patch -text

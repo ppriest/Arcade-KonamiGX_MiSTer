@@ -100,11 +100,16 @@ localparam CONF_STR = {
 	"H1O[70:69],P1 stick,Auto,Aim,D-pad;",
 	"H1O[72:71],P2 stick,Auto,Aim,D-pad;",
 	"H1O[74:73],Mouse aims,P1,P2,Off;",
+	"O[104],Invert P1/P2,Off,On;",
 	"-;",
 	// save states (docs/SAVESTATES.md): the slot, and save/restore it
 	"O[100:99],Save state slot,1,2,3,4;",
 	"R[101],Save state;",
 	"R[102],Restore state;",
+	// cheats from the .mra's <cheats> block (rtl/cheat/PROVENANCE.md)
+	"C,Cheats;",
+	// hiscore.v (rtl/hiscore): shown when the .mra carries a hiscore.dat table
+	"H3O[103],Autosave Hiscores,Off,On;",
 	"-;",
 	"DIP;",
 	"-;",
@@ -122,7 +127,9 @@ wire   [1:0] buttons;
 wire [127:0] status;
 wire  [21:0] gamma_bus;
 
+wire [31:0] joy_pad_0, joy_pad_1;       // hps_io; joystick_N adds the keyboard (gx_keyboard)
 wire [31:0] joystick_0, joystick_1;
+wire [10:0] ps2_key;
 wire [15:0] joystick_l_analog_0, joystick_l_analog_1;
 wire [24:0] ps2_mouse;
 wire [31:0] gun_h, gun_v;               // gx_guns, below
@@ -139,6 +146,8 @@ wire        ioctl_upload;
 wire [15:0] ee_rd_data;                 // the NVRAM save (below, with the EEPROM load)
 wire        ee_written;
 reg         nv_dirty = 1'b0, nv_save = 1'b0, osd_d = 1'b0;
+wire        hs_configured, hs_upload_req;    // hiscore.v, below
+wire  [7:0] hs_to_hps;
 
 hps_io #(.CONF_STR(CONF_STR)) hps_io
 (
@@ -151,10 +160,10 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 
 	.buttons(buttons),
 	.status(status),
-	.status_menumask({ 13'd0, ~status[75], ~guns, 1'b0 }),   // H1: the gun options; H2: CRT Adjust's
+	.status_menumask({ 12'd0, ~hs_configured, ~status[75], ~guns, 1'b0 }),   // H1: the gun options; H2: CRT Adjust's; H3: hiscores
 
-	.joystick_0(joystick_0),
-	.joystick_1(joystick_1),
+	.joystick_0(joy_pad_0),
+	.joystick_1(joy_pad_1),
 	.joystick_l_analog_0(joystick_l_analog_0),
 	.joystick_l_analog_1(joystick_l_analog_1),
 	.ps2_mouse(ps2_mouse),
@@ -165,15 +174,26 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 	.ioctl_addr(ioctl_addr),
 	.ioctl_dout(ioctl_dout),
 	.ioctl_wait(ioctl_wait),
-	// the .mra's <nvram index="4">: the EEPROM, uploaded when nv_save rises
+	// the .mra's <nvram index="4">: the EEPROM's 128 bytes, then hiscore.v's
+	// tables; uploaded when either asks
 	.ioctl_upload(ioctl_upload),
-	.ioctl_upload_req(nv_save),
+	.ioctl_upload_req(nv_save | hs_upload_req),
 	.ioctl_upload_index(8'd4),
-	.ioctl_din(ioctl_addr[0] ? ee_rd_data[7:0] : ee_rd_data[15:8]),
+	.ioctl_din(ioctl_addr >= 27'd128 ? hs_to_hps : ioctl_addr[0] ? ee_rd_data[7:0] : ee_rd_data[15:8]),
 	.ioctl_rd(),
 
-	.ps2_key()
+	.ps2_key(ps2_key)
 );
+
+wire [31:0] key_0, key_1;
+wire  [1:0] svc_coin;
+gx_keyboard u_keys (.clk(clk_sys), .ps2_key, .key0(key_0), .key1(key_1), .svc_coin);
+// Invert P1/P2: each player's pad, keys and stick become the other's
+wire p_swap = status[104];
+assign joystick_0 = p_swap ? joy_pad_1 | key_1 : joy_pad_0 | key_0;
+assign joystick_1 = p_swap ? joy_pad_0 | key_0 : joy_pad_1 | key_1;
+wire [15:0] stick_0 = p_swap ? joystick_l_analog_1 : joystick_l_analog_0;
+wire [15:0] stick_1 = p_swap ? joystick_l_analog_0 : joystick_l_analog_1;
 
 ///////////////////////   CLOCKS   ///////////////////////////////
 
@@ -220,8 +240,21 @@ always @(posedge clk_sys) begin
 	end
 end
 
-wire core_reset = reset | ioctl_download | ~rom_loaded | ldr_busy;
+// a cheat list (ioctl index 255) comes during play: it does not reset the board
+wire dl_reset   = ioctl_download && ioctl_index != 16'd255;
+wire core_reset = reset | dl_reset | ~rom_loaded | ldr_busy;
 wire mem_reset  = reset & ~ioctl_download;
+
+// Cheats: Main_MiSTer sends the enabled codes from the .mra's <cheats> block
+// on index 255, 16 bytes each, big-endian; two bytes when none is enabled.
+// A code is shifted in a byte at a time, its strobe (bit 128) raised on the
+// 16th byte and held until the next, so gx_main's engine (clk_vid) sees each
+// one; the list is cleared while the download is at its first byte.
+wire        cheat_dl = ioctl_download && ioctl_index == 16'd255;
+reg [128:0] cheat_code = 129'd0;
+always @(posedge clk_sys)
+	if (cheat_dl && ioctl_wr) cheat_code <= { &ioctl_addr[3:0], cheat_code[119:0], ioctl_dout };
+wire        cheat_clr = cheat_dl && ioctl_addr == 27'd0;
 
 // the .mra mod byte: which set (rtl/gx_board_cfg.sv)
 reg [7:0] mod_byte = 8'd0;
@@ -372,7 +405,7 @@ wire [31:0] inputs  = { player(joystick_0), player(joystick_1),
 // port set every set here uses declares SYSTEM_DSW bit 15 active HIGH, so it
 // reads 0 (MAME reads 0xFEFF7FF7 idle; the bench gives the same). With it
 // high Twin Bee Yahhoo! failed its EEPROM check on the board.
-wire  [7:0] coins   = { 1'b0, ~{ 1'b0, 2'b00, 2'b00, joystick_1[11], joystick_0[11] } };  // bit 0 coin 1, bit 1 coin 2
+wire  [7:0] coins   = { 1'b0, ~{ 1'b0, svc_coin, 2'b00, joystick_1[11], joystick_0[11] } };  // bit 0 coin 1, bit 1 coin 2, bits 4-5 service coins
 // bit 3: the service switch; bit 2: le2's player 1 trigger (SERVICE 0x04000000)
 wire  [7:0] service = ~{ 4'b0000, joystick_0[13] | joystick_1[13], guns & gun_trig[0], 2'b00 };
 
@@ -553,6 +586,48 @@ always @(posedge clk_sys) begin
 	else if (pause_btn & ~pause_btn_d) pause_cpu <= ~pause_cpu;
 end
 
+// hiscore.v (rtl/hiscore/PROVENANCE.md): MAME's hiscore.dat entries from the
+// .mra's <rom index="3">, restored into work RAM after the game has written
+// its own table, and read back when the OSD opens. Its dump shares the
+// <nvram index="4"> file with the EEPROM, after the EEPROM's 128 bytes, so the
+// module sees index 4 from byte 128 and addresses from there. It runs on
+// clk_vid with the work RAM (gx_main's hs_* port, a byte two clocks after its
+// address); ioctl_wr is held two clk_sys cycles so it sees each byte once.
+wire [16:0] hs_addr;
+wire  [7:0] hs_wd, hs_q;
+wire        hs_we, hs_rd, hs_wi, hs_pause;
+wire        hs_nv = ioctl_index == 16'd4;
+reg         hs_wr_d = 1'b0;
+always @(posedge clk_sys) hs_wr_d <= ioctl_wr;
+hiscore #(
+	.HS_ADDRESSWIDTH(17),               // work RAM, 0xc00000-0xc1ffff: the entry's low 17 bits
+	.HS_SCOREWIDTH(9),                  // up to 512 bytes (salmndr2: 310)
+	.CFG_ADDRESSWIDTH(2),               // up to 4 entries a set (gokuparo: 3)
+	.CFG_LENGTHWIDTH(2)                 // salmndr2's entry is 310 bytes
+) u_hiscore (
+	.clk(clk_vid),
+	.paused(pause_cpu | hs_pause),
+	.reset(rst_vid),
+	.autosave(status[103]),
+	.ioctl_upload(ioctl_upload),
+	.ioctl_upload_req(hs_upload_req),
+	.ioctl_download(ioctl_download),
+	.ioctl_wr(ioctl_wr | hs_wr_d),
+	.ioctl_addr(hs_nv ? ioctl_addr[24:0] - 25'd128 : ioctl_addr[24:0]),
+	.ioctl_index(hs_nv && ioctl_addr < 27'd128 ? 8'hfe : ioctl_index[7:0]),
+	.OSD_STATUS(OSD_STATUS),
+	.data_from_hps(ioctl_dout),
+	.data_from_ram(hs_q),
+	.ram_address(hs_addr),
+	.data_to_hps(hs_to_hps),
+	.data_to_ram(hs_wd),
+	.ram_write(hs_we),
+	.ram_intent_read(hs_rd),
+	.ram_intent_write(hs_wi),
+	.pause_cpu(hs_pause),
+	.configured(hs_configured)
+);
+
 gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
@@ -566,15 +641,17 @@ gx_main u_board (
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
-	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .dbg_rom(dbg_rom),
+	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .spr_mix_on(1'b1), .dbg_rom(dbg_rom),
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
-	.rom_top(tile_base), .pause_cpu(pause_cpu), .snd_run,
+	.rom_top(tile_base), .pause_cpu((pause_cpu | hs_pause) & ~ss_busy), .snd_run,
 	.tile_base, .obj_base, .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
 	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem),
 	.ss_m_req, .ss_m_go, .ss_m_held, .ss_m_done, .ss_m_bidx, .ss_m_bwe, .ss_m_bd, .ss_m_bq,
 	.ss_mb_req, .ss_mb_we, .ss_mb_addr, .ss_mb_be, .ss_mb_wd, .ss_mb_ack, .ss_mb_rd,
 	.ss_snap, .ss_commit, .ss_sel, .ss_en, .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_main),
-	.ss_vpos, .ss_hpos, .ss_esc_busy, .ss_dma_busy
+	.ss_vpos, .ss_hpos, .ss_esc_busy, .ss_dma_busy,
+	.cheat_code, .cheat_clr,
+	.hs_hold(hs_pause), .hs_on(hs_rd | hs_wi), .hs_addr, .hs_we, .hs_wd, .hs_q
 );
 
 ///////////////////////   SAVE STATES   //////////////////////////
@@ -589,8 +666,10 @@ reg        ss_save = 0, ss_load = 0;
 always @(posedge clk_vid) begin
 	ss_sv_s <= { ss_sv_s[1:0], status[101] };
 	ss_ld_s <= { ss_ld_s[1:0], status[102] };
-	ss_save <= ss_sv_s[2:1] == 2'b01 && snd_run && !pause_cpu && !rst_vid;
-	ss_load <= ss_ld_s[2:1] == 2'b01 && snd_run && !pause_cpu && !rst_vid;
+	// taken while paused too: the pause is lifted while the engine holds the
+	// CPU (ss_busy, at the board's pause below), and is back when it lets go
+	ss_save <= ss_sv_s[2:1] == 2'b01 && snd_run && !rst_vid;
+	ss_load <= ss_ld_s[2:1] == 2'b01 && snd_run && !rst_vid;
 end
 wire [1:0] ss_slot = status[100:99];
 
@@ -731,7 +810,7 @@ issp_probe #(.INSTANCE_ID("T"), .PROBE_W(132), .SOURCE_W(8)) u_issp_line (
 wire [23:0] rgb_x;
 gx_guns u_guns (
 	.clk(clk_vid), .rst(rst_vid), .joy0(joystick_0), .joy1(joystick_1),
-	.ana0(joystick_l_analog_0), .ana1(joystick_l_analog_1), .mouse(ps2_mouse),
+	.ana0(stick_0), .ana1(stick_1), .mouse(ps2_mouse),
 	.mode0(status[70:69]), .mode1(status[72:71]), .ms_who(status[74:73]),
 	.yrev(orient_fy), .gun_h, .gun_v, .trig(gun_trig),
 	.show(guns & status[68]), .pxl_cen, .lhbl(vid_lhbl), .lvbl(vid_lvbl), .vis_w,

@@ -92,6 +92,106 @@ def mame_version():
     return _MAME_VERSION
 
 REPO = bri.REPO
+
+
+def cheat_lines(set_name):
+    """The set's <cheats> block (scripts/mame_cheats.py), from MAME's cheat files
+    if they are installed; none otherwise, and the .mra is as it was."""
+    import mame_cheats
+    try:
+        if mame_cheats.cheat_xml(set_name) is None:
+            return []
+        good, bad = mame_cheats.cheats(set_name)
+    except SystemExit:
+        return []
+    if not good:
+        return []
+    return ["", "    <!-- from Pugsy's MAME cheats (mamecheat.co.uk), scripts/mame_cheats.py: replaced",
+            "         as the CPU reads them (rtl/cheat/cheatengine.sv) -->",
+            *mame_cheats.mra_block(good).rstrip("\n").split("\n")]
+
+
+# hiscore.v (rtl/hiscore): MAME's hiscore.dat entries as the .mra's <rom index="3">.
+# START_WAIT is the delay from reset before the first start/end check: half a second
+# before the frame from which the set's own table stays in place in MAME 0.289
+# (frames from power-on), so the check never runs during the power-on RAM test,
+# which writes the same RAM.
+HS_READY_FRAME = {"gokuparo": 661, "fantjour": 661, "fantjoura": 661, "sexyparo": 984,
+                  "sexyparoa": 984, "tbyahhoo": 834, "dragoonj": 1069, "salmndr2": 1062,
+                  "le2": 745, "le2u": 745}
+HS_CLK = 48_000_000                     # clk_vid, hiscore.v's clock
+WRAM = (0xC00000, 0xC20000)             # gx_main's work RAM; HS_ADDRESSWIDTH 17
+HS_MAX_ENTRIES, HS_MAX_BYTES = 4, 512   # KonamiGX.sv: CFG_ADDRESSWIDTH 2, HS_SCOREWIDTH 9
+EEPROM_BYTES = 128                      # the <nvram> file holds the EEPROM first
+
+
+def hiscore_dat():
+    """MAME's plugins/hiscore/hiscore.dat beside the MAME this script runs, or None."""
+    import os
+    mame_version()                      # resolves MAME_DIR, or stops
+    exe_dir = os.environ.get("MAME_DIR")
+    if not exe_dir:
+        for f in (Path(os.environ.get("MISTER_CORE_ENV") or Path.home() / ".mister-core.env"),
+                  REPO / "mister.env"):
+            if f.exists():
+                for ln in f.read_text(encoding="utf-8", errors="replace").splitlines():
+                    if ln.strip().startswith("MAME_DIR="):
+                        exe_dir = ln.split("=", 1)[1].strip().strip('"').strip("'")
+    f = Path(exe_dir or ".") / "plugins" / "hiscore" / "hiscore.dat"
+    return f.read_text(encoding="utf-8", errors="replace") if f.exists() else None
+
+
+def hiscore_entries(set_name, text):
+    """[(addr, length, start, end)] for the set; [] if none, or one this core cannot hold."""
+    names, entries, found = [], [], None
+    for ln in text.splitlines() + [""]:
+        ln = ln.strip()
+        if ln.startswith(";"):
+            continue
+        if ln.endswith(":") and not ln.startswith("@"):
+            if entries:
+                names, entries = [], []
+            names.append(ln[:-1])
+        elif ln.startswith("@"):
+            f = ln[1:].split(",")
+            try:
+                entries.append((f[0], f[1], int(f[2], 16), int(f[3], 16), int(f[4], 16), int(f[5], 16)))
+            except (IndexError, ValueError):
+                entries.append(("?", "?", 0, 0, 0, 0))      # another format: the set is not supported
+        elif not ln and names:
+            if set_name in names and entries:
+                found = entries
+                break
+            names, entries = [], []
+    if not found:
+        return []
+    out = [(a, n, s, e) for cpu, space, a, n, s, e in found
+           if cpu == ":maincpu" and space == "program" and WRAM[0] <= a and a + n <= WRAM[1]]
+    if (len(out) != len(found) or len(out) > HS_MAX_ENTRIES
+            or sum(n for _, n, _, _ in out) > HS_MAX_BYTES or set_name not in HS_READY_FRAME):
+        return []
+    return out
+
+
+def hiscore_lines(set_name):
+    """The <rom index="3"> block, and the bytes hiscore.v adds to the <nvram> file."""
+    text = hiscore_dat()
+    ents = hiscore_entries(set_name, text) if text else []
+    if not ents:
+        return [], 0
+    wait = (HS_READY_FRAME[set_name] - 30) * HS_CLK // 60
+    # START_WAIT, CHECK_WAIT, CHECK_HOLD (2: the read is registered), WRITE_HOLD,
+    # WRITE_REPEATCOUNT, WRITE_REPEATWAIT, ACCESS_PAUSEPAD, CHANGEMASK
+    head = wait.to_bytes(4, "big") + bytes.fromhex("3FFF 0002 0002 0001 000F 20 00")
+    rows = [" ".join(f"{b:02X}" for b in head)]
+    for a, n, st, en in ents:              # CFG_LENGTHWIDTH 2: address, length, start, end
+        rows.append(" ".join(f"{b:02X}" for b in a.to_bytes(4, "big") + n.to_bytes(2, "big") + bytes([st, en])))
+    return (["", "    <!-- MAME's hiscore.dat entries for hiscore.v (rtl/hiscore) -->",
+             '    <rom index="3">', "        <part>", *("        " + r for r in rows),
+             "        </part>", "    </rom>"],
+            sum(n for _, n, _, _ in ents))
+
+
 RTL_CFG = REPO / "rtl" / "gx_board_cfg.sv"
 OUT_DIR = REPO / "releases"
 MB = 1 << 20
@@ -600,6 +700,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         st.data[off] = new
         patch_lines.append(f'        <patch offset="{off:#x}">{new:02X}</patch>'
                            f'  <!-- CPU {addr:#x}: {old:02X} -> {new:02X}, MAME init_konamigx -->')
+    hs_lines, hs_bytes = hiscore_lines(set_name)
     text = "\n".join([
         '<misterromdescription>',
         f'    <name>{esc(title)}</name>',
@@ -627,15 +728,19 @@ def build(set_name, mod, gl, games, blocks, check_only):
         '    </rom>',
         *ee_lines,
         '',
+        *hs_lines,
+        *([''] if hs_lines else []),
         '    <!-- the EEPROM saved: loaded after the ROM (ioctl index 4, over the default),',
-        '         saved when the OSD opens after the game has written it -->',
-        '    <nvram index="4" size="128"/>',
+        '         saved when the OSD opens after the game has written it'
+        + ('; then hiscore.v\'s tables -->' if hs_bytes else ' -->'),
+        f'    <nvram index="4" size="{EEPROM_BYTES + hs_bytes}"/>',
         '',
         f'    <switches default="{dflt[0]:02X},{dflt[1]:02X}">',
         *dip_lines,
         '    </switches>',
         '',
         f'    <buttons {buttons_attr(set_name)}/>',
+        *cheat_lines(set_name),
         '</misterromdescription>',
         '',
     ])

@@ -73,6 +73,8 @@ module gx_mixer (
     input      [ 7:0] spr_pri,
     input      [ 7:0] spr_z,
     input      [ 7:0] spr_idx,
+    input      [ 1:0] spr_mix,          // gx_obj pxl_mix: the sprite's effect bits, attr[9:8]
+    input             spr_mix_on,       // they are its mix code; off: none, as MAME (the benches' +SPR_MIX=0)
     input             shd_valid,        // shadow plane of gx_obj
     input      [ 1:0] shd_code,
     input      [ 7:0] shd_pri,
@@ -107,12 +109,13 @@ wire       kill   = k338[15][0];
 wire       mixpri = k338[15][1];
 wire       noclip = k338[15][5];
 
-// K054338 set_alpha_level with invert_alpha(1): the level is 0x1f less the
-// register's five bits, expanded to eight, and bit 5 says the layer is added
-// rather than blended. MAME turns an additive level into alpha ~level (its
-// own "hack: ... invert alpha", gx_draw_basic_tilemaps) and so fades the
-// layer in and out instead; this adds it, which is what leaves black
-// transparent -- Sexy Parodius's ink.
+// K054338 set_alpha_level with invert_alpha(1): a blend level is 0x1f less
+// the register's five bits, expanded to eight, and bit 5 says the layer is
+// added rather than blended, which leaves black transparent (Sexy Parodius's
+// ink). An added layer's level is the register's own, not inverted: Fantastic
+// Journey fades its fire out by stepping it from 8 to 0, which the PCB shows
+// as a fade-out; inverted, the fire brightened and then vanished. MAME
+// 5c75784 inverts it (docs/MAME_KLUDGES.md).
 //
 // Returns { add, on, level }: `on` is 0 where nothing is blended (mix code 0,
 // or a plain level of 255).
@@ -125,9 +128,9 @@ function [9:0] alpha_of( input [1:0] mix, input [15:0] r13, input [15:0] r14 );
     begin
         r      = mix[1] ? r14 : r13;
         mixset = mix[0] ? r[7:0] : r[15:8];
-        lv     = 5'h1f - mixset[4:0];
-        a      = { lv, lv[4:2] };
         add    = mixset[5];
+        lv     = add ? mixset[4:0] : 5'h1f - mixset[4:0];
+        a      = { lv, lv[4:2] };
         alpha_of = { add, mix != 2'd0 && (add || a != 8'd255), a };
     end
 endfunction
@@ -138,13 +141,14 @@ reg  [13:0] lyr [0:3];
 reg         spr_valid_r, shd_valid_r;
 reg  [12:0] spr_pen_r;
 reg  [ 7:0] spr_pri_r, spr_z_r, spr_idx_r, shd_pri_r, shd_z_r, shd_idx_r;
+reg  [ 1:0] spr_mix_r;
 reg  [ 1:0] shd_code_r;
 
 always @(posedge clk) if( pxl_cen ) begin
     bx_r <= bx; by_r <= by;
     lyr[0] <= lyr_a; lyr[1] <= lyr_b; lyr[2] <= lyr_c; lyr[3] <= lyr_d;
     spr_valid_r <= spr_valid; spr_pen_r <= spr_pen; spr_pri_r <= spr_pri;
-    spr_z_r <= spr_z; spr_idx_r <= spr_idx;
+    spr_z_r <= spr_z; spr_idx_r <= spr_idx; spr_mix_r <= spr_mix;
     shd_valid_r <= shd_valid; shd_code_r <= shd_code; shd_pri_r <= shd_pri;
     shd_z_r <= shd_z; shd_idx_r <= shd_idx;
 end
@@ -159,6 +163,7 @@ reg  [   4:0] cand;
 reg  [  12:0] pen [0:4];
 reg  [   8:0] lpal [0:3];
 reg  [   9:0] alpha [0:3];      // { add, on, level }
+reg  [   9:0] alpha4;           // the sprite's
 reg  [KW-1:0] shkey;
 reg  [   2:0] t, s;          // top and second source
 reg  [KW-1:0] tk, sk;
@@ -193,6 +198,12 @@ always @* begin
                              k338[13], k338[14] );
     end
     key[4]  = { spr_pri_r, 1'b1, spr_z_r, spr_idx_r, 1'b0 };
+    // A sprite's mix code: MAME computes one and never uses it (K055555_MIXSHIFT 16 is past the colour's width), so its
+    // sprites are never blended. On: the effect bits, which
+    // K053247GX_combine_c18 moves to the mix bits when wrport2 bit 3 is clear.
+    // Fantastic Journey's dancer stage covers its gradient with a sprite of
+    // effect 1. (The top colour bits instead hid the player's ship.)
+    alpha4  = alpha_of( spr_mix_on ? spr_mix_r : 2'd0, k338[13], k338[14] );
     cand[4] = disp[4] && spr_valid_r;
     pen[4]  = spr_pen_r;
     shkey   = { shd_pri_r, 1'b1, shd_z_r, shd_idx_r, 1'b1 };
@@ -333,9 +344,9 @@ always @(posedge clk) begin
                 en   <= disp != 8'd0 && kill;
                 t1   <= t;
                 s1   <= s;
-                a1   <= t < 3'd4 ? alpha[t][7:0] : 8'd255;
-                add1 <= t < 3'd4 && alpha[t][9];
-                alpha_top <= t < 3'd4 && alpha[t][8];
+                a1   <= t < 3'd4 ? alpha[t][7:0] : t == 3'd4 ? alpha4[7:0] : 8'd255;
+                add1 <= t < 3'd4 ? alpha[t][9] : t == 3'd4 && alpha4[9];
+                alpha_top <= t < 3'd4 ? alpha[t][8] : t == 3'd4 && alpha4[8];
                 code1     <= shd_code_r;
                 if( shd_defer ) begin
                     // MAME 5c75784 gx_draw_deferred_shadows: over everything,

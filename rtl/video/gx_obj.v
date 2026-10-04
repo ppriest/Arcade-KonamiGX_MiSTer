@@ -121,6 +121,7 @@ module gx_obj #(parameter
     output     [ 7:0] pxl_pri,
     output     [ 7:0] pxl_z,
     output     [ 7:0] pxl_idx,
+    output     [ 1:0] pxl_mix,       // the sprite's effect bits, attr[9:8], by pxl_idx (gx_mixer spr_mix_on)
     output            shd_valid,
     output            shd_full,
     output     [ 1:0] shd_code,
@@ -336,6 +337,13 @@ reg           q_flag [0:QD-1];          // probe: the tile dbg_shd follows
 reg           qf_out, shd_arm, lvbl_d;
 reg           q_draw, draw_l;
 wire          q_push = draw && !draw_l; // dr_start is high for a cen2 period
+// Each queued sprite's effect bits (attribute 9:8), by its index, which the
+// line buffer carries with every pixel: the mix code the mixer may take for
+// the sprite (gx_mixer spr_mix_on). The line buffer has no room for them; a
+// sprite's attribute rarely changes within a frame.
+reg  [1:0] mixtbl [0:255];
+always @(posedge clk) if( q_push ) mixtbl[obj_idx] <= attr_full[9:8];
+assign pxl_mix = mixtbl[pxl_idx];
 assign q_full  = q_n >= QD - 1;         // room for one more push in flight
 assign q_empty = q_n == 0;
 wire          q_pop  = !q_empty && !dr_busy && !q_draw;

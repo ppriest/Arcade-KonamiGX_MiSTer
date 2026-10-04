@@ -139,6 +139,22 @@ both copied from `Arcade-Psikyo_MiSTer`, whose one fix to `crt_adjust.sv` (a sig
 keep. `crt_vsize.sv` has one more, marked `LOCAL FIX`: a line exactly `LINE_PX` pixels wide lost
 its last pixel. The glue, `rtl/video/gx_crt_chain.sv`, is this project's.
 
+### wickerwaka's cheat engine — GPL-2.0-or-later — **in the tree**
+
+Martin Donlon (wickerwaka), after Kitrinx's cheat handling: `rtl/cheat/cheatengine.sv`, from
+[MiSTer-devel/Arcade-IremM92_MiSTer](https://github.com/MiSTer-devel/Arcade-IremM92_MiSTer) at
+`68a4683`. Byte lanes changed for the big-endian 68020, the 4-byte compare fixed, two
+declarations for Verilator; `rtl/cheat/PROVENANCE.md` lists them. GPL-2.0-or-later, so usable
+here under GPL-3. The cheats themselves are converted from Pugsy's MAME cheats
+(<https://www.mamecheat.co.uk/>) by `scripts/mame_cheats.py`.
+
+### JimmyStones/Hiscores_MiSTer — GPL-3.0-or-later — **in the tree**
+
+Alan Steremberg and Jim Gregory: `rtl/hiscore/hiscore.v`, version 14, by way of
+Arcade-Psikyo_MiSTer's copy with its read-latency changes, and one local change;
+`rtl/hiscore/PROVENANCE.md` has both. The tables are MAME's `hiscore.dat`
+(`plugins/hiscore/`), written into the `.mra` by `scripts/build_mra.py`.
+
 ### ijor/fx68k — GPLv3 — *planned*
 
 <https://github.com/ijor/fx68k>, Copyright (c) 2018, 2021 Jorge Cwik. The cycle-accurate 68000 for
