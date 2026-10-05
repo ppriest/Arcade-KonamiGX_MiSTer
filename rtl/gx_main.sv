@@ -124,6 +124,11 @@ module gx_main (
     input             esc_sal2,             // ... builds it from the object records (mode 1)
     input             prot4,                // 0xcc0000-0xcc0007 is the type 4 Xilinx protection, not the ESC
     input             fj_dma,               // 0xdb0000-0xdb001f is fantjour's DMA (gameDefs special 9)
+    input             esc_chip,             // the set has the 056734: run it (rtl/esc/k056734.sv), not gx_esc's C
+    input      [15:0] esc_s10,              // its constants (gx_board_cfg, docs/ESC.md)
+    input      [ 3:0] esc_s11n,
+    input      [31:0] esc_xor,
+    input      [63:0] esc_lanes,
     input      [ 4:0] rom_uncached,         // clocks an instruction fetch takes while CACR's cache is off
     input             tile_rb66,            // the K056832 window is k_6bpp_rom_long_r (six-byte rows)
     input             guns,                 // le2: the light guns at 0xd44000, P2's trigger at 0xd5e002
@@ -192,6 +197,7 @@ module gx_main (
     output            ss_mb_ack,
     output     [15:0] ss_mb_rd,
     input             ss_snap, ss_commit,
+    input             ss_freeze,            // a save or load is on: the 056734 stops at an instruction
     input      [ 3:0] ss_sel,
     input             ss_en,
     input      [11:0] ss_addr,
@@ -393,8 +399,8 @@ assign ss_dma_busy = obj_dma_busy;
 
 // ------------------------------------------------------------ EEPROM
 wire ee_do;
-wire [15:0] ss_rd_ee, ss_rd_b;
-assign ss_rd = ss_rd_ee | ss_rd_b;
+wire [15:0] ss_rd_ee, ss_rd_b, ss_rd_k734;
+assign ss_rd = ss_rd_ee | ss_rd_b | ss_rd_k734;
 gx_eeprom93c46 u_ee (
     .rst, .clk, .blank(ee_blank), .cs(wrport1_0[1]), .sk(wrport1_0[2]), .di(wrport1_0[0]), .dout(ee_do), .dbg(dbg_ee),
     .load_we(ee_load_we), .load_addr(ee_load_addr), .load_data(ee_load_data),
@@ -418,6 +424,27 @@ gx_esc u_escm (
     .gen_en(esc_gen), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(esc_copy), .gen_sal2(esc_sal2),
     .m_req(esc_req), .m_we(esc_we), .m_addr(esc_addr), .m_be(esc_be), .m_dout(esc_dout),
     .m_din(u_din), .m_ack(esc_ack)
+);
+
+// The 056734 itself, for the sets that have one: the CPU's write to
+// 0xcc0000 goes to its mailbox and completes at once; the chip shares the
+// bus as a master below gx_esc, which still runs fantjour's DMA. It answers
+// with IRQ 4 as gx_esc does.
+reg         k734_mail_we;
+reg  [23:0] k734_mail;
+wire        k734_irq, k734_req, k734_we, k734_ack;
+wire [23:1] k734_addr;
+wire [ 1:0] k734_be;
+wire [15:0] k734_dout;
+k056734 u_esc734 (
+    .clk, .rst(rst | ~esc_chip),
+    .s10(esc_s10), .s11n(esc_s11n), .dxor(esc_xor), .dlanes(esc_lanes),
+    .mail_we(k734_mail_we), .mail_data(k734_mail), .irq(k734_irq),
+    .m_req(k734_req), .m_we(k734_we), .m_addr(k734_addr), .m_be(k734_be), .m_dout(k734_dout),
+    .m_din(u_din), .m_ack(k734_ack),
+    .hold(ss_freeze), .ss_hi(ss_en && ss_sel == 4'd7), .ss_lo(ss_en && ss_sel == 4'd8), .ss_rg(ss_en && ss_sel == 4'd9),
+    .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_k734),
+    .icount(), .pc_out(), .running()
 );
 
 // ------------------------------------------------------------ JTAG reads
@@ -469,7 +496,7 @@ reg        esc_seen;
 localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
-reg         u_ack, u_esc, u_md, u_ss;       // whose access is in progress
+reg         u_ack, u_esc, u_k734, u_md, u_ss;   // whose access is in progress
 reg  [23:1] ua_r;                           // the request, held for the access
 reg  [ 1:0] ube_r;
 reg         uwe_r;
@@ -498,15 +525,16 @@ wire        cpu_req_now;
 // ua/ube/uwe/ud are the source while idle and the held request after.
 // nothing new while hiscore.v holds the work RAM (hs_hold)
 wire        take_esc = ust == U_IDLE && !hs_hold && esc_req && !u_ack;
-wire        take_md  = ust == U_IDLE && !hs_hold && !take_esc && md_req && !u_ack;
+wire        take_k734 = ust == U_IDLE && !hs_hold && !take_esc && k734_req && !u_ack;
+wire        take_md  = ust == U_IDLE && !hs_hold && !take_esc && !take_k734 && md_req && !u_ack;
 // the save-state engine, while it holds the CPU (which then asks for nothing)
-wire        take_ss  = ust == U_IDLE && !hs_hold && !take_esc && !take_md && ss_mb_req && !u_ack;
-wire        take_cpu = ust == U_IDLE && !hs_hold && !take_esc && !take_md && !take_ss && cpu_req_now;
-wire        take     = take_esc || take_md || take_ss || take_cpu;
-wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_md ? md_addr : take_ss ? ss_mb_addr : a32[23:1];
-wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_md ? 2'b11   : take_ss ? ss_mb_be   : { ~nUDS, ~nLDS };
-wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_md ? 1'b0    : take_ss ? ss_mb_we   : !nWr;
-wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_md ? 16'd0   : take_ss ? ss_mb_wd   : cpu_dout;
+wire        take_ss  = ust == U_IDLE && !hs_hold && !take_esc && !take_k734 && !take_md && ss_mb_req && !u_ack;
+wire        take_cpu = ust == U_IDLE && !hs_hold && !take_esc && !take_k734 && !take_md && !take_ss && cpu_req_now;
+wire        take     = take_esc || take_k734 || take_md || take_ss || take_cpu;
+wire [23:1] ua  = ust != U_IDLE ? ua_r  : take_esc ? esc_addr : take_k734 ? k734_addr : take_md ? md_addr : take_ss ? ss_mb_addr : a32[23:1];
+wire [ 1:0] ube = ust != U_IDLE ? ube_r : take_esc ? esc_be   : take_k734 ? k734_be   : take_md ? 2'b11   : take_ss ? ss_mb_be   : { ~nUDS, ~nLDS };
+wire        uwe = ust != U_IDLE ? uwe_r : take_esc ? esc_we   : take_k734 ? k734_we   : take_md ? 1'b0    : take_ss ? ss_mb_we   : !nWr;
+wire [15:0] ud  = ust != U_IDLE ? ud_r  : take_esc ? esc_dout : take_k734 ? k734_dout : take_md ? 16'd0   : take_ss ? ss_mb_wd   : cpu_dout;
 wire [23:0] ub  = { ua, 1'b0 };             // byte address of the word
 
 // ---- the register copy, for a capture from the board
@@ -549,6 +577,7 @@ wire [7:0]  rg_qh, rg_ql;
 gx_sdpram #(.AW(9), .DW(8)) u_rgh ( .clk, .we(rg_we && ube[1]), .wa(rg_wa), .d(ud[15:8]), .ra(rg_ra), .q(rg_qh) );
 gx_sdpram #(.AW(9), .DW(8)) u_rgl ( .clk, .we(rg_we && ube[0]), .wa(rg_wa), .d(ud[ 7:0]), .ra(rg_ra), .q(rg_ql) );
 assign esc_ack = u_ack && u_esc;
+assign k734_ack = u_ack && u_k734;
 assign md_ack  = u_ack && u_md;
 assign ss_mb_ack = u_ack && u_ss;
 assign ss_mb_rd  = u_din;
@@ -674,6 +703,7 @@ always @(posedge clk) begin
     pl_we <= 0;
     snd_wr <= 0; snd_rd <= 0;
     spr_ram_we <= 0;
+    k734_mail_we <= 0;
     if( rst ) begin
         ust <= U_IDLE; cr_cs <= 0;
         wrport1_0 <= 0; wrport1_1 <= 0; wrport2 <= 0; vram_bank <= 0;
@@ -697,7 +727,7 @@ always @(posedge clk) begin
         if( cst == C_ESC ) esc_started <= 0;
         // the ESC while it is busy, the CPU otherwise: decode and issue
         if( take ) begin
-            u_esc <= take_esc; u_md <= take_md; u_ss <= take_ss;
+            u_esc <= take_esc; u_k734 <= take_k734; u_md <= take_md; u_ss <= take_ss;
             ua_r <= ua; ube_r <= ube; uwe_r <= uwe; ud_r <= ud;
             ust     <= U_WAIT;
             bus_d16 <= ud;
@@ -755,7 +785,10 @@ always @(posedge clk) begin
             end else if( ub >= 24'hcc0000 && ub < 24'hcc0004 ) begin
                 // esc_w: the 32-bit write arrives as two words; the second starts it
                 if( uwe && !ub[1] ) esc_hi <= ud;
-                if( uwe &&  ub[1] ) begin esc_data <= { esc_hi[7:0], ud }; esc_p4 <= 0; esc_fj <= 0; esc_start <= 1; esc_started <= 1; end
+                if( uwe &&  ub[1] ) begin
+                    if( esc_chip ) begin k734_mail <= { esc_hi[7:0], ud }; k734_mail_we <= 1; end
+                    else begin esc_data <= { esc_hi[7:0], ud }; esc_p4 <= 0; esc_fj <= 0; esc_start <= 1; esc_started <= 1; end
+                end
             end else if( ub >= 24'hd00000 && ub < 24'hd02000 ) begin
                 // K056832 ROM readback, a byte at a time
                 gfx_cs <= 1; gfx_addr <= tr_byte[25:3]; gfx_sel <= tr_byte[2:0];
@@ -887,14 +920,14 @@ end
 // C_IDLE: a new access goes to the unit. On its ack: ready, unless it was
 // the ESC's starting write, which waits for the ESC.
 assign cpu_req_now = cst == C_IDLE && mem_needed && !ready && !esc_busy && !ss_hit;
-assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !u_md && !u_ss && !esc_started;
+assign fast_rdy    = cst == C_BUSY && u_ack && !u_esc && !u_k734 && !u_md && !u_ss && !esc_started;
 
 always @(posedge clk) begin
     if( rst ) begin
         cst <= C_IDLE; ready <= 0; esc_seen <= 0;
     end else case( cst )
         C_IDLE: if( take_cpu ) cst <= C_BUSY;
-        C_BUSY: if( u_ack && !u_esc && !u_md && !u_ss ) begin
+        C_BUSY: if( u_ack && !u_esc && !u_k734 && !u_md && !u_ss ) begin
             cpu_din <= u_din;
             if( esc_started ) begin cst <= C_ESC; esc_seen <= 0; end
             else if( cpu_take ) cst <= C_IDLE;     // taken this clock (fast_rdy)
@@ -943,7 +976,7 @@ end
 reg  [23:0] dma_t;
 reg         lvbl_l, irq3, irq4, dma_run;
 reg         int1_l, int2_l, pend1, pend2;     // syncen bits 0/1, taken at an INT edge
-wire        iack = cst == C_BUSY && u_ack && !u_esc && !u_md && !u_ss && fc == 3'b111;
+wire        iack = cst == C_BUSY && u_ack && !u_esc && !u_k734 && !u_md && !u_ss && fc == 3'b111;
 wire [ 2:0] iack_lvl = a32[3:1];
 wire [23:0] dma_len = wrport2[0] ? 24'd13824 : 24'd18432;   // (256+32) / (342+42) us at 48 MHz
 
@@ -982,7 +1015,7 @@ always @(posedge clk) begin
                 end
             end else dma_t <= dma_t - 24'd1;
         end
-        if( esc_irq && wrport1_1[4] ) begin
+        if( (esc_irq || k734_irq) && wrport1_1[4] ) begin
             rdport1_3 <= rdport1_3 & ~8'h08;
             irq4 <= 1;
         end

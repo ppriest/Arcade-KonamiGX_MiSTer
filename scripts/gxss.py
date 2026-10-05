@@ -332,6 +332,19 @@ def from_mame(sta_path, out_path, k053252=None):
     g.set_sec("sram", arr(s + "100000-10ffff", 2))
     g.set_sec("kram", bytes16(it[":k054539_1/0/m_ram"]) + bytes16(it[":k054539_2/0/m_ram"]))
     g.set_sec("dram", bytes16(it[":dasp/1/0-3ffff"]))
+    # MAME's ESC is C and saves nothing: the 056734 as the game leaves it after
+    # start-up, its program loaded (scripts/k056734/synth.py)
+    sys.path.insert(0, str(REPO / "scripts" / "k056734"))
+    import synth
+    if st.setname in synth.SETS:
+        import build_rom_image
+        region = build_rom_image.build(st.setname, "maincpu")
+        wram = b"".join(struct.pack(">H", w) for w in g.sec("wram"))
+        esch, escl, escr = synth.esc_sections(st.setname, region, wram)
+        g.set_sec("esch", esch)
+        g.set_sec("escl", escl)
+        g.set_sec("escr", escr)
+        notes.append("056734: kernel and program loaded fresh (MAME saves no ESC state)")
     g.write(out_path)
     print(f"{sta_path} ({st.setname}) -> {out_path}: raster line {v:#x} pixel {hpix}, "
           f"68020 PC {bank[20]:08x}, 68000 PC {pc:06x}")
@@ -570,7 +583,9 @@ def to_mame(ss_path, out_path):
                            capture_output=True, text=True)
         res = td / "sta" / setname / "out.sta"
         if "GX_FIXUP_OK" not in p.stdout + p.stderr or not res.exists():
-            sys.exit("MAME's fixup pass failed:\n" + "\n".join((p.stdout + p.stderr).splitlines()[-15:]))
+            Path(str(out_path) + ".in.sta").write_bytes((td / "sta" / setname / "in.sta").read_bytes())
+            sys.exit(f"MAME's fixup pass failed (the state it was given: {out_path}.in.sta):\n"
+                     + "\n".join((p.stdout + p.stderr).splitlines()[-15:]))
         Path(out_path).write_bytes(res.read_bytes())
     print(f"{ss_path} ({setname}) -> {out_path}: 68020 PC {pc:08x}, 68000 PC {spc:06x}; "
           f"load it with: mame {setname} -state <name>, the file in sta/{setname}/")

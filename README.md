@@ -30,6 +30,13 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGX_20261005**
+  * The ESC protection chip (Konami 056734) runs the games' own protection programs [docs/ESC.md](docs/ESC.md)
+    * Sexy Parodius: the snow, rain, starfield and particle effects are drawn
+  * Save states include the ESC chip. States saved by earlier releases do not load
+  * OSD *Audio mix*: Stereo (default), 25%, 50% or Mono
+  * CRT Adjust: V-Size removed (its RAM was needed for the ESC chip)
+
 * **Arcade-KonamiGX_20261004**
   * OSD *Invert P1/P2*
   * Cheats: Added cheats, converted from Pugsy's MAME cheats, in every set. Note that MiSTer isn't as flexible, and so you may find issues (e.g. only enable them when in-game as I found it disabled some inputs in menus...)
@@ -99,16 +106,16 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 
 | Name | Year | Tiles | Sprites | Notes |
 |-|-|-|-|-|
-| Daisu-Kiss | 1996 | 5bpp | 5bpp | ESC `generate_sprites` |
+| Daisu-Kiss | 1996 | 5bpp | 5bpp | ESC (056734) |
 | Crazy Cross / Taisen Puzzle-dama | 1994 | 5bpp | 5bpp | |
 | Fantastic Journey / Gokujou Parodius | 1994 | 5bpp | 5bpp | Fantastic Journey's DMA at 0xdb0000 |
-| Twin Bee Yahhoo! / Magical Twin Bee | 1995 | 5bpp | 5bpp | ESC `generate_sprites` |
-| Sexy Parodius | 1996 | 5bpp | 5bpp | `UNEMULATED_PROTECTION` in MAME |
+| Twin Bee Yahhoo! / Magical Twin Bee | 1995 | 5bpp | 5bpp | ESC (056734) |
+| Sexy Parodius | 1996 | 5bpp | 5bpp | ESC (056734), with its weather effects; `UNEMULATED_PROTECTION` in MAME |
 | Taisen Tokkae-dama | 1996 | 6bpp | 5bpp | |
-| Tokimeki Memorial Taisen Puzzle-dama | 1995 | 6bpp | 5bpp | ESC `esc_alert`; MAME's ROM patch carried in the `.mra` |
+| Tokimeki Memorial Taisen Puzzle-dama | 1995 | 6bpp | 5bpp | ESC (056734); MAME's ROM patch carried in the `.mra` |
 | Dragoon Might | 1995 | 5bpp | 4bpp | 16 MB of sprites; six buttons; sprites can run out of line time |
 | Winning Spike | 1997 | 8bpp | 8bpp | Type 4 Xilinx protection |
-| Salamander 2 | 1996 | 6bpp | 6bpp | ESC `esc_alert` mode 1 |
+| Salamander 2 | 1996 | 6bpp | 6bpp | ESC (056734) |
 | Lethal Enforcers II | 1994 | 8bpp | 8bpp | Light guns: stick, d-pad or mouse, button 2 reloads, crosshair option; UAA and JAA flip their own screen |
 
 ### Out of scope for now
@@ -130,7 +137,7 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 | K053246 / K055673 | 256 sprites, zoom, shadows, 4 to 8bpp | jotego's K053246 with GX changes and a keyed line buffer; pixel-exact against MAME |
 | K055555 | Priority mixer | Written here from MAME's `konamigx_mixer`, pixel-exact against MAME |
 | K054338 | Alpha blending, shadows, background | Written here with the mixer |
-| ESC | Sprite-list protection | MAME's `generate_sprites`, `esc_alert` modes 0 and 1 and Winning Spike's Type 4 protection, as a bus master |
+| 056734 (ESC) | Protection microcontroller | Written here: runs the kernel and the game's program from the ROM, decrypted with each chip's key ([docs/ESC.md](docs/ESC.md)). Winning Spike's Type 4 protection and Fantastic Journey's DMA as MAME |
 | 93C46 | Serial EEPROM | Written here from MAME's `eepromser`; loaded with the set's default image from the `.mra`; not yet saved to the `.nvm` file |
 | K056800 | Sound mailbox | Written here from MAME's `k056800.cpp` |
 | 68000 @ 8 MHz | Sound CPU | fx68k, cycle-accurate, running the game's sound program |
@@ -163,6 +170,9 @@ F2 is the service (test) switch, 9 and 0 the service coins, P pause.
 
 The OSD's *Invert P1/P2* swaps the two players' controls: pads, keys and sticks.
 
+The OSD's *Audio mix* blends the two channels for a mono setup: Stereo (the default), 25%, 50%
+or Mono.
+
 ### Save states
 
 From Arcade-KonamiGX_20261002. Saving and restoring has been tried on the board with Daisu-Kiss. The OSD's *Save state slot*,
@@ -170,10 +180,14 @@ From Arcade-KonamiGX_20261002. Saving and restoring has been tried on the board 
 picture holds for about three frames while a state is written or read; the game itself does not
 see a save.
 
+From Arcade-KonamiGX_20261005 a state includes the ESC chip, and states from earlier releases do
+not load.
+
 States convert to and from MAME 0.289's (`.sta`, for the same set), so a moment can be taken in
 MAME and looked at on the core, or the other way: `python scripts/gxss.py from-mame` and
 `to-mame`. What MAME does not keep (the K053252's registers, the K054539 voices' fractions,
-some timers' phases) starts afresh. [docs/SAVESTATES.md](docs/SAVESTATES.md) has the design and
+some timers' phases) starts afresh; MAME keeps no ESC state, so a converted state gets the chip
+as the game leaves it after start-up. [docs/SAVESTATES.md](docs/SAVESTATES.md) has the design and
 what has been checked.
 
 ### High scores
@@ -287,20 +301,20 @@ To run a development build:
 
 ### Resource usage
 
-The release build (`KonamiGX`, commit `98ca190`, fitter seed 3) on the DE10-nano's Cyclone V
+The release build (`KonamiGX`, commit `fa152d3`, fitter seed 4) on the DE10-nano's Cyclone V
 5CSEBA6, speed grade 7, timing met on every clock:
 
 | resource | used | available |
 | --- | --- | --- |
-| Logic (ALMs) | 36,916 (88%) | 41,910 |
-| Block memory bits | 4,324,909 (76%) | 5,662,720 |
-| RAM blocks | 545 (99%) | 553 |
-| DSP blocks | 75 (67%) | 112 |
+| Logic (ALMs) | 38,987 (93%) | 41,910 |
+| Block memory bits | 4,162,797 (74%) | 5,662,720 |
+| RAM blocks | 532 (96%) | 553 |
+| DSP blocks | 69 (62%) | 112 |
 | PLLs | 3 | 6 |
 
 The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
-reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust's V-Size ring is
-sized to what is left (30 blocks).
+reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust has no V-Size: its
+line ring's 30 blocks were freed for the 056734 (ESC) protection chip's local memory.
 
 ## AI Attestation
 

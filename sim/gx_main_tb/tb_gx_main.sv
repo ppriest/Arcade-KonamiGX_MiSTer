@@ -540,12 +540,21 @@ initial void'($value$plusargs("ROM_UNCACHED=%d", rom_uncached));
 wire        cfg_esc_gen, cfg_esc_copy, cfg_prot4, cfg_esc_sal2, cfg_tile_rb66, cfg_guns, cfg_orient_fy, cfg_fj_dma;
 wire [23:0] cfg_esc_src;
 wire [ 8:0] cfg_esc_count;
+// the 056734 (rtl/esc/k056734.sv); +ESC_CHIP=0 runs gx_esc's copy of MAME's C instead
+wire        cfg_esc_chip;
+wire [15:0] cfg_esc_s10;
+wire [ 3:0] cfg_esc_s11n;
+wire [31:0] cfg_esc_xor;
+wire [63:0] cfg_esc_lanes;
+int esc_chip_on = 1;
+initial void'($value$plusargs("ESC_CHIP=%d", esc_chip_on));
 gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_size4(), .obj_size4(), .snd_pcm(),
                      .offs_x, .offs_y, .primode(cfg_primode), .tile_bpp(cfg_tile_bpp), .obj_layout(cfg_obj_layout),
                      .obj_pri_raw(cfg_obj_pri_raw), .vis_x0(cfg_vis_x0), .vis_w(cfg_vis_w),
                      .obj_hadj(cfg_obj_hadj), .esc_gen(cfg_esc_gen), .esc_src(cfg_esc_src),
                      .esc_count(cfg_esc_count), .esc_copy(cfg_esc_copy), .prot4(cfg_prot4),
-                     .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma) );
+                     .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma),
+                     .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes) );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -650,6 +659,7 @@ gx_main dut (
     .esc_copy(cfg_esc_copy), .prot4(cfg_prot4), .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66),
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
+    .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
@@ -662,7 +672,7 @@ gx_main dut (
     .ss_m_bidx(e_m_bidx), .ss_m_bwe(e_m_bwe), .ss_m_bd(e_m_bd), .ss_m_bq(e_m_bq),
     .ss_mb_req(e_mb_req), .ss_mb_we(e_mb_we), .ss_mb_addr(e_mb_addr), .ss_mb_be(e_mb_be),
     .ss_mb_wd(e_mb_wd), .ss_mb_ack(e_mb_ack), .ss_mb_rd(e_mb_rd),
-    .ss_snap(e_snap), .ss_commit(e_commit),
+    .ss_snap(e_snap), .ss_commit(e_commit), .ss_freeze(e_freeze),
     .ss_sel(e_sssel), .ss_en(e_ssen), .ss_addr(e_ssaddr), .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_main),
     .ss_vpos(e_vpos), .ss_hpos(e_hpos), .ss_esc_busy(e_esc_busy), .ss_dma_busy(e_dma_busy),
     .cheat_code(tb_cheat), .cheat_clr(tb_cheat_clr),

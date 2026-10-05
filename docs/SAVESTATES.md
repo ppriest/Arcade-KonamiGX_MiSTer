@@ -45,6 +45,13 @@ and loaded in the bench, runs at full rate (about 400 ROM reads a command). Most
 division, one quotient bit a clock and y before x; with both divided at once, two bits a clock,
 a command takes 11.4 ms and the title runs at full rate (the ESC's writes unchanged).
 
+The 056734 (docs/ESC.md) is three sections on the state bus: its local memory's high and low
+halves and its registers. A save or load holds it at an instruction boundary for the whole walk
+(`ss_freeze`). A state from MAME, which has none, gets one made by the Python model
+(`scripts/k056734/synth.py`): the kernel loaded, RESET, and the set's program LOADed under the
+handle the game's packets use (0x00010014 in every title). Images from before these sections
+(version 1) are refused by the header check.
+
 What MAME's state lacks, a converted state takes as: the K053252's registers from the set's boot
 values (`sim/gx_crt_chain_tb/<set>.hex` or a capture's `reg_k053252.bin`, or `--k053252`); the
 K054539 voices' fractions and last values zero (MAME does not save them either); the sample

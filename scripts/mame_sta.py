@@ -58,7 +58,10 @@ def mame_exe():
 
 def mame_version(exe):
     out = subprocess.run([str(exe), "-version"], capture_output=True, text=True).stdout
-    return "%04d" % int(out.split()[0].split(".")[1])
+    v = "%04d" % int(out.split()[0].split(".")[1])
+    # a build from git between releases, "0.289 (mame0289-1340-g352a5fbb8bb)", has its own registry
+    tag = out.split("(")[1].split(")")[0] if "(" in out else ""
+    return v + "-" + tag.split("-", 1)[1] if "-" in tag else v
 
 
 class Table:
@@ -169,7 +172,7 @@ def cmd_table(a):
         raw = sta.read_bytes()
         sig = struct.unpack_from("<I", raw, 28)[0]
         rows = (td / "items.tsv").read_text(encoding="utf-8")
-        out.write_text(f"# MAME 0.{int(ver)} {a.set}: save-state registry, file order\n"
+        out.write_text(f"# MAME 0.{int(ver[:4])}{ver[4:]} {a.set}: save-state registry, file order\n"
                        f"# signature {sig:08x}\n"
                        f"# index\tsize\tcount\tdevice\tname  (? = no device: timer, stream, global)\n"
                        + rows, encoding="utf-8", newline="\n")

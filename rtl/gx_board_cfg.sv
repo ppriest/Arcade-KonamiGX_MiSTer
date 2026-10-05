@@ -43,7 +43,13 @@ module gx_board_cfg_c (
     output reg        tile_rb66,    // gameDefs readback BPP66: k_6bpp_rom_long_r at 0xd00000
     output reg        guns,         // gameDefs special 1: the LE2 light guns at 0xd44000
     output reg        orient_fy,    // ORIENTATION_FLIP_Y (le2u, le2j): the sprite plane mirrored, gun Y reversed
-    output reg        fj_dma        // gameDefs special 9: fantjour_dma_install (fantjour, fantjoura)
+    output reg        fj_dma,       // gameDefs special 9: fantjour_dma_install (fantjour, fantjoura)
+    // the 056734 (docs/ESC.md): the set has the chip, and its constants
+    output reg        esc_chip,
+    output reg [15:0] esc_s10,
+    output reg  [3:0] esc_s11n,
+    output reg [31:0] esc_xor,
+    output reg [63:0] esc_lanes     // [4k+3:4k]: the stored lane that is canonical lane k
 );
 
 always @* begin
@@ -63,10 +69,13 @@ always @* begin
     prot4 = 1'b0; esc_sal2 = 1'b0; tile_rb66 = 1'b0; guns = 1'b0; orient_fy = 1'b0; fj_dma = 1'b0;
     // the K055673's x offset: konamigx() -26 (daiskiss, tbyahhoo, mtwinbee),
     // gokuparo() -46 (gokuparo, fantjour, fantjoura, crzcross, puzldama),
-    // sexyparo() -42
+    // sexyparo() -42. The 056734's sprite programs put x 20 further right than
+    // MAME's C (docs/ESC.md), so the sets whose program builds the list take
+    // 20 less: daiskiss, tbyahhoo and mtwinbee land on gokuparo()'s -46.
     case( game )
+        8'd0, 8'd6, 8'd7,
         8'd1, 8'd2, 8'd3, 8'd4, 8'd5, 8'd10, 8'd11, 8'd12, 8'd20, 8'd21: obj_hadj = -10'sd20;   // + tokkae, tkmmpzdm (konamigx_6bpp: -46), le2 (-46)
-        8'd8, 8'd9:                   obj_hadj = -10'sd16;
+        8'd8, 8'd9:                   obj_hadj = -10'sd36;
         8'd13, 8'd14,                                         // dragoonj(): -53
         8'd15, 8'd16, 8'd17:          obj_hadj = -10'sd27;   // winspike(): -53
         8'd18, 8'd19:                 obj_hadj = -10'sd22;   // salmndr2(): -48
@@ -83,6 +92,21 @@ always @* begin
         8'd3, 8'd4:       fj_dma = 1'b1;                                              // fantjour(a)
         // sal2_esc: konamigx_esc_alert(m_workram, 0x1c8c, 0x172, 1)
         8'd18, 8'd19:     begin esc_gen = 1'b1; esc_sal2 = 1'b1; esc_src = 24'hc07230; esc_count = 9'h172; end
+        default: ;
+    endcase
+    // the 056734: every set whose ROM carries its kernel (0x200A6C); clones use
+    // their parent's chip (the kernel and program checksums pass with its key)
+    esc_chip = 1'b0; esc_s10 = 16'd0; esc_s11n = 4'd0; esc_xor = 32'd0; esc_lanes = 64'd0;
+    case( game )
+        8'd0:                   begin esc_chip = 1'b1; esc_s10 = 16'h89EE; esc_s11n = 4'hD; esc_xor = 32'h39556CC0; esc_lanes = 64'hB854D2E7F3A601C9; end   // daiskiss
+        8'd1, 8'd2:             begin esc_chip = 1'b1; esc_s10 = 16'h5D32; esc_s11n = 4'h3; esc_xor = 32'h91C2C6FB; esc_lanes = 64'hF10ED73A65249C8B; end   // crzcross, puzldama
+        8'd3, 8'd4, 8'd5:       begin esc_chip = 1'b1; esc_s10 = 16'h8D8C; esc_s11n = 4'h3; esc_xor = 32'h2C3EA1C4; esc_lanes = 64'h24AC58167039EDBF; end   // fantjour, fantjoura, gokuparo
+        8'd6, 8'd7:             begin esc_chip = 1'b1; esc_s10 = 16'h0424; esc_s11n = 4'hA; esc_xor = 32'hDE78B8AE; esc_lanes = 64'h97E60A851BD32C4F; end   // mtwinbee, tbyahhoo
+        8'd8, 8'd9:             begin esc_chip = 1'b1; esc_s10 = 16'h896A; esc_s11n = 4'hE; esc_xor = 32'h1886AE1D; esc_lanes = 64'hFEDCBA9876543210; end   // sexyparo, sexyparoa
+        8'd10:                  begin esc_chip = 1'b1; esc_s10 = 16'h9E8E; esc_s11n = 4'hB; esc_xor = 32'h6BFBB5B9; esc_lanes = 64'h17FE43B8A50D962C; end   // tokkae
+        8'd11:                  begin esc_chip = 1'b1; esc_s10 = 16'h4924; esc_s11n = 4'hC; esc_xor = 32'h88600EF4; esc_lanes = 64'h4CA873FB602D15E9; end   // tkmmpzdm
+        8'd13, 8'd14:           begin esc_chip = 1'b1; esc_s10 = 16'h5963; esc_s11n = 4'hB; esc_xor = 32'h049DB8E5; esc_lanes = 64'hA2CB1F05D68E3974; end   // dragoona, dragoonj
+        8'd18, 8'd19:           begin esc_chip = 1'b1; esc_s10 = 16'h1EC6; esc_s11n = 4'hA; esc_xor = 32'hB3F135B3; esc_lanes = 64'hBD53C0196FEA4287; end   // salmndr2, salmndr2a
         default: ;
     endcase
     case( game )
@@ -164,7 +188,12 @@ module gx_board_cfg (
     output reg        tile_rb66,
     output reg        guns,
     output reg        orient_fy,
-    output reg        fj_dma
+    output reg        fj_dma,
+    output reg        esc_chip,
+    output reg [15:0] esc_s10,
+    output reg  [3:0] esc_s11n,
+    output reg [31:0] esc_xor,
+    output reg [63:0] esc_lanes
 );
 
 wire [25:0] c_tile_base, c_obj_base;
@@ -176,13 +205,19 @@ wire  [1:0] c_obj_pri_raw;
 wire        c_esc_gen, c_esc_copy, c_prot4, c_esc_sal2, c_tile_rb66, c_guns, c_orient_fy, c_fj_dma;
 wire  [9:0] c_vis_x0, c_obj_hadj;
 wire  [8:0] c_vis_w, c_esc_count;
+wire        c_esc_chip;
+wire [15:0] c_esc_s10;
+wire  [3:0] c_esc_s11n;
+wire [31:0] c_esc_xor;
+wire [63:0] c_esc_lanes;
 
 gx_board_cfg_c u_c ( .game,
     .tile_base(c_tile_base), .obj_base(c_obj_base), .tile_size4(c_tile_size4), .obj_size4(c_obj_size4),
     .snd_pcm(c_snd_pcm), .offs_x(c_offs_x), .offs_y(c_offs_y), .primode(c_primode), .tile_bpp(c_tile_bpp),
     .obj_layout(c_obj_layout), .obj_pri_raw(c_obj_pri_raw), .vis_x0(c_vis_x0), .vis_w(c_vis_w),
     .obj_hadj(c_obj_hadj), .esc_gen(c_esc_gen), .esc_src(c_esc_src), .esc_count(c_esc_count),
-    .esc_copy(c_esc_copy), .prot4(c_prot4), .esc_sal2(c_esc_sal2), .tile_rb66(c_tile_rb66), .guns(c_guns), .orient_fy(c_orient_fy), .fj_dma(c_fj_dma) );
+    .esc_copy(c_esc_copy), .prot4(c_prot4), .esc_sal2(c_esc_sal2), .tile_rb66(c_tile_rb66), .guns(c_guns), .orient_fy(c_orient_fy), .fj_dma(c_fj_dma),
+    .esc_chip(c_esc_chip), .esc_s10(c_esc_s10), .esc_s11n(c_esc_s11n), .esc_xor(c_esc_xor), .esc_lanes(c_esc_lanes) );
 
 always @(posedge clk) begin
     tile_base <= c_tile_base; obj_base <= c_obj_base; tile_size4 <= c_tile_size4; obj_size4 <= c_obj_size4;
@@ -190,6 +225,7 @@ always @(posedge clk) begin
     obj_layout <= c_obj_layout; obj_pri_raw <= c_obj_pri_raw; vis_x0 <= c_vis_x0; vis_w <= c_vis_w;
     obj_hadj <= c_obj_hadj; esc_gen <= c_esc_gen; esc_src <= c_esc_src; esc_count <= c_esc_count;
     esc_copy <= c_esc_copy; prot4 <= c_prot4; esc_sal2 <= c_esc_sal2; tile_rb66 <= c_tile_rb66; guns <= c_guns; orient_fy <= c_orient_fy; fj_dma <= c_fj_dma;
+    esc_chip <= c_esc_chip; esc_s10 <= c_esc_s10; esc_s11n <= c_esc_s11n; esc_xor <= c_esc_xor; esc_lanes <= c_esc_lanes;
 end
 
 endmodule

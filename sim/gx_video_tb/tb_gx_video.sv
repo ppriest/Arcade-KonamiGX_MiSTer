@@ -158,7 +158,7 @@ always @(posedge clk) begin
 end
 
 // ----------------------------------------------------------- stimulus
-integer f;
+integer f, fl;
 int     npx;
 
 initial begin
@@ -227,6 +227,9 @@ initial begin
     // DMA to run in a vblank after loading, then one recorded
     for (int k = 0; k < 3; k++) @(posedge vid_lvbl);
     f = $fopen({MD, "video_out.hex"}, "w");
+    // layers.hex: what each tilemap layer gives the mixer, every pixel the
+    // mixer is handed in the frame: "bx by A B C D" ({ colour, pixel } each)
+    fl = $fopen({MD, "layers.hex"}, "w");
     npx = 0;
     while (npx == 0 || vid_lvbl) begin
         @(posedge clk);
@@ -234,8 +237,12 @@ initial begin
             $fwrite(f, "%06x\n", rgb);
             npx++;
         end
+        if (dut.u_mix.pxl_cen)
+            $fwrite(fl, "%0d %0d %04x %04x %04x %04x\n", dut.u_mix.bx, dut.u_mix.by,
+                    dut.u_mix.lyr_a, dut.u_mix.lyr_b, dut.u_mix.lyr_c, dut.u_mix.lyr_d);
     end
     $fclose(f);
+    $fclose(fl);
     if (unsupported) $display("UNSUPPORTED");
     $display("VISIBLE_PIXELS %0d", npx);
     $display("GX_VIDEO_DONE");

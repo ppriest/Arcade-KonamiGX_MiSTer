@@ -49,7 +49,7 @@ wire [15:0] snd_aud_l, snd_aud_r;
 assign AUDIO_S = 1;
 assign AUDIO_L = snd_aud_l;
 assign AUDIO_R = snd_aud_r;
-assign AUDIO_MIX = 0;
+assign AUDIO_MIX = status[107:106];   // the OSD's order is AUDIO_MIX's: stereo, 25%, 50%, mono
 
 assign LED_DISK  = 0;
 assign LED_POWER = 0;
@@ -78,6 +78,8 @@ localparam CONF_STR = {
 	"-;",
 	"O[122:121],Aspect ratio,Original,Full Screen,[ARC1],[ARC2];",
 	"O[46:44],Scandoubler Fx,None,HQ2x,CRT 25%,CRT 50%,CRT 75%;",
+	// the sibling cores' Mono/None/25%/50%, with stereo first so it is the default
+	"O[107:106],Audio mix,Stereo,25%,50%,Mono;",
 	// HDMI only: the analog output keeps the native raster either way. Every
 	// GX set is horizontal, so there is no per-set default to follow -- this
 	// is for a rotated monitor, not for the game.
@@ -89,8 +91,6 @@ localparam CONF_STR = {
 	"H2O[82:76],CRT H-Position,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,+32,+33,+34,+35,+36,+37,+38,+39,+40,+41,+42,+43,+44,+45,+46,+47,+48,-48,-47,-46,-45,-44,-43,-42,-41,-40,-39,-38,-37,-36,-35,-34,-33,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"H2O[88:83],CRT V-Shift,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,+16,+17,+18,+19,+20,+21,+22,+23,+24,+25,+26,+27,+28,+29,+30,+31,-32,-31,-30,-29,-28,-27,-26,-25,-24,-23,-22,-21,-20,-19,-18,-17,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
 	"H2O[93:89],CRT H-Size,0,+1,+2,+3,+4,+5,+6,+7,+8,+9,+10,+11,+12,+13,+14,+15,-16,-15,-14,-13,-12,-11,-10,-9,-8,-7,-6,-5,-4,-3,-2,-1;",
-	"H2O[97:94],CRT V-Size,0,+1,+2,+3,+4,+5,+6,+7,-7,-6,-5,-4,-3,-2,-1;",
-	"H2O[98],CRT V-Size Mode,PVM,Cabinet;",
 	// le2's guns (H1: shown for the gun sets): MAME's crosshair where each
 	// gun points; the left stick per player -- Auto moves a pushed-full axis
 	// as the d-pad does (arcade sticks on gamepad encoders), Aim is always
@@ -327,11 +327,17 @@ wire  [1:0] obj_pri_raw;
 wire  [9:0] vis_x0;
 wire  [8:0] vis_w;
 wire        esc_gen, esc_copy, prot4, esc_sal2, tile_rb66, orient_fy, fj_dma;
+wire        esc_chip;
+wire [15:0] esc_s10;
+wire  [3:0] esc_s11n;
+wire [31:0] esc_xor;
+wire [63:0] esc_lanes;
 wire  [9:0] obj_hadj;
 wire [23:0] esc_src;
 wire  [8:0] esc_count;
 gx_board_cfg u_cfg ( .clk(clk_sys), .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w,
-                     .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma );
+                     .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma,
+                     .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes );
 
 wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
@@ -639,6 +645,7 @@ gx_main u_board (
 	.ee_rd_addr(ioctl_addr[6:1]), .ee_rd_data(ee_rd_data), .ee_written(ee_written),
 	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
+	.esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes,
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
 	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .spr_mix_on(1'b1), .dbg_rom(dbg_rom),
@@ -648,7 +655,7 @@ gx_main u_board (
 	.mem_t(mem_src[0]), .mem_addr(mem_src[31:9]), .dbg_mem(dbg_mem),
 	.ss_m_req, .ss_m_go, .ss_m_held, .ss_m_done, .ss_m_bidx, .ss_m_bwe, .ss_m_bd, .ss_m_bq,
 	.ss_mb_req, .ss_mb_we, .ss_mb_addr, .ss_mb_be, .ss_mb_wd, .ss_mb_ack, .ss_mb_rd,
-	.ss_snap, .ss_commit, .ss_sel, .ss_en, .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_main),
+	.ss_snap, .ss_commit, .ss_freeze, .ss_sel, .ss_en, .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_main),
 	.ss_vpos, .ss_hpos, .ss_esc_busy, .ss_dma_busy,
 	.cheat_code, .cheat_clr,
 	.hs_hold(hs_pause), .hs_on(hs_rd | hs_wi), .hs_addr, .hs_we, .hs_wd, .hs_q
@@ -818,18 +825,16 @@ gx_guns u_guns (
 );
 
 // ---------------------------------------------------------- CRT Adjust
-// rmonic79's CRT Adjust and CRT V-Size, glued as in Arcade-Psikyo_MiSTer
+// rmonic79's CRT Adjust, glued as in Arcade-Psikyo_MiSTer
 // (rtl/video/gx_crt_chain.sv says where GX differs). The OSD stores list
-// indices: H-Position's 97 entries wrap at 97, V-Size's 15 at 15, V-Shift
-// and H-Size are plain two's complement. H-Size and V-Size are held at 0
-// while the scandoubler or its effects are on.
+// indices: H-Position's 97 entries wrap at 97, V-Shift and H-Size are plain
+// two's complement. H-Size is held at 0 while the scandoubler or its
+// effects are on.
 wire              crt_on      = status[75];
 wire              crt_scale   = ~(forced_scandoubler | |status[46:44]);
 wire        [6:0] crt_hpos_ix = status[82:76];
 wire signed [8:0] crt_hoffset = crt_hpos_ix <= 7'd48 ? $signed({ 2'b00, crt_hpos_ix })
                                                      : $signed({ 2'b00, crt_hpos_ix }) - 9'sd97;
-wire        [3:0] crt_vsz_ix  = status[97:94];
-wire signed [3:0] crt_vsz     = crt_vsz_ix <= 4'd7 ? $signed(crt_vsz_ix) : $signed(crt_vsz_ix - 4'd15);
 
 wire       crt_ce, crt_hs, crt_vs, crt_hb, crt_vb;
 wire [7:0] crt_r, crt_g, crt_b;
@@ -838,7 +843,6 @@ gx_crt_chain u_crt (
 	.clk(clk_vid), .ce_pix(pxl_cen), .pxl_div,
 	.active(crt_on), .scale_en(crt_scale),
 	.hoffset(crt_hoffset), .voffset($signed(status[88:83])), .hsize($signed(status[93:89])),
-	.vsize_step(crt_vsz), .vsize_cabinet(status[98]),
 	.r_in(rgb_x[23:16]), .g_in(rgb_x[15:8]), .b_in(rgb_x[7:0]),
 	.hs_in(vid_hs), .vs_in(vid_vs), .hb_in(~vid_lhbl), .vb_in(~vid_lvbl),
 	.ce_out(crt_ce), .r_out(crt_r), .g_out(crt_g), .b_out(crt_b),

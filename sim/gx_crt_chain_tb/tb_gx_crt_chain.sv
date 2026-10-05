@@ -44,11 +44,10 @@ always @(posedge clk) if (ce_pix) begin
 end
 wire act_in = lhbl & lvbl;
 
-logic              active = 0, scale_en = 1, cabinet = 0;
+logic              active = 0, scale_en = 1;
 logic signed [8:0] hoffset = 0;
 logic signed [5:0] voffset = 0;
 logic signed [4:0] hsize = 0;
-logic signed [3:0] vsize_step = 0;
 
 logic       ce;
 logic [7:0] r, g, b;
@@ -58,7 +57,6 @@ gx_crt_chain dut (
     .clk(clk), .ce_pix(ce_pix), .pxl_div(4'(pdiv)),
     .active(active), .scale_en(scale_en),
     .hoffset(hoffset), .voffset(voffset), .hsize(hsize),
-    .vsize_step(vsize_step), .vsize_cabinet(cabinet),
     .r_in(act_in ? sx : 8'd0), .g_in(act_in ? sy : 8'd0), .b_in(act_in ? 8'h5A : 8'd0),
     .hs_in(hsync), .vs_in(vsync), .hb_in(~lhbl), .vb_in(~lvbl),
     .ce_out(ce), .r_out(r), .g_out(g), .b_out(b),
@@ -151,7 +149,7 @@ reg [7:0] regs [16];
 string    regs_file;
 
 initial begin
-    int L, P, W, T, F, VS;
+    int L, P, W, T, F;
     if (!$value$plusargs("REGS=%s", regs_file)) regs_file = "sim/gx_crt_chain_tb/daiskiss.hex";
     void'($value$plusargs("PDIV=%d", pdiv));
     $readmemh(regs_file, regs);
@@ -167,7 +165,6 @@ initial begin
     // the native raster, measured with the chain off
     check("off (native)", 3, -1, -1, -1, -1, -1, 0, -1);
     L = f_lines; P = f_pic_lines; W = f_px_max; T = f_per_min; F = L * T;
-    VS = 2;                                 // gx_crt_chain's VSTEP
     $display("raster: %0d lines, %0d in the picture, %0d px, %0d clk a line, %0d clk a pixel",
              L, P, W, T, pdiv);
     if (W * pdiv != f_w_max || F % L != 0) fails++;
@@ -185,24 +182,10 @@ initial begin
     check("H-Size +8",                    3, L,        P,           -1,  -1,                  T,                 0, P - 1);
     hsize = -16;
     check("H-Size -16",                   3, L,        P,           W,   W * (pdiv - 2),      T,                 0, P - 1);
-    hsize = 8; vsize_step = 7; scale_en = 0;
+    hsize = 8; scale_en = 0;
     check("scaling locked out",           3, L,        P,           W,   W * pdiv,            T,                 0, P - 1);
-    hsize = 0; vsize_step = 0; scale_en = 1;
-    vsize_step = 1;
-    check("PVM +1 (taller)",              8, L - VS,   P,           W,   W * pdiv,                F / (L - VS),      0, P - 1);
-    vsize_step = 2;
-    check("PVM +2",                       8, L - 2*VS, P,           W,   W * pdiv,                F / (L - 2*VS),    0, P - 1);
-    vsize_step = 7;
-    check("PVM +7",                      25, L - 7*VS, P,           W,   W * pdiv,                F / (L - 7*VS),    0, P - 1);
-    vsize_step = -7;
-    check("PVM -7 (shorter)",            50, L + 7*VS, P,           W,   W * pdiv,                F / (L + 7*VS),    0, P - 1);
-    vsize_step = 0;
-    check("PVM back to 0",               25, L,        P,           W,   W * pdiv,            T,                 0, P - 1);
-    // Cabinet needs 8 clocks a pixel; below that V-Size stays at 0
-    cabinet = 1; vsize_step = 7;
-    check("Cabinet +7",                  25, L,        pdiv >= 8 ? P + 7*VS : P, pdiv >= 8 ? -1 : W, -1, T, 0, pdiv >= 8 ? -1 : P - 1);
-    hsize = 8; hoffset = -20; voffset = 3;
-    check("Cabinet +7, all controls",     5, L,        pdiv >= 8 ? P + 7*VS : P, -1, -1,     T,                 -1, -1);
+    hsize = 8; hoffset = -20; voffset = 3; scale_en = 1;
+    check("all controls",                 5, L,        P,           -1,  -1,                  T,                 -1, -1);
     active = 0;
     check("off again",                    3, L,        P,           W,   W * pdiv,            T,                 0, P - 1);
 

@@ -17,16 +17,17 @@
 `ifndef GX_SS_LAYOUT
 `define GX_SS_LAYOUT
 
-localparam [15:0] SS_VERSION = 16'd1;
+localparam [15:0] SS_VERSION = 16'd2;
 
 localparam [2:0] SS_HDR = 3'd0, SS_MCPU = 3'd1, SS_SCPU = 3'd2, SS_SS = 3'd3,
                  SS_MB = 3'd4, SS_SB = 3'd5, SS_SD = 3'd6;
 
 // state bus selects, and each module's words
 localparam [3:0] SSEL_BOARD = 4'd0, SSEL_SND = 4'd1, SSEL_K056800 = 4'd2, SSEL_EE = 4'd3,
-                 SSEL_K0 = 4'd4, SSEL_K1 = 4'd5, SSEL_DSP = 4'd6;
+                 SSEL_K0 = 4'd4, SSEL_K1 = 4'd5, SSEL_DSP = 4'd6,
+                 SSEL_ESC_H = 4'd7, SSEL_ESC_L = 4'd8, SSEL_ESC_R = 4'd9;
 
-localparam SS_NSEC = 18;
+localparam SS_NSEC = 21;
 
 // { channel, base, words }
 function automatic [58:0] ss_sec(input integer i);
@@ -49,6 +50,9 @@ function automatic [58:0] ss_sec(input integer i);
         15: ss_sec = { SS_SB,   24'h100000, 32'd32768  };  // sram: sound RAM
         16: ss_sec = { SS_SD,   24'h000000, 32'd32768  };  // kram: K054539 RAMs
         17: ss_sec = { SS_SD,   24'h008000, 32'd131072 };  // dram: TMS57002 RAM
+        18: ss_sec = { SS_SS,   24'd7,      32'd4096   };  // esch: 056734 local memory, high halves
+        19: ss_sec = { SS_SS,   24'd8,      32'd4096   };  // escl: 056734 local memory, low halves
+        20: ss_sec = { SS_SS,   24'd9,      32'd141    };  // escr: 056734 registers, pc, s0 s1 s6 s8, mailbox, flags, running
         default: ss_sec = 59'd0;
     endcase
 endfunction
