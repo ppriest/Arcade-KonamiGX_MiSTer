@@ -1,6 +1,9 @@
 QUARTUS_VERSION = "17.0"
 
 # Two revisions from one source (docs/WORKFLOW.md): KonamiGX_stp is the
-# instrumented build (ISSP probes, OSD Debug page), KonamiGX the release.
+# instrumented build (ISSP probes, OSD Debug page), KonamiGX the release;
+# KonamiGXT34 the Type 3/4 boards (docs/TYPE34.md).
 PROJECT_REVISION = "KonamiGX_stp"
 PROJECT_REVISION = "KonamiGX"
+PROJECT_REVISION = "KonamiGXT34"
+PROJECT_REVISION = "KonamiGXT34_stp"

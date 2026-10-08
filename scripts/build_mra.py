@@ -200,12 +200,27 @@ MB = 1 << 20
 SETS = ["daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
         "mtwinbee", "tbyahhoo", "sexyparo", "sexyparoa", "tokkae", "tkmmpzdm", "le2",
         "dragoona", "dragoonj", "winspike", "winspikea", "winspikej", "salmndr2", "salmndr2a",
-        "le2u", "le2j"]
+        "le2u", "le2j",
+        # the Type 3 board (docs/TYPE34.md): the KonamiGXT34 bitstream
+        "soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"]
+
+# The sets the second bitstream runs (Type 3 and 4 boards, docs/TYPE34.md):
+# their .mra names it, and their image may use the 128 MB module.
+T34 = {"soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"}
+
+
+def rbf_of(set_name):
+    return "KonamiGXT34" if set_name in T34 else "KonamiGX"
+
+
+def sdram_limit(set_name):
+    return (128 if set_name in T34 else 32) * MB
 
 # K056832 row bytes per set (set_config's depth; render_model.TILE_BPP):
 # BPP_5 unless listed. gx_board_cfg's tile_bpp says the same to the core.
 TILE_BYTES = {"tokkae": 6, "tkmmpzdm": 6, "le2": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
-              "salmndr2": 6, "salmndr2a": 6, "le2u": 8, "le2j": 8}
+              "salmndr2": 6, "salmndr2a": 6, "le2u": 8, "le2j": 8,
+              "soccerss": 6, "soccerssa": 6, "soccerssj": 6, "soccerssja": 6, "soccerssu": 6}
 
 # Program patches MAME applies at start-up, carried as .mra <patch>es:
 # (CPU address, old byte, new byte). tkmmpzdm (init_konamigx, special 2):
@@ -220,7 +235,8 @@ PATCHES = {"tkmmpzdm": [(0x2043c7, 0x01, 0x00), (0x21cba9, 0x11, 0x1f)]}
 # LE2 regions go into SDRAM as they are, with obj_size4 half the region.
 OBJ_LAYOUT = {"le2": "LE2", "dragoona": "RNG", "dragoonj": "RNG",
               "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2",
-              "salmndr2": "GX6", "salmndr2a": "GX6", "le2u": "LE2", "le2j": "LE2"}
+              "salmndr2": "GX6", "salmndr2a": "GX6", "le2u": "LE2", "le2j": "LE2",
+              "soccerss": "GX6", "soccerssa": "GX6", "soccerssj": "GX6", "soccerssja": "GX6", "soccerssu": "GX6"}
 
 # The game buttons each set's .mra names, in order: KonamiGX.sv reads buttons
 # 1-3 at joystick bits 4-6 and 4-6 at bits 7-9. EDIT THE NAMES HERE; the
@@ -330,12 +346,23 @@ def layout(set_name, blocks):
     tb = up(packed)
     ob = tb + up(tr * 8)
     end = ob + up(orow * 8)
-    if end > 32 * MB:
-        raise SystemExit(f"{set_name}: {end / MB:.1f} MB does not fit the 32 MB module")
+    if end > sdram_limit(set_name):
+        raise SystemExit(f"{set_name}: {end / MB:.1f} MB does not fit the {sdram_limit(set_name) // MB} MB module")
     # the K054539 sample area: the region, to 1 MB (dragoonj's 2 MB is what
     # lets its 16 MB of sprites fit; the rest have 4 MB)
-    return dict(tile_base=tb, obj_base=ob, tile_size4=tr * 4, obj_size4=orow * 4, end=end,
-                snd_pcm=up(ps))
+    lo = dict(tile_base=tb, obj_base=ob, tile_size4=tr * 4, obj_size4=orow * 4, end=end,
+              snd_pcm=up(ps))
+    if set_name in T34:
+        # the PSAC2's tiles (gfx3) and map (gfx4), as they come, after the
+        # sound board's RAMs (gx_sdram_top's psac_base, psmap_base)
+        g3, _ = bri.region_loads(blocks[set_name], "gfx3")
+        g4, _ = bri.region_loads(blocks[set_name], "gfx4")
+        lo["psac_base"] = up(snd_ram_end(lo, set_name))
+        lo["psmap_base"] = lo["psac_base"] + up(g3)
+        lo["end"] = lo["psmap_base"] + up(g4)
+        if lo["end"] > sdram_limit(set_name):
+            raise SystemExit(f"{set_name}: {lo['end'] / MB:.1f} MB does not fit the {sdram_limit(set_name) // MB} MB module")
+    return lo
 
 
 def cfg_arm(mod, set_name, lo):
@@ -352,6 +379,24 @@ SND_CPU = 0x40000
 def snd_base(lo):
     """Where the sprite region's spread ends: gx_sdram_top's snd_base."""
     return lo["obj_base"] + 2 * lo["obj_size4"]
+
+
+def snd_ram_end(lo, set_name):
+    """Where the sound board's RAMs end: the K054539s' (2 x 32 KB) and the
+    TMS57002's (256 KB) after the samples, gx_sound's RAM_OFF and DSP_OFF;
+    in the Type 3/4 build the sound 68000's (64 KB, SRAM_OFF) after them."""
+    return snd_base(lo) + SND_CPU + lo["snd_pcm"] + 0x10000 + 0x40000 + (0x10000 if set_name in T34 else 0)
+
+
+def t34_arm(mod, set_name, lo):
+    return (f"        8'd{mod}:{' ' * (3 - len(str(mod)))}begin psac_base = 27'h{lo['psac_base']:07x}; "
+            f"psmap_base = 27'h{lo['psmap_base']:07x}; end  // {set_name}")
+
+
+def rtl_t34_arm(mod):
+    src = RTL_CFG.read_text(encoding="utf8")
+    m = re.search(rf"8'd{mod}:\s*begin\s*psac_base = 27'h([0-9a-f]+); psmap_base = 27'h([0-9a-f]+); end", src)
+    return dict(psac_base=int(m.group(1), 16), psmap_base=int(m.group(2), 16)) if m else None
 
 
 def rtl_arm(mod):
@@ -485,6 +530,10 @@ def resolve_fields(fields):
     return out
 
 
+# MAME's switch names too long for the OSD's 28 columns, shortened
+DIP_SHORT = {"Left Monitor Flip Screen": "Left Flip Screen", "Right Monitor Flip Screen": "Right Flip Screen"}
+
+
 def dips_of(inputs_block):
     """The SYSTEM_DSW port's switches as <dip> lines and the two default
     bytes: byte 0 = SW1 (MAME bits 31:24, the byte at 0xd5a000), byte 1 = SW2
@@ -517,6 +566,7 @@ def dips_of(inputs_block):
                     if idx & (1 << j):
                         v |= 1 << (bp + shift)
                 ids.append(settings.get(v, "-"))
+            name = DIP_SHORT.get(name, name)
             if any("," in i for i in ids) or "," in name:
                 raise SystemExit(f"dip '{name}': a comma splits the OSD list")
             if 2 + len(name) + max(len(i) for i in ids) > OSD_COLS:
@@ -536,6 +586,11 @@ def build(set_name, mod, gl, games, blocks, check_only):
     if arm != {k: lo[k] for k in arm or {}} or arm is None:
         raise SystemExit(f"{set_name}: rtl/gx_board_cfg.sv's arm 8'd{mod} is {arm}, the ROM_START "
                          f"gives {cfg_arm(mod, set_name, lo).strip()} -- paste --cfg's table in")
+    if set_name in T34:
+        arm = rtl_t34_arm(mod)
+        if arm != {k: lo[k] for k in ("psac_base", "psmap_base")}:
+            raise SystemExit(f"{set_name}: rtl/gx_board_cfg.sv's PSAC2 arm 8'd{mod} is {arm}, the ROM_START "
+                             f"gives {t34_arm(mod, set_name, lo).strip()} -- paste --cfg's table in")
     # the set's own zip, then the parent's, then the BIOS's: Main_MiSTer
     # searches them in turn and matches a part by its crc, so a split set, a
     # merged one (where a clone's files live under "<set>/") and a renamed
@@ -611,21 +666,31 @@ def build(set_name, mod, gl, games, blocks, check_only):
         # half-row; the core wants the four-byte part (the first two ROMs
         # interleaved) and then the two-byte part (the third as it is)
         st.lines.append("        <!-- k055673: GX6, bytes 0-3 of each half-row, then bytes 4-5 -->")
+        # one bank or more (soccerss has two, at 0 and 0x600000), each three
+        # _48_WORD ROMs at +0, +2 and +4; a bank's rows sit at its offset / 6
         g6 = sorted(loads, key=lambda l: l[2])
-        if [l[0] for l in g6] != ["_48_WORD_ROM_LOAD"] * 3 or [l[2] for l in g6] != [0, 2, 4]:
-            raise SystemExit(f"{set_name}: GX6 expects three _48_WORD loads at 0, 2, 4")
-        n = g6[0][3]
-        if any(l[3] != n for l in g6) or 3 * n != lo["obj_size4"] // 4 * 6:
+        banks = [g6[i:i + 3] for i in range(0, len(g6), 3)]
+        total_rows = lo["obj_size4"] // 4
+        for b in banks:
+            if [l[0] for l in b] != ["_48_WORD_ROM_LOAD"] * 3 or [l[2] - b[0][2] for l in b] != [0, 2, 4] \
+                    or b[0][2] % 6 or any(l[3] != b[0][3] for l in b):
+                raise SystemExit(f"{set_name}: GX6 expects banks of three equal _48_WORD loads at +0, +2, +4")
+        if sum(3 * b[0][3] for b in banks) != total_rows * 6:
             raise SystemExit(f"{set_name}: GX6 loads do not fill the region")
-        datas = [bri.read_file(zips, f, ln, set_name) for _, f, _, ln in g6]
-        rows = [truth[6 * r:6 * r + 6] for r in range(n // 2)]
-        four = bytes(b for r in rows for b in r[:4])
-        two = bytes(b for r in rows for b in r[4:])
-        maps = pick_maps(datas[:2], 32, four)
-        st.interleave(lo["obj_base"], 32, [(g6[0][1], maps[0], datas[0]), (g6[1][1], maps[1], datas[1])], four)
-        if two != datas[2]:
-            raise SystemExit(f"{g6[2][1]}: not bytes 4-5 of the half-rows?")
-        st.part(lo["obj_base"] + len(four), g6[2][1], datas[2], "two-byte part")
+        twos = []
+        for b in banks:
+            n, r0 = b[0][3], b[0][2] // 6
+            datas = [bri.read_file(zips, f, ln, set_name) for _, f, _, ln in b]
+            rows = [truth[6 * r:6 * r + 6] for r in range(r0, r0 + n // 2)]
+            four = bytes(x for r in rows for x in r[:4])
+            two = bytes(x for r in rows for x in r[4:])
+            maps = pick_maps(datas[:2], 32, four)
+            st.interleave(lo["obj_base"] + 4 * r0, 32, [(b[0][1], maps[0], datas[0]), (b[1][1], maps[1], datas[1])], four)
+            if two != datas[2]:
+                raise SystemExit(f"{b[2][1]}: not bytes 4-5 of the half-rows?")
+            twos.append((r0, b[2][1], datas[2]))
+        for r0, fname, data in twos:
+            st.part(lo["obj_base"] + 4 * total_rows + 2 * r0, fname, data, "two-byte part")
         loads = []
     else:
         st.lines.append("        <!-- k055673: MAME's region, a four-byte part then the fifth bytes -->")
@@ -664,8 +729,8 @@ def build(set_name, mod, gl, games, blocks, check_only):
     snd = snd_base(lo)
     # then the RAMs written at runtime: the K054539s' (2 x 32 KB) and the
     # TMS57002's (256 KB), gx_sound's RAM_OFF and DSP_OFF
-    if snd + SND_CPU + lo["snd_pcm"] + 0x10000 + 0x40000 > 32 * MB:
-        raise SystemExit(f"{set_name}: the sound board's RAMs end past the 32 MB module")
+    if snd_ram_end(lo, set_name) > sdram_limit(set_name):
+        raise SystemExit(f"{set_name}: the sound board's RAMs end past the {sdram_limit(set_name) // MB} MB module")
     for region, at, pad in (("soundcpu", snd, SND_CPU), ("k054539", snd + SND_CPU, lo["snd_pcm"])):
         size, loads = bri.region_loads(blocks[set_name], region)
         if size > pad:
@@ -674,6 +739,16 @@ def build(set_name, mod, gl, games, blocks, check_only):
         st.lines.append(f"        <!-- {region}: MAME's region as it is -->")
         emit_loads(st, zips, set_name, loads, truth, 0, at, size)
         st.fill_to(at + pad)
+    if set_name in T34:
+        # the sound board's RAMs (zeros, written at runtime), then the PSAC2's
+        # tiles and map, as they come
+        for region, at in (("gfx3", lo["psac_base"]), ("gfx4", lo["psmap_base"])):
+            size, loads = bri.region_loads(blocks[set_name], region)
+            truth = bri.build(set_name, region)
+            st.fill_to(at)
+            st.lines.append(f"        <!-- {region}: MAME's region as it is -->")
+            emit_loads(st, zips, set_name, loads, truth, 0, at, size)
+            st.fill_to(at + size)
 
     # the default EEPROM image, MAME's "eeprom" region (most sets: "to prevent
     # game booting with error"); the core loads ioctl index 2 into the 93C46
@@ -708,7 +783,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         # the core without the "Arcade-" prefix, as the contribution guidelines
         # and the sibling cores have it: the released bitstream keeps the prefix
         # and is renamed when it is copied to the device
-        '    <rbf>KonamiGX</rbf>',
+        f'    <rbf>{rbf_of(set_name)}</rbf>',
         f'    <mameversion>{mame_version()}</mameversion>',
         f'    <year>{g["year"]}</year>',
         f'    <manufacturer>{esc(g["manufacturer"])}</manufacturer>',
@@ -782,6 +857,10 @@ def main():
     if a.cfg:
         for mod, s in enumerate(SETS):
             print(cfg_arm(mod, s, layout(s, blocks)))
+        print("        // ---- the PSAC2 regions (the Type 3/4 sets)")
+        for mod, s in enumerate(SETS):
+            if s in T34:
+                print(t34_arm(mod, s, layout(s, blocks)))
         return
     for s in a.sets or SETS:
         if s not in SETS:

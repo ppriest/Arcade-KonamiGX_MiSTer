@@ -43,7 +43,7 @@ fi
 GEN=(); RUN=(); THREADS=1
 for a in "$@"; do
 	case "$a" in
-		-G*)         GEN+=("$a") ;;
+		-G*|-D*)     GEN+=("$a") ;;   # parameters and defines go to the build
 		--threads=*) THREADS="${a#--threads=}" ;;
 		*)           RUN+=("$a") ;;
 	esac

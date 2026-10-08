@@ -27,7 +27,12 @@ localparam [3:0] SSEL_BOARD = 4'd0, SSEL_SND = 4'd1, SSEL_K056800 = 4'd2, SSEL_E
                  SSEL_K0 = 4'd4, SSEL_K1 = 4'd5, SSEL_DSP = 4'd6,
                  SSEL_ESC_H = 4'd7, SSEL_ESC_L = 4'd8, SSEL_ESC_R = 4'd9;
 
+// the Type 3/4 build (GX_T34) has four more, after the others
+`ifdef GX_T34
+localparam SS_NSEC = 25;
+`else
 localparam SS_NSEC = 21;
+`endif
 
 // { channel, base, words }
 function automatic [58:0] ss_sec(input integer i);
@@ -53,6 +58,10 @@ function automatic [58:0] ss_sec(input integer i);
         18: ss_sec = { SS_SS,   24'd7,      32'd4096   };  // esch: 056734 local memory, high halves
         19: ss_sec = { SS_SS,   24'd8,      32'd4096   };  // escl: 056734 local memory, low halves
         20: ss_sec = { SS_SS,   24'd9,      32'd141    };  // escr: 056734 registers, pc, s0 s1 s6 s8, mailbox, flags, running
+        21: ss_sec = { SS_MB,   24'hE00000, 32'd16     };  // psreg: K053936 registers
+        22: ss_sec = { SS_MB,   24'hE60000, 32'd2048   };  // psline: K053936 line control
+        23: ss_sec = { SS_MB,   24'hE80000, 32'd8192   };  // mpal: main monitor's palette
+        24: ss_sec = { SS_MB,   24'hEA0000, 32'd8192   };  // spal: sub monitor's palette
         default: ss_sec = 59'd0;
     endcase
 endfunction

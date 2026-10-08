@@ -19,6 +19,7 @@ rtl/jtframe/jtframe_dual_ram.v
 rtl/jtframe/jtframe_dual_ram16.v
 rtl/video/gx_tilemap.sv
 rtl/video/gx_mixer.v
+rtl/video/gx_psac.sv
 rtl/video/gx_video.sv
 rtl/gx_eeprom93c46.v
 rtl/gx_esc.v

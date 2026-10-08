@@ -18,6 +18,7 @@ DE10-nano.
   - [High scores](#high-scores)
   - [Cheats](#cheats)
   - [CRT Adjust](#crt-adjust)
+  - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
   - [Todo](#todo)
@@ -209,6 +210,18 @@ Irem M92 core), so switching it off leaves no trace. Up to 16 codes at once. MAM
 need conditions or arithmetic are not converted. A cheat MAME applies once (the "... Now!"
 cheats) is held while it is on here; turn it off once it has done its job. Cheats on during the
 power-on tests can make them fail.
+
+### Floorplan
+
+Where the logic sits on the Cyclone V, read from the compiled design with `scripts/floorplan.py` (blocks defined in `scripts/floorplan.json`). One cell per LAB, M10K or DSP site, coloured by the block owning most of it, brighter when fuller. The thin columns are M10K and DSP; the empty area at the top right is the HPS; grey is the MiSTer framework. LUT counts are combinational cells, two per ALM.
+
+Revision `KonamiGX`, fitted 05 Oct 2026:
+
+![Floorplan of KonamiGX](docs/floorplan/KonamiGX.png)
+
+Revision `KonamiGXT34` (the Type 3/4 boards, `fb8e5b4`), fitted 06 Oct 2026:
+
+![Floorplan of KonamiGXT34](docs/floorplan/KonamiGXT34.png)
 
 ## Screenshots
 

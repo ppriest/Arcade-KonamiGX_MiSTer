@@ -22,8 +22,12 @@ document plus §8 and the decrypted listings).
 | dragoonj | `5963` | B | `049DB8E5` |
 | salmndr2 | `1EC6` | A | `B3F135B3` |
 | sexyparo | `896A` | E | `1886AE1D` |
+| rungun2, slamdnk2 | `1593` | 0 | `6862ABCF` |
 
-The lane maps are in `scripts/k056734/esccipher.py` (`CHIPS`). Clones were not checked.
+The lane maps are in `scripts/k056734/esccipher.py` (`CHIPS`). Every set in MAME 0.289's
+`konamigx.cpp` was checked: clones carry their parent's chip, fantjour(a) carries gokuparo's
+kernel and no program, and Run and Gun 2 / Slam Dunk 2 (not in this core) have their own chip
+with one program that copies blocks of bytes. The rest have no ESC.
 
 ## Differences from the chip
 

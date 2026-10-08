@@ -47,7 +47,7 @@ module gx_video #(
 
     // ---- K053252 (0xd4c000, one register per byte)
     input      [ 9:0] vis_x0,          // the visible window's first bitmap column (set_offsets)
-    input      [ 8:0] vis_w,           // and its width (288, or 384 at 8 MHz dots)
+    input      [9:0] vis_w,           // and its width (288, or 384 at 8 MHz dots)
     input             crtc_cs,
     input      [ 3:0] crtc_addr,
     input      [ 7:0] crtc_din,
@@ -75,6 +75,10 @@ module gx_video #(
     output            tile_rom_cs,
     input             tile_rom_ok,
     input      [63:0] tile_rom_data,     // the row's bytes, byte 0 in [63:56]
+    output     [23:0] tile_rom2_addr,    // the Type 3/4 build's second tile client
+    output            tile_rom2_cs,
+    input             tile_rom2_ok,
+    input      [63:0] tile_rom2_data,
 
     // ---- sprites (sprite RAM, K053246, K055673)
     input             spr_ram_cs,
@@ -101,6 +105,7 @@ module gx_video #(
     // 0x2fb - vdump, the scanner working ahead of the line; measured on le2u
     // f2400, which then differs from MAME in zoomed sprites only)
     input             obj_vmirror,
+    input             obj_bank,        // Type 3/4: the DMA copies the list from words 0x800-0xfff
     input       [1:0] obj_pri_raw,
     input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
     input             obj_dma_trig, // start the sprite DMA now (gx_main)
@@ -129,6 +134,26 @@ module gx_video #(
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
     output     [23:0] pal_q,           // the CPU's read of { R, G, B } at pal_addr
+    input      [ 1:0] pal3_we,         // the Type 3/4 palettes (gx_mixer)
+    input             pal3_sub,
+    input      [15:0] pal3_din,
+    output     [15:0] pal3_q,
+    input             pix_sub,
+
+    // ---- the Type 3/4 K053936 (gx_psac, GX_T34): its registers and bank,
+    // the line control RAM's read port, and its SDRAM clients
+    input      [255:0] psac_regs,      // register n at [16n +: 16], the CPU's order
+    input             psac_alt,
+    output     [10:0] psac_lc_addr,
+    input      [15:0] psac_lc_q,
+    output            psm_cs,
+    output     [15:0] psm_addr,
+    input             psm_ok,
+    input      [63:0] psm_data,
+    output     [ 3:0] pst_cs,
+    output     [67:0] pst_addr,
+    input      [ 3:0] pst_ok,
+    input     [255:0] pst_data,
 
     // ---- video out: rgb and the K053252's blanking and syncs, aligned
     output     [23:0] rgb,
@@ -140,10 +165,10 @@ module gx_video #(
     output            obj_dma_busy,
     output            obj_ln_short,       // the sprite scan did not finish a line (probe)
     output     [ 8:0] ss_vpos,            // the raster, for the save-state engine: vdump
-    output     [ 8:0] ss_hpos,            // ...and the pixel since LHBL rose
+    output     [ 9:0] ss_hpos,            // ...and the pixel since LHBL rose
     input             tm_blank_skip,      // gx_tilemap's blank-row skip on
     input             spr_mix_on,         // gx_mixer: a sprite's effect bits are its mix code
-    output reg [131:0] dbg_line           // line time, tilemap and sprites (probe T)
+    output reg [167:0] dbg_line           // line time, tilemap, sprites, K053936 (probe T)
 );
 
 // ------------------------------------------------------------ K053252
@@ -158,24 +183,34 @@ jtk053252 u_crtc (
 
 // the line's total, HC: K053252 registers 0 (bit 8) and 1, plus one
 // (daiskiss 0x17f: 384 dots, dragoonj 0x1ff: 512). 384 until written.
-reg        hc_hi = 1'b1;
+// Register 0 holds bits 9:8: soccerss writes 0x02, 0xff, 768 dots at 12 MHz.
+// The Type 3/4 build counts the line in 10 bits (HW); the other keeps the
+// nine that dragoonj's hdump wraps in.
+`ifdef GX_T34
+localparam HW = 10;
+`else
+localparam HW = 9;
+`endif
+reg  [1:0] hc_hi = 2'd1;
 reg  [7:0] hc_lo = 8'h7f;
 always @(posedge clk) if( crtc_cs ) begin
-    if( crtc_addr == 4'd0 ) hc_hi <= crtc_din[0];
+    if( crtc_addr == 4'd0 ) hc_hi <= HW == 10 ? crtc_din[1:0] : { 1'b0, crtc_din[0] };
     if( crtc_addr == 4'd1 ) hc_lo <= crtc_din;
 end
-wire [9:0] hc = { 1'b0, hc_hi, hc_lo } + 10'd1;
+wire [9:0] hc = { hc_hi, hc_lo } + 10'd1;
 
 // hdump and vdump, from the K053252's blanking (see the header)
-reg  [8:0] pcnt, hdump, vdump;
+reg  [HW-1:0] pcnt, hdump;
+reg  [8:0] vdump;
 reg        lhbl_l, hs_l, lvbl_hsf;
-wire [9:0] pc10 = { 1'b0, pcnt };
-wire [8:0] p = pc10 >= hc ? 9'(pc10 - hc) : pcnt;   // pixel since LHBL rose
+wire [10:0] pc10 = 11'(pcnt);
+wire [10:0] pd = pc10 - 11'(hc);
+wire [HW-1:0] p = pc10 >= 11'(hc) ? pd[HW-1:0] : pcnt;   // pixel since LHBL rose
 
 always @(posedge clk) if( pxl_cen ) begin
     lhbl_l <= lhbl;
     hs_l   <= hs;
-    pcnt   <= ( lhbl && !lhbl_l ) ? 9'd1 : pcnt + 9'd1;
+    pcnt   <= ( lhbl && !lhbl_l ) ? { {(HW-1){1'b0}}, 1'b1 } : pcnt + 1'b1;
     if( !hs && hs_l ) begin
         lvbl_hsf <= lvbl;
         vdump    <= ( lvbl && !lvbl_hsf ) ? 9'h110 : vdump == 9'h1FF ? 9'h0F8 : vdump + 9'd1;
@@ -183,10 +218,28 @@ always @(posedge clk) if( pxl_cen ) begin
 end
 
 assign ss_vpos = vdump;
-assign ss_hpos = pcnt;
+assign ss_hpos = 10'(pcnt);
 
-wire [9:0] hd0 = 10'h058 + vis_x0 + { 1'b0, p };
-always @* hdump = { 1'b0, p } < hc - 10'd64 ? hd0[8:0] : 9'(hd0 - hc);
+wire [9:0] hd0 = 10'h058 + vis_x0 + 10'(p);
+wire [9:0] hdj = hd0 - hc;
+`ifdef GX_T34
+// The jump must fall inside HS, where jtframe_objdraw_gate re-synchronises
+// its readout counter: soccerss's HS is p 631-695 of a 768-dot line, before
+// hc - 64, and with the jump after it the counter ran 768 ahead into the
+// next line until it wrapped, 168 pixels in -- the sprites left of that were
+// lost. Here hdump jumps as HS rises.
+reg post_hs = 1'b0;
+always @(posedge clk) if( pxl_cen ) begin
+    if( lhbl && !lhbl_l ) post_hs <= 1'b0;
+    else if( hs && !hs_l ) post_hs <= 1'b1;
+end
+// only in the blanking: post_hs clears a clock after LHBL rises, and the
+// line's first pixel took the jumped value (88 - 768: 344), which put the
+// gate's counter 256 ahead and the sprites 256 columns off
+always @* hdump = post_hs && !lhbl ? hdj[HW-1:0] : hd0[HW-1:0];
+`else
+always @* hdump = 10'(p) < hc - 10'd64 ? hd0[HW-1:0] : hdj[HW-1:0];
+`endif
 
 // gx_mixer latches a pixel on the pxl_cen that ends it and drives rgb with
 // it on the next, so rgb shows a pixel two pixel periods later; two register
@@ -198,7 +251,7 @@ always @(posedge clk) if( pxl_cen ) begin
 end
 
 // ------------------------------------------------------------ coordinates
-wire [9:0] bx = { 1'b0, hdump } - 10'h058;
+wire [9:0] bx = 10'(hdump) - 10'h058;
 wire [9:0] by = { 1'b0, vdump } - 10'h100;
 
 // the K055555 fields the sprite side reads, mirrored from the mixer's writes
@@ -257,7 +310,7 @@ wire [13:0] tm_pix [4];
 
 always @(posedge clk) begin
     line_start <= 1'b0;
-    if( pxl_cen && { 1'b0, p } == hc - 10'd65 ) begin   // before hdump's jump: render the row after next
+    if( pxl_cen && 10'(p) == hc - 10'd65 ) begin   // before hdump's jump: render the row after next
         line_start <= 1'b1;
         line_y     <= { 1'b0, vdump } - 10'h100 + 10'd2;
     end
@@ -271,9 +324,44 @@ gx_tilemap u_tm (
     .offs_x, .offs_y, .dbg_regs5(tm_regs5), .gfx_bank(tile_gfx_bank),
     .line_start, .line_y, .busy(tm_busy), .unsupported(), .dbg_ev(tm_ev), .blank_skip(tm_blank_skip),
     .tile_bpp, .rom_addr(tile_rom_addr), .rom_cs(tile_rom_cs), .rom_ok(tile_rom_ok), .rom_data(tile_rom_data),
+    .rom2_addr(tile_rom2_addr), .rom2_cs(tile_rom2_cs), .rom2_ok(tile_rom2_ok), .rom2_data(tile_rom2_data),
     .vis_x0, .vis_w,
-    .rd_x( 9'(bx - vis_x0) ), .rd_pix(tm_pix)
+    .rd_x( bx - vis_x0 ), .rd_pix(tm_pix)
 );
+
+// ------------------------------------------------------------ K053936
+// The Type 3/4 layer: rendered for the tilemap's row (line_start, line_y),
+// read at half the bitmap's column (MAME doubles each across two pixels)
+wire [9:0] ps_pix;
+wire       ps_busy;
+`ifdef GX_T34
+wire [15:0] ps_regs [16];
+wire [16:0] ps_taddr [4];
+wire [63:0] ps_tdata [4];
+genvar gr;
+generate
+    for( gr = 0; gr < 16; gr++ ) begin : g_preg assign ps_regs[gr] = psac_regs[16*gr +: 16]; end
+    for( gr = 0; gr < 4; gr++ ) begin : g_pst
+        assign pst_addr[17*gr +: 17] = ps_taddr[gr];
+        assign ps_tdata[gr] = pst_data[64*gr +: 64];
+    end
+endgenerate
+gx_psac u_psac (
+    .clk, .rst,
+    .regs(ps_regs), .map_alt(psac_alt),
+    .lc_addr(psac_lc_addr), .lc_q(psac_lc_q),
+    .line_start, .line_y(line_y[8:0]), .busy(ps_busy), .unsupported(),
+    .map_cs(psm_cs), .map_addr(psm_addr), .map_ok(psm_ok), .map_data(psm_data),
+    .tile_cs(pst_cs), .tile_addr(ps_taddr), .tile_ok(pst_ok), .tile_data(ps_tdata),
+    .rd_x(bx[9:1]), .rd_pix(ps_pix)
+);
+`else
+assign ps_busy = 1'b0;
+assign ps_pix = 10'd0;
+assign psac_lc_addr = 11'd0;
+assign psm_cs = 1'b0; assign psm_addr = 16'd0;
+assign pst_cs = 4'd0; assign pst_addr = 68'd0;
+`endif
 
 // ------------------------------------------------------------ sprites
 wire        s_valid, h_valid, h_full;
@@ -284,13 +372,13 @@ wire [ 1:0] h_code;
 
 gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .dbg_shd,
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump, .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .dma_trig(obj_dma_trig), .dma_hold(obj_dma_hold), .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump(10'(hdump)), .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .dma_trig(obj_dma_trig), .dma_hold(obj_dma_hold), .hs, .lvbl,
     .ram_cs(spr_ram_cs), .ram_we(spr_ram_we), .ram_addr(spr_ram_addr), .ram_din(spr_ram_din),
     .ram_dout(spr_ram_dout),
     .reg_cs(k46_cs), .mmr_we(k46_we), .mmr_addr(k46_addr), .mmr_din(k46_din), .mmr_dsn(k46_dsn),
     .k47_we, .k47_addr, .k47_din,
     .opri(k55[15]), .oinprion(k55[19]), .ocblk(k55[27]), .wrport2, .primode,
-    .shadowon, .shdpri0(k55[37]), .shdpri1(k55[38]), .shdpri2(k55[39]), .spri_min, .obj_layout, .vmirror(obj_vmirror), .shd_defer, .obj_pri_raw,
+    .shadowon, .shdpri0(k55[37]), .shdpri1(k55[38]), .shdpri2(k55[39]), .spri_min, .obj_layout, .vmirror(obj_vmirror), .bank(obj_bank), .shd_defer, .obj_pri_raw,
     .rom_addr(obj_rom_addr), .rom_cs(obj_rom_cs), .rom_ok(obj_rom_ok), .rom_data(obj_rom_data),
     .pf_addr(obj_pf_addr), .pf_cs(obj_pf_cs), .rmrd_out(rmrd_addr),
     .pxl_valid(s_valid), .pxl_pen(s_pen), .pxl_pri(s_pri), .pxl_z(s_z), .pxl_idx(s_idx), .pxl_mix(s_mix),
@@ -304,9 +392,9 @@ gx_mixer u_mix (
     .rst, .clk, .pxl_cen,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pri_c_le2(primode == 4'hf),
-    .pal_we, .pal_addr, .pal_din, .pal_q,
+    .pal_we, .pal_addr, .pal_din, .pal_q, .pal3_we, .pal3_sub, .pal3_din, .pal3_q, .pix_sub,
     .bx, .by,
-    .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]),
+    .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]), .sub2(ps_pix),
     .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx), .spr_mix(s_mix), .spr_mix_on,
     .shd_valid(h_valid), .shd_code(h_code), .shd_pri(h_pri), .shd_z(h_z), .shd_idx(h_idx),
     .rgb, .unsupported
@@ -327,6 +415,9 @@ reg [11:0] frames = 0, tm_late_all = 0, tm_late_f = 0, tm_late_l = 0;
 reg [11:0] tm_cnt = 0, tm_max_f = 0, tm_max_l = 0, tm_max_all = 0;
 reg [11:0] ob_cnt = 0, ob_max_f = 0, ob_max_l = 0, ob_max_all = 0;
 reg [15:0] fe_f = 0, fe_l = 0, bl_f = 0, bl_l = 0, sk_f = 0, sk_l = 0;
+// the K053936 (Type 3/4): its busiest line, and lines that began while it was
+// still rendering the one before
+reg [11:0] ps_cnt = 0, ps_max_f = 0, ps_max_l = 0, ps_max_all = 0, ps_late_f = 0, ps_late_l = 0;
 reg        lvbl_d = 0;
 
 always @(posedge clk) begin
@@ -336,6 +427,11 @@ always @(posedge clk) begin
         tm_cnt   <= 12'd0;
         if( tm_busy ) begin tm_late_all <= inc12(tm_late_all); tm_late_f <= inc12(tm_late_f); end
     end else if( tm_busy ) tm_cnt <= inc12(tm_cnt);
+    if( line_start ) begin
+        ps_max_f <= max12(ps_max_f, ps_cnt);
+        ps_cnt   <= 12'd0;
+        if( ps_busy ) ps_late_f <= inc12(ps_late_f);
+    end else if( ps_busy ) ps_cnt <= inc12(ps_cnt);
     if( o_start ) begin
         ob_max_f <= max12(ob_max_f, ob_cnt);
         ob_cnt   <= 12'd0;
@@ -353,8 +449,11 @@ always @(posedge clk) begin
         fe_l <= fe_f; fe_f <= 16'd0;
         bl_l <= bl_f; bl_f <= 16'd0;
         sk_l <= sk_f; sk_f <= 16'd0;
+        ps_max_l   <= ps_max_f;    ps_max_f  <= 12'd0;
+        ps_max_all <= max12(ps_max_all, ps_max_f);
+        ps_late_l  <= ps_late_f;   ps_late_f <= 12'd0;
     end
-    dbg_line <= { sk_l, bl_l, fe_l, ob_max_all, ob_max_l, tm_max_all, tm_max_l, tm_late_l, tm_late_all, frames };
+    dbg_line <= { ps_late_l, ps_max_all, ps_max_l, sk_l, bl_l, fe_l, ob_max_all, ob_max_l, tm_max_all, tm_max_l, tm_late_l, tm_late_all, frames };
 end
 
 endmodule

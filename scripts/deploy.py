@@ -231,6 +231,7 @@ def next_rbf_name(m):
 
 
 def main():
+    global RBF_STEM
     ap = argparse.ArgumentParser()
     ap.add_argument("--rbf", default=str(REPO / "build" / "output_files" / "KonamiGX_stp.rbf"))
     ap.add_argument("--log", default=str(REPO / "build" / "q_staged.log"))
@@ -243,6 +244,9 @@ def main():
     ap.add_argument("--all", action="store_true",
                     help="also deploy .mra files listed in HELD_BACK_SETS "
                          "(sets that are built but known not to run yet)")
+    ap.add_argument("--stem", default=RBF_STEM,
+                    help="the bitstream's name on the device: KonamiGXT34 for the Type 3/4 "
+                         "build (docs/TYPE34.md), which their .mra files name")
     ap.add_argument("--mra-only", action="store_true")
     ap.add_argument("--rbf-only", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -252,6 +256,7 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="deploy despite failed build checks -- say why")
     a = ap.parse_args()
+    RBF_STEM = a.stem
 
     env = load_env(REPO / "mister.env")
     m = Mister(env, a.dry_run)

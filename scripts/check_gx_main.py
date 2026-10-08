@@ -146,7 +146,8 @@ def layout_args(game):
     """The set's SDRAM layout, for the bench's ROM readback port."""
     import build_mra
     lo = build_mra.rtl_arm(build_mra.SETS.index(game))
-    return [f"+TILE_BASE={lo['tile_base']:x}", f"+OBJ_BASE={lo['obj_base']:x}"]
+    # ROM_TOP: where the packed CPU image ends, as KonamiGX.sv's rom_top (tile_base)
+    return [f"+TILE_BASE={lo['tile_base']:x}", f"+OBJ_BASE={lo['obj_base']:x}", f"+ROM_TOP={lo['tile_base']:x}"]
 
 
 def write_set_roms(game):
@@ -172,6 +173,15 @@ def write_set_roms(game):
     (check_gx_tilemap.OUT / "rom.hex").write_text(check_gx_tilemap.rows_hex(rows))
     halves = rm.k055673_halves(game)
     (check_gx_obj.OUT / "rom.hex").write_text(check_gx_tilemap.rows_hex(halves))
+    if game in build_mra.T34:
+        # the K053936's ROMs as granules (sim/gx_main_tb's psac clients)
+        import psac2_model as pm
+        from check_gx_psac import granules
+        d = REPO / "debug" / "gx_main_tb_psac"
+        d.mkdir(parents=True, exist_ok=True)
+        gfx3, gfx4 = pm.roms()
+        (d / "gfx3.hex").write_text(granules(gfx3))
+        (d / "gfx4.hex").write_text(granules(gfx4))
     return len(rows) // 8, len(halves) // 32
 
 
@@ -269,7 +279,9 @@ def main():
             args += [f"+RESTORE={snap.relative_to(REPO)}.vlsave"]
         if a.sim == "verilator":
             cmd = (["scripts/run_verilator.sh", "gx_main_tb", f"--threads={a.threads}"]
-                   + ([f"-GINSTANCE={a.instance}"] if a.instance else []) + args)
+                   + ([f"-GINSTANCE={a.instance}"] if a.instance else [])
+                   # the Type 3/4 sets: the KonamiGXT34 bitstream's build (docs/TYPE34.md)
+                   + (["-DGX_T34=1"] if a.game in __import__("build_mra").T34 else []) + args)
         else:
             cmd = ["scripts/run_sim.sh", "gx_main_tb"] + args
         r = subprocess.run([check_gx_obj.GIT_BASH] + cmd, cwd=REPO, capture_output=True, text=True)

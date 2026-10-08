@@ -32,7 +32,7 @@ module sdram
 	output reg        SDRAM_DQML, // byte mask
 	output reg        SDRAM_DQMH, // byte mask
 	output reg  [1:0] SDRAM_BA,   // two banks
-	output            SDRAM_nCS,  // a single chip select
+	output reg        SDRAM_nCS = 1'b0,  // [GX] byte address bit 26: the 128 MB module's second chip
 	output reg        SDRAM_nWE,  // write enable
 	output reg        SDRAM_nRAS, // row address select
 	output reg        SDRAM_nCAS, // columns address select
@@ -48,7 +48,7 @@ module sdram
 	// should be 00 for reads -- see docs/phase1_sdram_map.md). Writes are
 	// still single-word (wrl0/wrh0 select byte lanes of din0), unaffected
 	// by the burst-4 read extension.
-	input      [25:1] addr0,
+	input      [26:1] addr0,
 	input             wrl0,
 	input             wrh0,
 	input      [15:0] din0,
@@ -61,7 +61,7 @@ module sdram
 	input             dbl0,
 	output     [63:0] dout0b,
 
-	input      [25:1] addr1,
+	input      [26:1] addr1,
 	input             wrl1,
 	input             wrh1,
 	input      [15:0] din1,
@@ -69,7 +69,7 @@ module sdram
 	input             req1,
 	output reg        ack1 = 1'b0,
 
-	input      [25:1] addr2,
+	input      [26:1] addr2,
 	input             wrl2,
 	input             wrh2,
 	input      [15:0] din2,
@@ -78,7 +78,6 @@ module sdram
 	output reg        ack2 = 1'b0
 );
 
-assign SDRAM_nCS = 0;
 assign SDRAM_CKE = 1;
 assign {SDRAM_DQMH,SDRAM_DQML} = SDRAM_A[12:11];
 
@@ -124,6 +123,9 @@ reg  [3:0] state = 4'd0;   // upstream relies on Quartus's zero-power-up default
                             // never equals STATE_LAST, so `reset`/`mode` never advance)
 reg [22:1] a;
 reg        a25;   // byte address bit 25: column bit A9 on a 64 MB chip
+reg        chip = 1'b0;    // [GX] byte address bit 26: which chip of the 128 MB module
+reg        rchip = 1'b0;   // [GX] the chip the next refresh goes to
+reg        ichip = 1'b0;   // [GX] the chip an initialisation command goes to
 reg [15:0] data;
 reg        we;
 reg        dbl = 0;   // [GX] this access is a double read
@@ -185,12 +187,17 @@ always @(posedge clk) begin
 	// longest of all before the CPU reads it. Symptom was non-deterministic
 	// ROM corruption -- the same .mra read back correct on one load and
 	// corrupt on the next. 670 cycles = 7.80 us, just inside spec.
-	if (rfs_cnt == 670) begin
+	// [GX] The 128 MB module is two chips, and its one select line picks one
+	// or the other, never both: each refresh goes to one chip, alternately,
+	// twice as often, so each chip still has one every 670 cycles. A 32 MB
+	// module sees its refreshes at the same rate as before (the other half
+	// select nothing).
+	if (rfs_cnt == 335) begin
 		rfs <= 1;
 		rfs_cnt <= 0;
 	end
 
-	if (rfs_cnt == 335) rfs2 <= 1;   // half of the interval above
+	if (rfs_cnt == 167) rfs2 <= 1;   // half of the interval above
 
 	if(state == STATE_IDLE && mode == MODE_NORMAL) begin
 		if (rfs) begin
@@ -201,10 +208,12 @@ always @(posedge clk) begin
 			dbl <= 0;
 			dqm <= 2'b00;
 			active <= 0;
+			chip <= rchip;
+			rchip <= ~rchip;
 			state <= STATE_START;
 		end
 		else if (ack0 != req0) begin
-			{a25,ba,a} <= addr0;
+			{chip,a25,ba,a} <= addr0;
 			data <= din0;
 			we <= wr[0];
 			dbl <= dbl0 && !wr[0];
@@ -215,7 +224,7 @@ always @(posedge clk) begin
 			state <= STATE_START;
 		end
 		else if (ack1 != req1) begin
-			{a25,ba,a} <= addr1;
+			{chip,a25,ba,a} <= addr1;
 			data <= din1;
 			we <= wr[1];
 			dbl <= 0;
@@ -226,7 +235,7 @@ always @(posedge clk) begin
 			state <= STATE_START;
 		end
 		else if (ack2 != req2) begin
-			{a25,ba,a} <= addr2;
+			{chip,a25,ba,a} <= addr2;
 			data <= din2;
 			we <= wr[2];
 			dbl <= 0;
@@ -298,9 +307,12 @@ always @(posedge clk) begin
 	else if(state == STATE_LAST) begin
 		if(reset != 0) begin
 			reset <= reset - 5'd1;
-			if(reset == 14)     mode <= MODE_PRE;
-			else if(reset == 3) mode <= MODE_LDM;
-			else                mode <= MODE_RESET;
+			// [GX] each chip of the 128 MB module: precharge at 14 and 13,
+			// load mode at 3 and 2
+			ichip <= reset == 14 || reset == 3;
+			if(reset == 14 || reset == 13)    mode <= MODE_PRE;
+			else if(reset == 3 || reset == 2) mode <= MODE_LDM;
+			else                              mode <= MODE_RESET;
 		end
 		else mode <= MODE_NORMAL;
 	end
@@ -322,6 +334,7 @@ assign SDRAM_DQ = dq_oe ? dq_out : 16'bz;
 
 always @(posedge clk) begin
 	if(state == STATE_START) SDRAM_BA <= (mode == MODE_NORMAL) ? ba : 2'b00;
+	if(state == STATE_START) SDRAM_nCS <= (mode == MODE_NORMAL) ? chip : ichip;
 
 	dq_oe <= 1'b0;
 	casex({active,we,mode,state})

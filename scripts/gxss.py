@@ -24,24 +24,43 @@ CHANNELS = {"SS_HDR": "HDR", "SS_MCPU": "MCPU", "SS_SCPU": "SCPU", "SS_SS": "SS"
             "SS_MB": "MB", "SS_SB": "SB", "SS_SD": "SD"}
 
 
-def layout():
-    """[(name, channel, base, words)] from the .svh, in order."""
+# the Type 3/4 build's sections follow the others (GX_T34's SS_NSEC)
+T34_FIRST = 21
+
+
+def version():
+    return int(re.search(r"SS_VERSION = 16'd(\d+)", LAYOUT.read_text(encoding="utf-8")).group(1))
+
+
+def is_t34(setname):
+    sys.path.insert(0, str(REPO / "scripts"))
+    import build_mra
+    return setname in build_mra.T34
+
+
+def layout(t34=False):
+    """[(name, channel, base, words)] from the .svh, in order: the Type 3/4
+    build's (t34) or the other's."""
     secs = []
     pat = re.compile(r"(\d+):\s*ss_sec = \{\s*(SS_\w+),\s*24'(?:h([0-9A-Fa-f]+)|d(\d+)),\s*32'd(\d+)\s*\};\s*//\s*(.*)")
     for ln in LAYOUT.read_text(encoding="utf-8").splitlines():
         m = pat.search(ln)
-        if m:
+        if m and (t34 or int(m.group(1)) < T34_FIRST):
             base = int(m.group(3), 16) if m.group(3) else int(m.group(4))
             secs.append((m.group(6).split(":")[0].strip(), CHANNELS[m.group(2)], base, int(m.group(5))))
     return secs
 
 
 class GxState:
-    def __init__(self, words):
+    def __init__(self, words, t34=None):
         self.words = list(words)
+        if t34 is None:                     # from the header's set
+            sets = mame_sets()
+            t34 = len(self.words) > 3 and self.words[3] < len(sets) and is_t34(sets[self.words[3]])
+        self.t34 = t34
         self.secs = {}
         off = 0
-        for name, ch, base, n in layout():
+        for name, ch, base, n in layout(t34):
             self.secs[name] = (off, n, ch, base)
             off += n
         self.total = off
@@ -146,7 +165,7 @@ def k053252_regs(setname, path=None):
     sys.exit(f"no K053252 registers for {setname}: give --k053252 (16 hex bytes, a line each)")
 
 
-def from_mame(sta_path, out_path, k053252=None):
+def from_mame(sta_path, out_path, k053252=None, side=None):
     sys.path.insert(0, str(REPO / "scripts"))
     import mame_sta
     st = mame_sta.State.read(sta_path)
@@ -162,8 +181,16 @@ def from_mame(sta_path, out_path, k053252=None):
         b = it[name]
         return [int.from_bytes(b[k:k + size], "little") for k in range(0, len(b), size)]
 
-    g = GxState([0] * sum(n for _, _, _, n in layout()))
+    t34 = is_t34(st.setname)
+    g = GxState([0] * sum(n for _, _, _, n in layout(t34)), t34)
     notes = []
+    # what MAME does not save, from scripts/mame/save_at.lua's JSON beside the state
+    import json
+    sp = Path(side) if side else Path(str(sta_path) + ".json")
+    sd = json.loads(sp.read_text()) if sp.exists() else {}
+    if t34 and "t3_bank" not in sd:
+        sys.exit(f"{st.setname}: the Type 3 bank and frame flag are not in MAME's state: "
+                 f"save with scripts/mame/save_at.lua, which writes {sp.name}")
 
     # ---- the raster: lines and dots since vblank began, from the main CPU's time
     def t(name):
@@ -182,7 +209,7 @@ def from_mame(sta_path, out_path, k053252=None):
     if v > 0x1FF:
         v = 0x0F8 + (v - 0x200)
     hpix = (dot - min_x) % width
-    g.set_sec("hdr", [0x4758, 0x5353, 1, sets.index(st.setname), v, hpix, 0, 0])
+    g.set_sec("hdr", [0x4758, 0x5353, version(), sets.index(st.setname), v, hpix, 0, 0])
 
     # ---- the 68020 (Musashi): the active A7 is REG_D()[15]
     m = ":maincpu/0/"
@@ -216,7 +243,8 @@ def from_mame(sta_path, out_path, k053252=None):
     # cleared when the vblank / INT2 interrupt fires: the K053252's INT1 and
     # INT2 lines, which hold until acknowledged, are their inverse
     syncen = u(":/0/m_gx_syncen")
-    g.set_sec("board", pack([
+    t3 = [(sd["t3_bank"], 8), (sd["t3_frame"], 1)] if t34 else []
+    g.set_sec("board", pack(t3 + [
         (0 if syncen & 0x20 else 1, 1), (0 if syncen & 0x40 else 1, 1),    # the K053252's INT1 INT2
         (0, 1), (hs_cnt, 2), (0, 1), (0, 1),                               # dma_pend hs_cnt lvbl_dt hs_dt
         (u(":/0/m_gx_rdport1_3") & 0xFF, 8), (syncen & 0x1F, 8),
@@ -225,7 +253,7 @@ def from_mame(sta_path, out_path, k053252=None):
         (1 if line >= vbl else 0, 1), (0, 24),                             # lvbl_l dma_t
         (u(":/0/m_gx_wrport1_0"), 8), (u(":/0/m_gx_wrport1_1"), 8), (u(":/0/m_gx_wrport2") & 0xFF, 8),
         (k56r[0x19] & 0xFF, 8), (0, 16), (0, 16), (0, 1), (0, 1),          # vram_bank esc_hi p4_op p4_op_v p4_clk
-        (u(":k056832/0/m_rom_half") & 1, 1)], 122) + [0] * 8)
+        (u(":k056832/0/m_rom_half") & 1, 1)], 131 if t34 else 122) + [0] * (7 if t34 else 8))
 
     # ---- gx_sound's latches (gx_sound.sv u_ss_glue)
     scur = arr(s + "m_input.m_curstate", 1)
@@ -311,7 +339,8 @@ def from_mame(sta_path, out_path, k053252=None):
     for k in range(4):
         rg[0x28 + k] = (kx46[2 * k] << 8) | kx46[2 * k + 1]
     rg[0x2C:0x34] = arr(":k055673/0/m_kx47_regs", 2)[0:8]
-    rg[0x34:0x44] = [b << 8 for b in k053252_regs(st.setname, k053252)]
+    crt = sd.get("k053252") if not k053252 else None
+    rg[0x34:0x44] = [b << 8 for b in (crt or k053252_regs(st.setname, k053252))]
     k55 = list(it[":k055555/0/m_regs"])
     rg[0x44:0x84] = [k55[k] << 8 for k in range(64)]
     rg[0xC4:0xD4] = arr(":k054338/0/m_regs", 2)[0:16]
@@ -326,7 +355,13 @@ def from_mame(sta_path, out_path, k053252=None):
     def bytes16(b):
         return [(b[2 * k] << 8) | b[2 * k + 1] for k in range(len(b) // 2)]
     g.set_sec("wram", be32(m + ":workram"))
-    g.set_sec("pal", be32(m + ":palette"))
+    # 0xd90000: the palette, or (Type 3/4) plain RAM
+    g.set_sec("pal", be32(m + (":palette" if m + ":palette" in it else "d90000-d97fff")))
+    if t34:
+        g.set_sec("psreg", be32(m + ":k053936_0_ctrl"))
+        g.set_sec("psline", be32(m + ":k053936_0_line"))
+        g.set_sec("mpal", be32(m + ":paletteram"))
+        g.set_sec("spal", be32(m + ":subpaletteram"))
     g.set_sec("spr", arr(":k055673/0/m_ram", 2))
     g.set_sec("vram", arr(":k056832/0/m_videoram", 2)[:65536])
     g.set_sec("sram", arr(s + "100000-10ffff", 2))
@@ -353,7 +388,7 @@ def from_mame(sta_path, out_path, k053252=None):
 
 
 def cmd_from_mame(a):
-    from_mame(a.sta, a.out, a.k053252)
+    return from_mame(a.sta, a.out, a.k053252, a.side)
 
 
 def unpack(words, width):
@@ -411,8 +446,8 @@ def to_mame(ss_path, out_path):
     g = GxState.read(ss_path)
     sets = mame_sets()
     h = g.sec("hdr")
-    if h[0:2] != [0x4758, 0x5353] or h[2] != 1:
-        sys.exit(f"{ss_path}: not a version 1 save state")
+    if h[0:2] != [0x4758, 0x5353] or h[2] != version():
+        sys.exit(f"{ss_path}: not a version {version()} save state")
     setname = sets[h[3]]
     exe = mame_sta.mame_exe()
     ver = mame_sta.mame_version(exe)
@@ -458,7 +493,7 @@ def to_mame(ss_path, out_path):
     fix.append(f"pc :soundcpu {spc:x}")
 
     # ---- gx_main's latches
-    bd = fields(unpack(g.sec("board"), 122), [
+    bd = fields(unpack(g.sec("board"), 131 if g.t34 else 122), ([("t3_bank", 8), ("t3_frame", 1)] if g.t34 else []) + [
         ("int1", 1), ("int2", 1), ("dma_pend", 1), ("hs_cnt", 2), ("lvbl_dt", 1), ("hs_dt", 1), ("rdport1_3", 8), ("syncen", 8),
         ("irq3", 1), ("irq4", 1), ("dma_run", 1), ("int1_l", 1), ("int2_l", 1), ("pend1", 1), ("pend2", 1),
         ("lvbl_l", 1), ("dma_t", 24), ("wrport1_0", 8), ("wrport1_1", 8), ("wrport2", 8), ("vram_bank", 8),
@@ -559,7 +594,16 @@ def to_mame(ss_path, out_path):
 
     # ---- through MAME's handlers: the palette and the chips' registers
     pal = be32(g.sec("pal"))
-    fix += [f"w32 {0xD90000 + 4 * i:x} {v:x}" for i, v in enumerate(pal)]
+    if g.t34:
+        # plain RAM at 0xd90000; the rest is RAM too, but for the bank register
+        put(m + "d90000-d97fff", pal, 4)
+        put(m + ":k053936_0_ctrl", be32(g.sec("psreg")), 4)
+        put(m + ":k053936_0_line", be32(g.sec("psline")), 4)
+        put(m + ":paletteram", be32(g.sec("mpal")), 4)
+        put(m + ":subpaletteram", be32(g.sec("spal")), 4)
+        fix.append(f"w32 e40000 {bd['t3_bank'] << 24:x}")
+    else:
+        fix += [f"w32 {0xD90000 + 4 * i:x} {v:x}" for i, v in enumerate(pal)]
     rg = g.sec("regs")
     fix += [f"w16 {0xD40000 + 2 * k:x} {rg[k]:x}" for k in range(0x20)]
     fix += [f"w16 {0xD44000 + 2 * k:x} {rg[0x20 + k]:x}" for k in range(4)]
@@ -609,6 +653,7 @@ def main():
     p.add_argument("sta")
     p.add_argument("out")
     p.add_argument("--k053252", help="the set's K053252 registers, 16 hex bytes (MAME has no K053252)")
+    p.add_argument("--side", help="save_at.lua's JSON (default: <sta>.json)")
     p.set_defaults(fn=cmd_from_mame)
     p = sub.add_parser("to-mame", help="a .ss to a MAME 0.289 .sta (runs MAME once)")
     p.add_argument("ss")

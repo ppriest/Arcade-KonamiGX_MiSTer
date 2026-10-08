@@ -1,0 +1,3 @@
+rtl/video/gx_sdpram.sv
+rtl/video/gx_psac.sv
+sim/gx_psac_tb/tb_gx_psac.sv

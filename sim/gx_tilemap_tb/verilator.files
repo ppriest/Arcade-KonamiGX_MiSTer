@@ -1,0 +1,3 @@
+rtl/video/gx_sdpram.sv
+rtl/video/gx_tilemap.sv
+sim/gx_tilemap_tb/tb_gx_tilemap.sv

@@ -184,7 +184,8 @@ def k056832_pages(cap):
 # first argument): konamigx() and its derivatives BPP_5; konamigx_6bpp
 # (tokkae, tkmmpzdm) and salmndr2 BPP_6; le2 and winspike BPP_8.
 TILE_BPP = {"tokkae": 6, "tkmmpzdm": 6, "salmndr2": 6, "salmndr2a": 6,
-            "le2": 8, "le2u": 8, "le2j": 8, "winspike": 8, "winspikea": 8, "winspikej": 8}
+            "le2": 8, "le2u": 8, "le2j": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
+            **{k: 6 for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']}}             # gxtype3(): BPP_6
 
 # The row byte that holds each plane, most significant plane first: the
 # charlayout planes' bit offsets / 8 (k054156_k054157_k056832.cpp).
@@ -417,6 +418,7 @@ SPRITE_CFG = {
     "le2": dict(dx=-46, dy=-23, primode=-1),      # le2(): LAYOUT_LE2 -46; primode -1
     "le2u": dict(dx=-46, dy=-23, primode=-1),
     "le2j": dict(dx=-46, dy=-23, primode=-1),
+    **{k: dict(dx=-132, dy=-23, primode=0) for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']},   # gxtype3(): LAYOUT_GX6 -132
 }
 
 
@@ -434,7 +436,8 @@ ORIENT_FLIPY = ("le2u", "le2j")
 OBJ_PRI_RAW = {"dragoonj": 1, "dragoona": 1, "salmndr2": 2, "salmndr2a": 2}
 OBJ_LAYOUT = {"dragoonj": "RNG", "dragoona": "RNG", "salmndr2": "GX6", "salmndr2a": "GX6",
               "le2": "LE2", "le2u": "LE2", "le2j": "LE2",
-              "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2"}
+              "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2",
+              **{k: "GX6" for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']}}
 OBJ_BPP = {"GX": 5, "RNG": 4, "GX6": 6, "LE2": 8}
 
 

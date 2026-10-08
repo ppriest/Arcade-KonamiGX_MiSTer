@@ -77,14 +77,18 @@ def main():
     ap.add_argument("capture")
     ap.add_argument("--rom-lat", type=int, default=6, help="tile ROM latency, cycles")
     ap.add_argument("--no-sim", action="store_true", help="compare an existing out.hex")
+    ap.add_argument("--sim", choices=("modelsim", "verilator"), default="modelsim")
+    ap.add_argument("-D", action="append", default=[], help="a define for the Verilator build, e.g. GX_T34=1")
+    ap.add_argument("--vis-w", type=int, help="render this many columns (timing only: the model is not compared)")
     a = ap.parse_args()
     cap = rm.Capture(REPO / "debug" / a.capture)
 
     if not a.no_sim:
         ntiles = write_vectors(cap)
         bpp = {5: 0, 6: 1, 8: 2}[rm.TILE_BPP.get(cap.set, 5)]
-        r = subprocess.run([GIT_BASH, "scripts/run_sim.sh", "gx_tilemap_tb", f"+NTILES={ntiles}", f"+ROM_LAT={a.rom_lat}",
-                            f"+BPP={bpp}", f"+VIS_X0={rm.VIS_X0}", f"+VIS_W={rm.VIS_W}"],
+        runner = "scripts/run_sim.sh" if a.sim == "modelsim" else "scripts/run_verilator.sh"
+        r = subprocess.run([GIT_BASH, runner, "gx_tilemap_tb"] + [f"-D{d}" for d in a.D] + [f"+NTILES={ntiles}", f"+ROM_LAT={a.rom_lat}",
+                            f"+BPP={bpp}", f"+VIS_X0={rm.VIS_X0}", f"+VIS_W={a.vis_w or rm.VIS_W}"],
                            cwd=REPO, capture_output=True, text=True)
         log = r.stdout + r.stderr
         (OUT / "sim.log").write_text(log)
@@ -95,6 +99,9 @@ def main():
             print("RTL flagged an unsupported mode")
             return 1
 
+    print([l for l in (OUT / "sim.log").read_text().splitlines() if "RENDER_CYCLES" in l][-1:])
+    if a.vis_w:
+        return 0
     got = np.array([int(v, 16) for v in (OUT / "out.hex").read_text().split()], dtype=np.int32)
     got = got.reshape(rm.VIS_H, 4, rm.VIS_W)
     rc = 0

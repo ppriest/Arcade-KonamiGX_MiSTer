@@ -15,7 +15,11 @@
 
 `timescale 1ns/1ps
 
-module tb_gx_sdram;
+module tb_gx_sdram #(
+    // -GSD128=1: the 128 MB module (two chips); +HI=<hex> then moves the sprite
+    // and sound regions up by that much, so that they are read from the second chip
+    parameter bit SD128 = 1'b0
+);
 
 localparam string D = "debug/gx_sdram_tb/";
 
@@ -37,7 +41,7 @@ reg  [26:0] ioctl_addr = 0;
 reg   [7:0] ioctl_dout = 0;
 wire        ioctl_wait;
 
-reg  [25:0] tile_base, obj_base;
+reg  [26:0] tile_base, obj_base;
 reg  [23:0] tile_size4, obj_size4;
 reg  [ 1:0] tile_bpp = 0, obj_layout = 0;
 reg         cpu_cs = 0, tile_cs = 0, obj_cs = 0;
@@ -69,9 +73,15 @@ reg  [22:0] gfx_addr = 0;
 wire        gfx_ok;
 wire [63:0] gfx_data;
 
+generate if (SD128) begin : g_128
+sdram_chip_model_128 u_chip (
+    .clk(SDRAM_CLK), .SDRAM_DQ, .SDRAM_A, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS
+);
+end else begin : g_32
 sdram_chip_model_wide u_chip (
     .clk(SDRAM_CLK), .SDRAM_DQ, .SDRAM_A, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS
 );
+end endgenerate
 
 // ------------------------------------------------------------ probes
 // +TRACE: the first download writes at the download module's output and at
@@ -244,6 +254,16 @@ initial begin
     fd = $fopen({D, "cfg.hex"}, "r");
     void'($fscanf(fd, "%h\n%h\n%h\n%h\n%h\n%h\n", tile_base, obj_base, tile_size4, obj_size4, tile_bpp, obj_layout));
     $fclose(fd);
+    begin
+        int unsigned hi = 0;
+        if ($value$plusargs("HI=%h", hi) && hi != 0) begin
+            // the sprite and sound runs, and the base, move up together; the
+            // sound readback is left out (its absolute port spans 64 MB)
+            for (int r = 0; r < nruns; r++) if (run_s[r] >= obj_base) run_s[r] += hi;
+            obj_base += hi;
+            nsnd = 0;
+        end
+    end
     $display("=== gx_sdram_top: %0d stream runs, %0d CPU granules, %0d tile rows, %0d sprite half-rows; bases %07x %07x size4 %06x %06x",
              nruns, ncpu, ntile, nobj, tile_base, obj_base, tile_size4, obj_size4);
 
@@ -337,6 +357,9 @@ initial begin
     $display("  total checked %0d, mismatches %0d (cpu %0d, tiles %0d, sprites %0d, sound %0d)", checked, bad, badc, badt, bado, bads);
     if (checked == 0 || bad != 0) $display("FAIL: %0d readbacks disagree with MAME's images", bad);
     else $display("PASS: every region reads back as MAME's image");
+    if (SD128) $display("  chips: writes %0d / %0d, refreshes %0d / %0d",
+                        g_128.u_chip.u_c0.writes, g_128.u_chip.u_c1.writes,
+                        g_128.u_chip.u_c0.refreshes, g_128.u_chip.u_c1.refreshes);
     $finish;
 end
 

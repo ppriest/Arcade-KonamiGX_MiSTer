@@ -1,0 +1,114 @@
+{
+ "groups": [
+  {
+   "name": "68EC020",
+   "match": "u_board\\|u_cpu",
+   "color": "#e6194b"
+  },
+  {
+   "name": "K054539 x2",
+   "match": "u_sound\\|u_k[01]",
+   "color": "#ffe119"
+  },
+  {
+   "name": "Sound 68000",
+   "match": "u_sound\\|u_cpu",
+   "color": "#ff7b9c"
+  },
+  {
+   "name": "Sound DSP",
+   "match": "u_sound\\|u_dsp",
+   "color": "#f58231"
+  },
+  {
+   "name": "Sound other",
+   "match": "^emu\\|u_sound",
+   "color": "#d4a017"
+  },
+  {
+   "name": "Tilemaps",
+   "match": "u_board\\|u_video\\|u_tm",
+   "color": "#3cb44b"
+  },
+  {
+   "name": "Sprites",
+   "match": "u_board\\|u_video\\|u_obj",
+   "color": "#42d4f4"
+  },
+  {
+   "name": "Mixer, palette",
+   "match": "u_board\\|(u_video\\|u_mix|u_pal_x)",
+   "color": "#fabed4"
+  },
+  {
+   "name": "Video other",
+   "match": "u_board\\|u_video",
+   "color": "#469990"
+  },
+  {
+   "name": "ESC protection",
+   "match": "u_board\\|(u_esc734|u_escm)",
+   "color": "#7f0000"
+  },
+  {
+   "name": "EEPROM",
+   "match": "u_board\\|u_ee",
+   "color": "#dcbeff"
+  },
+  {
+   "name": "Work RAM",
+   "match": "u_board\\|u_wram",
+   "color": "#911eb4"
+  },
+  {
+   "name": "Cache, cheats",
+   "match": "u_board\\|(u_cache|u_cheat)",
+   "color": "#9fb4ff"
+  },
+  {
+   "name": "Board other",
+   "match": "^emu\\|u_board",
+   "color": "#bfef45"
+  },
+  {
+   "name": "SDRAM ports",
+   "match": "^emu\\|u_mem",
+   "color": "#4363d8"
+  },
+  {
+   "name": "Light guns",
+   "match": "^emu\\|u_guns",
+   "color": "#e6beff"
+  },
+  {
+   "name": "Hiscore",
+   "match": "^emu\\|u_hiscore",
+   "color": "#ffd8b1"
+  },
+  {
+   "name": "Savestates",
+   "match": "^emu\\|(u_ss|u_ss_ddr)$|^emu\\|(u_ss|u_ss_ddr)\\||u_ss_cpu|u_ss_board|u_ss_glue",
+   "color": "#a9a9a9"
+  },
+  {
+   "name": "CRT V-Size",
+   "match": "u_crt_vsize",
+   "color": "#c08040"
+  },
+  {
+   "name": "CRT Adjust",
+   "match": "u_crt_adjust|^emu\\|u_crt",
+   "color": "#9a6324"
+  },
+  {
+   "name": "Video out",
+   "match": "^emu\\|(arcade_video|video_freak|screen_rotate_two|u_rotate)",
+   "color": "#808000"
+  },
+  {
+   "name": "hps_io",
+   "match": "^emu\\|hps_io",
+   "color": "#2f6f6a"
+  }
+ ]
+}

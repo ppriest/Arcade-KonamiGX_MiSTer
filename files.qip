@@ -44,6 +44,8 @@ set_global_assignment -name VERILOG_FILE rtl/video/gx_obj_linebuf.v
 set_global_assignment -name VERILOG_FILE rtl/video/gx_mixer.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_t34_fb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_psac.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68k.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/uaddrPla.sv

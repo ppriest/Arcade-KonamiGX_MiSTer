@@ -1,0 +1,2 @@
+rtl/video/gx_t34_fb.sv
+sim/gx_t34_fb_tb/tb_gx_t34_fb.sv

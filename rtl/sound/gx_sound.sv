@@ -5,7 +5,8 @@
 // hardware does. MAME's gxsndmap (konamigx.cpp):
 //
 //   0x000000-0x03ffff  ROM, the sound program (SDRAM, snd_base)
-//   0x100000-0x10ffff  RAM, 64 KB (block RAM)
+//   0x100000-0x10ffff  RAM, 64 KB: block RAM, or in the Type 3/4 build
+//                      (GX_T34) SDRAM after the DSP's (the r_ port)
 //   0x200000-0x2004ff  K054539 #1 in the high byte, #2 in the low
 //   0x300001           TMS57002 data (gx_tms57002)
 //   0x400000-0x40001f  K056800, the sound side, in the low byte
@@ -75,6 +76,13 @@ module gx_sound (
     input             p_ok,
     input      [63:0] p_data,
     output reg        p_inval,
+    // GX_T34: SDRAM reads of the 68000's RAM (snd_base + SRAM_OFF), its writes
+    // through w_; r_inval after each write. Idle in the other build.
+    output reg        r_cs,
+    output reg [12:0] r_addr,
+    input             r_ok,
+    input      [63:0] r_data,
+    output reg        r_inval,
 
     // the board's output, MAME's mix (konamigx.cpp): each K054539 at 1.0,
     // the TMS57002's outputs 0 and 2 left and 1 and 3 right at 0.3
@@ -132,6 +140,7 @@ module gx_sound (
 localparam [25:0] PCM_OFF = 26'h040000;     // the samples, after the program
 wire [25:0] RAM_OFF = PCM_OFF + { 2'd0, snd_pcm };   // the K054539s' RAM, after the samples
 wire [25:0] DSP_OFF = RAM_OFF + 26'h010000;          // the DSP's RAM, 256 KB, after theirs
+wire [25:0] SRAM_OFF = DSP_OFF + 26'h040000;         // GX_T34: the 68000's RAM, 64 KB, after that
 
 
 // ---------------------------------------------------------------- CPU
@@ -222,8 +231,38 @@ reg         ram_we_h, ram_we_l;
 reg  [14:0] ram_a;
 reg  [15:0] ram_d;
 wire [ 7:0] ram_qh, ram_ql;
+`ifndef GX_T34
 gx_sdpram #(.AW(15), .DW(8)) u_ramh ( .clk, .we(ram_we_h), .wa(ram_a), .d(ram_d[15:8]), .ra(ram_a), .q(ram_qh) );
 gx_sdpram #(.AW(15), .DW(8)) u_raml ( .clk, .we(ram_we_l), .wa(ram_a), .d(ram_d[ 7:0]), .ra(ram_a), .q(ram_ql) );
+`else
+// The Type 3/4 build: the RAM is in SDRAM (docs/TYPE34.md, the RAM budget),
+// behind a 4 KB cache, so that the 68000 waits for SDRAM only on a miss: a
+// hit is the block-RAM path's two clocks, and a write is posted. A cache
+// that read and wrote through the SDRAM port every access made the sound
+// program slow enough that its check of 4H failed in the bench.
+// Direct-mapped by granule (512 of 8 bytes, index a[11:3], tag a[15:12]);
+// a write updates a line it hits and goes on to SDRAM (sr_pw_*), a read
+// that misses waits for that write and fills the line.
+reg         c_we_h, c_we_l;
+reg  [10:0] c_wa;
+reg  [15:0] c_d;
+reg         t_we;
+reg  [ 8:0] t_wa;
+reg  [ 4:0] t_d;                    // { valid, tag }
+wire [ 4:0] t_q;
+gx_sdpram #(.AW(11), .DW(8)) u_ramh ( .clk, .we(c_we_h), .wa(c_wa), .d(c_d[15:8]), .ra(ram_a[10:0]), .q(ram_qh) );
+gx_sdpram #(.AW(11), .DW(8)) u_raml ( .clk, .we(c_we_l), .wa(c_wa), .d(c_d[ 7:0]), .ra(ram_a[10:0]), .q(ram_ql) );
+gx_sdpram #(.AW(9),  .DW(5)) u_rtag ( .clk, .we(t_we),   .wa(t_wa), .d(t_d),       .ra(ram_a[10:2]), .q(t_q) );
+wire        c_hit = t_q == { 1'b1, ram_a[14:11] };
+reg         sr_pw_full;             // a write posted, not yet in SDRAM
+reg  [25:0] sr_pw_addr;
+reg  [15:0] sr_pw_data;
+reg         sr_pw_16;
+reg  [ 9:0] c_clr;                  // the tags being cleared after a reset: [9] done
+reg  [63:0] c_fill;
+reg  [ 1:0] c_n;
+`endif
+reg         sr_ss;                  // the access is the save-state engine's
 
 // ---------------------------------------------------------------- K054539s
 reg         kc_cs0, kc_cs1;
@@ -422,7 +461,8 @@ gx_ss_vec #(.W(253)) u_ss_glue (
 localparam [4:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_K539 = 3, U_KMEM = 4, U_KWR = 5, U_RAM = 6,
                  U_WAIT2 = 7, U_RAM2 = 8, U_KWR2 = 9, U_DR = 10, U_DR2 = 11,
                  U_XW = 12, U_XW1 = 13, U_XW2 = 14, U_RW1 = 15, U_RW2 = 16, U_KINV = 17,
-                 U_SB = 18, U_SB2 = 19, U_SD = 20, U_SDR = 21, U_SDW1 = 22, U_SDW2 = 23;
+                 U_SB = 18, U_SB2 = 19, U_SD = 20, U_SDR = 21, U_SDW1 = 22, U_SDW2 = 23,
+                 U_SR = 24, U_SW1 = 25, U_SW2 = 26, U_CR = 27, U_CR2 = 28, U_CF = 29, U_CF2 = 30;
 // the save-state engine's SDRAM word: its granule, and its byte
 wire [25:0] sd_byte = snd_base + RAM_OFF + { 7'd0, ss_sd_addr, 1'b0 };
 reg  [4:0] ust;
@@ -441,6 +481,13 @@ always @(posedge clk) begin
     kc_cs0 <= 1'b0; kc_cs1 <= 1'b0;
     km_ack0 <= 1'b0; km_ack1 <= 1'b0;
     m_inval <= 1'b0;
+    r_inval <= 1'b0;
+`ifdef GX_T34
+    c_we_h <= 1'b0; c_we_l <= 1'b0; t_we <= 1'b0;
+    // the tags cleared after a reset (a new ROM load rewrites the SDRAM)
+    if( rst_chip ) c_clr <= 10'd0;
+    else if( !c_clr[9] ) begin t_we <= 1'b1; t_wa <= c_clr[8:0]; t_d <= 5'd0; c_clr <= c_clr + 10'd1; end
+`endif
     d_ctrl_wr <= 1'b0; d_wr <= 1'b0; d_rd <= 1'b0; dx_wack <= 1'b0; x_inval <= 1'b0;
     if( dx_req && dx_we && !dx_wack && !pw_full ) begin    // post the DSP's write
         pw_full <= 1'b1; pw_addr <= dx_addr; pw_data <= dx_wdata; pw_mask <= dx_wmask;
@@ -456,7 +503,10 @@ always @(posedge clk) begin
     // writes, through the board's reset; the 68000 and the DSP ask for
     // nothing while in it
     if( rst_chip ) begin
-        ust <= U_IDLE; m_cs <= 1'b0; w_req <= 1'b0; sctrl <= 8'd0; k_acked <= 1'b0;
+        ust <= U_IDLE; m_cs <= 1'b0; w_req <= 1'b0; sctrl <= 8'd0; k_acked <= 1'b0; r_cs <= 1'b0;
+`ifdef GX_T34
+        sr_pw_full <= 1'b0;
+`endif
         kr_p0 <= 1'b0; kr_p1 <= 1'b0; pw_full <= 1'b0;
     end else case( ust )
     // the DSP's writes first: it may be holding its program for one, the
@@ -464,6 +514,14 @@ always @(posedge clk) begin
     U_IDLE: if( pw_full ) begin
         xw_mask <= pw_mask;
         ust <= U_XW;
+`ifdef GX_T34
+    end else if( sr_pw_full ) begin
+        // the 68000's posted write, into SDRAM
+        w_req <= 1'b1; w_addr <= sr_pw_addr; w_data <= sr_pw_data; w_we16 <= sr_pw_16;
+        sr_ss <= 1'b0; ust <= U_SW1;
+    end else if( !c_clr[9] ) begin
+        // the tags are being cleared: nothing reads them yet
+`endif
     end else if( kr_p0 || kr_p1 ) begin
         // a K054539's reverb word, into its RAM
         kr_w   <= !kr_p0;
@@ -475,8 +533,21 @@ always @(posedge clk) begin
     end else if( ss_sb_req && !ss_sb_ack ) begin
         // the save-state engine, the sound RAM: the CPU is held meanwhile
         ram_a <= ss_sb_addr[15:1]; ram_d <= ss_sb_wd;
+`ifndef GX_T34
         if( ss_sb_we ) begin ram_we_h <= 1'b1; ram_we_l <= 1'b1; ss_sb_ack <= 1'b1; end
         else ust <= U_SB;
+`else
+        if( ss_sb_we ) begin
+            w_req <= 1'b1; w_we16 <= 1'b1;
+            w_addr <= snd_base + SRAM_OFF + { 10'd0, ss_sb_addr[15:1], 1'b0 };
+            w_data <= { ss_sb_wd[7:0], ss_sb_wd[15:8] };
+            t_we <= 1'b1; t_wa <= ss_sb_addr[11:3]; t_d <= 5'd0;   // the line is dropped
+            sr_ss <= 1'b1; ust <= U_SW1;
+        end else begin
+            r_cs <= 1'b1; r_addr <= ss_sb_addr[15:3];
+            sr_ss <= 1'b1; ust <= U_SR;
+        end
+`endif
     end else if( ss_sd_req && !ss_sd_ack ) begin
         // ...and the RAMs in SDRAM: a read through the program port, its
         // granule dropped first at each granule's first word (the DSP's
@@ -497,8 +568,15 @@ always @(posedge clk) begin
             m_cs <= 1'b1; m_addr <= 23'((snd_base + { 2'd0, ub }) >> 3); ust <= U_ROM;
         end else if( ub >= 24'h100000 && ub < 24'h110000 ) begin
             ram_a <= a32[15:1]; ram_d <= cpu_dout;
+`ifndef GX_T34
             if( !nWr ) begin ram_we_h <= ~nUDS; ram_we_l <= ~nLDS; u_ack <= 1'b1; end
             else ust <= U_RAM;
+`else
+            // the tag first, then: a write updates a line it hits and is
+            // posted (the IDLE branch above found no write waiting); a read
+            // that hits is answered, one that misses fills the line
+            ust <= U_CR;
+`endif
         end else if( ub >= 24'h200000 && ub < 24'h200a00 ) begin
             // #1 on UDS, #2 on LDS; the register is the word's index. A
             // word access is both chips' (MAME's umask16 handlers are each
@@ -590,6 +668,60 @@ always @(posedge clk) begin
     U_SDW2:  if( !w_busy ) begin
         m_inval <= 1'b1; x_inval <= 1'b1; p_inval <= 1'b1;
         ss_sd_ack <= 1'b1; ust <= U_IDLE;
+    end
+    // GX_T34: the RAM in SDRAM. A read from the r_ port, which holds a few
+    // granules; a write through w_, then the port's granules dropped. The
+    // save-state engine's accesses (ss_sb_*) come the same way.
+    U_SR:  if( r_ok ) begin
+        r_cs <= 1'b0;
+        if( sr_ss ) begin
+            ss_sb_rd <= word( r_data, ram_a[1:0] ); ss_sb_ack <= 1'b1;
+        end else begin
+            u_din <= word( r_data, ram_a[1:0] ); u_ack <= 1'b1;
+        end
+        ust <= U_IDLE;
+    end
+`ifdef GX_T34
+    U_CR:  ust <= U_CR2;
+    U_CR2: if( !nWr ) begin
+        c_wa <= ram_a[10:0]; c_d <= ram_d;
+        if( c_hit ) begin c_we_h <= ~nUDS; c_we_l <= ~nLDS; end
+        sr_pw_full <= 1'b1;
+        sr_pw_addr <= snd_base + SRAM_OFF + { 10'd0, ram_a, nUDS };
+        sr_pw_16   <= !nUDS && !nLDS;
+        sr_pw_data <= !nUDS && !nLDS ? { ram_d[7:0], ram_d[15:8] } :
+                      !nUDS ? { 8'd0, ram_d[15:8] } : { 8'd0, ram_d[7:0] };
+        u_ack <= 1'b1; ust <= U_IDLE;
+    end else if( c_hit ) begin
+        u_din <= { ram_qh, ram_ql }; u_ack <= 1'b1; ust <= U_IDLE;
+    end else begin
+        r_cs <= 1'b1; r_addr <= ram_a[14:2];
+        ust <= U_CF;
+    end
+    // a miss: the granule from SDRAM into the line, a word a clock, then the tag
+    U_CF:  if( r_ok ) begin
+        r_cs <= 1'b0; c_fill <= r_data; c_n <= 2'd0;
+        u_din <= word( r_data, ram_a[1:0] );
+        ust <= U_CF2;
+    end
+    U_CF2: begin
+        c_wa <= { ram_a[10:2], c_n }; c_d <= word( c_fill, c_n );
+        c_we_h <= 1'b1; c_we_l <= 1'b1;
+        c_n <= c_n + 2'd1;
+        if( c_n == 2'd3 ) begin
+            t_we <= 1'b1; t_wa <= ram_a[10:2]; t_d <= { 1'b1, ram_a[14:11] };
+            u_ack <= 1'b1; ust <= U_IDLE;
+        end
+    end
+`endif
+    U_SW1: if( w_busy ) begin w_req <= 1'b0; ust <= U_SW2; end
+    U_SW2: if( !w_busy ) begin
+        r_inval <= 1'b1;
+        if( sr_ss ) ss_sb_ack <= 1'b1;
+`ifdef GX_T34
+        else sr_pw_full <= 1'b0;            // the posted write is in
+`endif
+        ust <= U_IDLE;
     end
     U_RAM:   ust <= U_RAM2;
     U_RAM2:  begin u_din <= { ram_qh, ram_ql }; u_ack <= 1'b1; ust <= U_IDLE; end

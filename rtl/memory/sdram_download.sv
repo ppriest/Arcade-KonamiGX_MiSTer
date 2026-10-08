@@ -10,12 +10,12 @@ module sdram_download (
 	input  logic         ioctl_download,
 	input  logic [15:0] ioctl_index,
 	input  logic         ioctl_wr,
-	input  logic [26:0] ioctl_addr,   // hps_io's width; bit 26 unused
+	input  logic [26:0] ioctl_addr,   // hps_io's width
 	input  logic [7:0]  ioctl_dout,
 	output logic         ioctl_wait,
 
 	output logic         dl_req,
-	output logic [25:0] dl_addr,
+	output logic [26:0] dl_addr,
 	output logic [15:0] dl_data,
 	output logic         dl_we16,
 	input  logic         dl_busy
@@ -24,18 +24,18 @@ module sdram_download (
 	typedef enum logic [1:0] {D_IDLE, D_REQ, D_WAIT} dstate_t;
 	dstate_t dstate;
 
-	logic [25:0] addr_r;
+	logic [26:0] addr_r;
 	logic [15:0] data_r;
 	logic        we16_r;
 
 	// held even byte
 	logic        pend_valid;
-	logic [25:0] pend_addr;
+	logic [26:0] pend_addr;
 	logic [7:0]  pend_data;
 
 	wire         accept = ioctl_download && (ioctl_index == 16'd0) && ioctl_wr;
 	wire         pairs  = pend_valid && !pend_addr[0] && ioctl_addr[0]
-	                     && (ioctl_addr[25:1] == pend_addr[25:1]);
+	                     && (ioctl_addr[26:1] == pend_addr[26:1]);
 
 	assign dl_addr = addr_r;
 	assign dl_data = data_r;

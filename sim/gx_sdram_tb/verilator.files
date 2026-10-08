@@ -4,4 +4,5 @@ rtl/memory/sdram_download.sv
 rtl/memory/gx_rom_port.sv
 rtl/memory/gx_sdram_top.sv
 sim/common/sdram_chip_model_wide.sv
+sim/common/sdram_chip_model_128.sv
 sim/gx_sdram_tb/tb_gx_sdram.sv

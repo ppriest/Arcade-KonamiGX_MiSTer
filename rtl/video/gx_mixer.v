@@ -60,6 +60,15 @@ module gx_mixer (
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
     output     [23:0] pal_q,
+    // the Type 3/4 monitors' palettes (GX_T34, docs/TYPE34.md): a pen a
+    // word, xBBBBBGGGGGRRRRR, at { pal3_sub, pal_addr }; the pixels read the
+    // one pix_sub picks, in place of the 888 palette, which is left to the CPU
+    // as plain RAM (0xd90000)
+    input      [ 1:0] pal3_we,          // byte lanes { 15:8, 7:0 }
+    input             pal3_sub,         // the CPU's access: 0 main monitor, 1 sub
+    input      [15:0] pal3_din,
+    output     [15:0] pal3_q,
+    input             pix_sub,          // this frame is the sub monitor's
 
     // this pixel, in MAME bitmap coordinates
     input      [ 9:0] bx,
@@ -68,6 +77,10 @@ module gx_mixer (
     input      [13:0] lyr_b,
     input      [13:0] lyr_c,
     input      [13:0] lyr_d,
+    // the K055555's SUB2: the Type 3/4 K053936 (gx_psac), { colour[1:0],
+    // pixel[7:0] }; pen 0x1000 + that (gfx_type3), pixel 0 not drawn, no
+    // blending (gx_draw_basic_extended_tilemaps_2). 0 where there is none.
+    input      [ 9:0] sub2,
     input             spr_valid,        // solid plane of gx_obj
     input      [12:0] spr_pen,
     input      [ 7:0] spr_pri,
@@ -138,6 +151,7 @@ endfunction
 // ------------------------------------------------------------ stage 0: latch
 reg  [ 9:0] bx_r, by_r;
 reg  [13:0] lyr [0:3];
+reg  [ 9:0] sub2_r;
 reg         spr_valid_r, shd_valid_r;
 reg  [12:0] spr_pen_r;
 reg  [ 7:0] spr_pri_r, spr_z_r, spr_idx_r, shd_pri_r, shd_z_r, shd_idx_r;
@@ -146,7 +160,7 @@ reg  [ 1:0] shd_code_r;
 
 always @(posedge clk) if( pxl_cen ) begin
     bx_r <= bx; by_r <= by;
-    lyr[0] <= lyr_a; lyr[1] <= lyr_b; lyr[2] <= lyr_c; lyr[3] <= lyr_d;
+    lyr[0] <= lyr_a; lyr[1] <= lyr_b; lyr[2] <= lyr_c; lyr[3] <= lyr_d; sub2_r <= sub2;
     spr_valid_r <= spr_valid; spr_pen_r <= spr_pen; spr_pri_r <= spr_pri;
     spr_z_r <= spr_z; spr_idx_r <= spr_idx; spr_mix_r <= spr_mix;
     shd_valid_r <= shd_valid; shd_code_r <= shd_code; shd_pri_r <= shd_pri;
@@ -156,11 +170,11 @@ end
 // ------------------------------------------------------------ stage 1: rank
 
 localparam KW = 26;   // { pri 8, class 1, z 8, index 8, sub 1 }
-localparam [2:0] SRC_A=0, SRC_B=1, SRC_C=2, SRC_D=3, SRC_S=4, SRC_BG=7;
+localparam [2:0] SRC_A=0, SRC_B=1, SRC_C=2, SRC_D=3, SRC_S=4, SRC_P=5, SRC_BG=7;
 
-reg  [KW-1:0] key [0:4];
-reg  [   4:0] cand;
-reg  [  12:0] pen [0:4];
+reg  [KW-1:0] key [0:5];
+reg  [   5:0] cand;
+reg  [  12:0] pen [0:5];
 reg  [   8:0] lpal [0:3];
 reg  [   9:0] alpha [0:3];      // { add, on, level }
 reg  [   9:0] alpha4;           // the sprite's
@@ -172,7 +186,9 @@ integer       i;
 // the layers' priorities, registered: from registers the CPU writes, and
 // the le2 adder in front of the sort was the critical path (build 54)
 reg  [   7:0] lpri [0:3];
+reg  [   7:0] lpri5;
 always @(posedge clk) begin
+    lpri5   <= k55[17];
     lpri[0] <= k55[7];
     lpri[1] <= k55[10];
     lpri[2] <= pri_c_le2 ? k55[10] + 8'h20 : k55[13];
@@ -206,12 +222,16 @@ always @* begin
     alpha4  = alpha_of( spr_mix_on ? spr_mix_r : 2'd0, k338[13], k338[14] );
     cand[4] = disp[4] && spr_valid_r;
     pen[4]  = spr_pen_r;
+    // SUB2 (PRIINP_10), ordered as a layer after D (MAME's layer code 5)
+    key[5]  = { lpri5, 1'b0, 8'd0, 8'd4, 1'b0 };
+    cand[5] = disp[6] && sub2_r[7:0] != 8'd0;
+    pen[5]  = 13'h1000 | { 3'd0, sub2_r };
     shkey   = { shd_pri_r, 1'b1, shd_z_r, shd_idx_r, 1'b1 };
 
     // top and second by smallest key; the background is behind everything
     t = SRC_BG; tk = {KW{1'b1}};
     s = SRC_BG; sk = {KW{1'b1}};
-    for( i=0; i<5; i=i+1 ) begin
+    for( i=0; i<6; i=i+1 ) begin
         if( cand[i] ) begin
             if( key[i] < tk ) begin
                 s = t; sk = tk; t = i[2:0]; tk = key[i];
@@ -233,7 +253,7 @@ wire [23:0] bgsolid = { k338[0][7:0], k338[1] };
 // ------------------------------------------------------------ stages 1-5
 reg  [ 2:0] ph;                 // clocks since pxl_cen
 reg  [12:0] ra;
-wire [23:0] rq;
+wire [23:0] rq, rq888;
 reg  [ 2:0] t1, s1;
 reg  [12:0] pen_s1, bgpen1;
 reg  [ 7:0] a1;
@@ -257,23 +277,37 @@ always @* begin
     case( top_src )
         3'd0, 3'd1, 3'd2, 3'd3: top_pri = k55[40][top_src[1:0]] ? lpri[top_src[1:0]] : 8'hff;
         3'd4:                   top_pri = spr_pri_r;
+        3'd5:                   top_pri = lpri5;
         default:                top_pri = 8'hff;
     endcase
 end
 wire       shd_gate  = top_pri != 8'hff && (shd_cond == 2'd2 ? shd_pri_r == top_pri : shd_pri_r > top_pri);
 reg  [ 1:0] code1;
-reg  [23:0] ct, cs, cb;
+reg  [23:0] ct, cs;
 reg         en;
 
 gx_tdpram #(.AW(13), .DW(8)) u_pal_r (
     .clk ( clk ), .we_a ( pal_we[2] ), .a ( pal_addr ), .d ( pal_din[23:16] ), .qa ( pal_q[23:16] ),
-    .b ( ra ), .qb ( rq[23:16] ) );
+    .b ( ra ), .qb ( rq888[23:16] ) );
 gx_tdpram #(.AW(13), .DW(8)) u_pal_g (
     .clk ( clk ), .we_a ( pal_we[1] ), .a ( pal_addr ), .d ( pal_din[15:8] ), .qa ( pal_q[15:8] ),
-    .b ( ra ), .qb ( rq[15:8] ) );
+    .b ( ra ), .qb ( rq888[15:8] ) );
 gx_tdpram #(.AW(13), .DW(8)) u_pal_b (
     .clk ( clk ), .we_a ( pal_we[0] ), .a ( pal_addr ), .d ( pal_din[7:0] ), .qa ( pal_q[7:0] ),
-    .b ( ra ), .qb ( rq[7:0] ) );
+    .b ( ra ), .qb ( rq888[7:0] ) );
+`ifdef GX_T34
+wire [15:0] rq3;
+gx_tdpram #(.AW(14), .DW(8)) u_pal3_h (
+    .clk ( clk ), .we_a ( pal3_we[1] ), .a ( { pal3_sub, pal_addr } ), .d ( pal3_din[15:8] ), .qa ( pal3_q[15:8] ),
+    .b ( { pix_sub, ra } ), .qb ( rq3[15:8] ) );
+gx_tdpram #(.AW(14), .DW(8)) u_pal3_l (
+    .clk ( clk ), .we_a ( pal3_we[0] ), .a ( { pal3_sub, pal_addr } ), .d ( pal3_din[7:0] ), .qa ( pal3_q[7:0] ),
+    .b ( { pix_sub, ra } ), .qb ( rq3[7:0] ) );
+assign rq = { rq3[4:0], rq3[4:2], rq3[9:5], rq3[9:7], rq3[14:10], rq3[14:12] };
+`else
+assign rq = rq888;
+assign pal3_q = 16'd0;
+`endif
 
 // MAME's shadow table: the colour is cut to 5 bits a channel, re-expanded
 // with pal5bit, and offset by the K054338 delta, clipped unless CLIPSL.
@@ -315,12 +349,20 @@ function [7:0] blendch( input [7:0] d, input [7:0] s, input [7:0] a, input add )
     end
 endfunction
 
-wire [23:0] cs_eff  = shd_under ? shade(cs, code1) : cs;
-wire [23:0] blended = { blendch(cs_eff[23:16], ct[23:16], a1, add1),
-                        blendch(cs_eff[15: 8], ct[15: 8], a1, add1),
-                        blendch(cs_eff[ 7: 0], ct[ 7: 0], a1, add1) };
-wire [23:0] mixed   = alpha_top ? blended : ct;
-wire [23:0] final_c = shd_over ? shade(mixed, code1) : mixed;
+// The background's colour is read last: it is in rq from the clock after
+// the next pxl_cen (any pixel of 4 clocks or more: 12 MHz dots are 4), and
+// the pixel is finished there, at ph 0, while the next one is ranked.
+wire [23:0] bgc     = bg_grad ? rq : bgsolid;
+wire [23:0] ct_f    = t1 == SRC_BG || !en ? bgc : ct;
+wire [23:0] cs_f    = s1 == SRC_BG ? bgc : cs;
+wire        at_f    = en && alpha_top;
+wire        so_f    = en && shd_over;
+wire [23:0] cs_eff  = en && shd_under ? shade(cs_f, code1) : cs_f;
+wire [23:0] blended = { blendch(cs_eff[23:16], ct_f[23:16], a1, add1),
+                        blendch(cs_eff[15: 8], ct_f[15: 8], a1, add1),
+                        blendch(cs_eff[ 7: 0], ct_f[ 7: 0], a1, add1) };
+wire [23:0] mixed   = at_f ? blended : ct_f;
+wire [23:0] final_c = so_f ? shade(mixed, code1) : mixed;
 
 function [12:0] pen_of( input [2:0] src );
     pen_of = src==SRC_BG ? bgpen : pen[src];
@@ -333,10 +375,8 @@ always @(posedge clk) begin
         en <= 0;
     end else begin
         if( ph != 3'd7 ) ph <= ph + 3'd1;
-        if( pxl_cen ) begin
-            ph  <= 3'd0;
-            rgb <= final_c;                           // the previous pixel
-        end
+        if( pxl_cen ) ph <= 3'd0;
+        if( ph == 3'd0 ) rgb <= final_c;              // the previous pixel
         // the pixel latched on pxl_cen: rank it, then read the palette for
         // the top, the second and the background, one read a clock
         case( ph )
@@ -369,15 +409,7 @@ always @(posedge clk) begin
             end
             3'd1: ra <= pen_s1;
             3'd2: begin ra <= bgpen1; ct <= rq; end  // top
-            3'd3: cs <= rq;                          // second
-            3'd4: begin
-                cb <= bg_grad ? rq : bgsolid;
-                if( t1 == SRC_BG || !en ) ct <= bg_grad ? rq : bgsolid;
-                if( s1 == SRC_BG ) cs <= bg_grad ? rq : bgsolid;
-                if( !en ) begin                      // video off: background only
-                    alpha_top <= 0; shd_over <= 0; shd_under <= 0;
-                end
-            end
+            3'd3: cs <= rq;                          // second; the background at ph 0
             default: ;
         endcase
     end

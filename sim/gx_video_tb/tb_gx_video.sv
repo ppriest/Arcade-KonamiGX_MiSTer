@@ -97,7 +97,7 @@ gx_video dut (
     .tm_reg_we, .tm_reg_addr, .tm_reg_din, .tm_reg_be(2'b11),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd(1'b0), .vram_addr, .vram_din, .vram_be(2'b11), .vram_dout(),
-    .offs_x, .offs_y, .vis_x0(10'(vis_x0)), .vis_w(9'(vis_w)),
+    .offs_x, .offs_y, .vis_x0(10'(vis_x0)), .vis_w(10'(vis_w)),
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din, .spr_ram_dout(),
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,

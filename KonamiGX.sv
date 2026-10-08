@@ -60,14 +60,25 @@ assign BUTTONS   = 0;
 
 wire [1:0] ar = status[122:121];
 
+`ifdef GX_T34
+wire [2:0] scr_mode   = status[125:123] > 3'd4 ? 3'd0 : status[125:123];
+wire       rotate_en  = 1'b0;
+wire       rotate_ccw = 1'b0;
+wire       flip_180   = 1'b0;
+`else
 wire [1:0] rot_sel    = status[64:63];
 wire       rotate_en  = rot_sel != 2'd0;
 wire       rotate_ccw = rot_sel == 2'd2;
 wire       flip_180   = status[65];
+wire [2:0] scr_mode   = 3'd0;
+`endif
 
-// 288 x 224 visible, on a 4:3 screen -- 3:4 when it is turned on its side
-wire [11:0] base_arx = rotate_en ? 12'd3 : 12'd4;
-wire [11:0] base_ary = rotate_en ? 12'd4 : 12'd3;
+// 288 x 224 visible, on a 4:3 screen -- 3:4 when it is turned on its side,
+// 8:3 for the Type 3/4 monitors side by side, 3:2 for the two turned and
+// stacked (a 3:4 picture each, two across in the frame sent)
+wire       scr_rot  = scr_mode == 3'd3 || scr_mode == 3'd4;
+wire [11:0] base_arx = rotate_en ? 12'd3 : scr_mode == 3'd2 ? 12'd8 : scr_rot ? 12'd3 : 12'd4;
+wire [11:0] base_ary = rotate_en ? 12'd4 : scr_rot ? 12'd2 : 12'd3;
 assign VIDEO_ARX = (!ar) ? base_arx : (ar - 1'd1);
 assign VIDEO_ARY = (!ar) ? base_ary : 12'd0;
 
@@ -83,8 +94,16 @@ localparam CONF_STR = {
 	// HDMI only: the analog output keeps the native raster either way. Every
 	// GX set is horizontal, so there is no per-set default to follow -- this
 	// is for a rotated monitor, not for the game.
+`ifdef GX_T34
+	// the Type 3/4 monitors on HDMI (rtl/video/gx_t34_fb.sv); the analog
+	// output carries the board's alternate frames as they are
+	// Stacked: each monitor turned 90 degrees, main above sub, for a panel
+	// turned the other way (CCW for a panel turned clockwise)
+	"O[125:123],Screen (HDMI),First,Second,Both,Stacked CCW,Stacked CW;",
+`else
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
+`endif
 	// analog 15 kHz (rtl/video/gx_crt_chain.sv); HDMI follows it while On.
 	// H2: the settings, shown while CRT Adjust is On
 	"O[75],CRT Adjust,Off,On;",
@@ -303,12 +322,17 @@ ddram_phy u_ddram (
 	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
+// gx_board_cfg's (below): the loader's length for a Type 3/4 set
+wire        t34;
+wire [26:0] psac_base, psmap_base;
 gx_rom_loader u_ldr (
 	.clk(clk_sys), .reset(reset),
 	// the stream ends after the sound board's ROMs: snd_base (where the
 	// sprite spread ends) + the sound program's 0x40000 + the samples'
-	// 0x400000 (build_mra's SND_CPU and SND_PCM)
-	.length({ 2'd0, obj_base + { 1'b0, obj_size4, 1'b0 } + 26'h040000 + { 2'd0, snd_pcm } }),
+	// 0x400000 (build_mra's SND_CPU and SND_PCM); a Type 3 set's goes on to
+	// the K053936's map, 512 KB at psmap_base (gfx4)
+	.length(t34 ? { 1'b0, psmap_base } + 28'h0080000
+	            : { 2'd0, obj_base + { 1'b0, obj_size4, 1'b0 } + 26'h040000 + { 2'd0, snd_pcm } }),
 	.start(ldr_start), .busy(ldr_busy),
 	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
 	.ddr_valid(ldr_ddr_valid), .ddr_rdata(ldr_ddr_rdata),
@@ -325,7 +349,7 @@ wire  [3:0] primode;
 wire  [1:0] tile_bpp, obj_layout;
 wire  [1:0] obj_pri_raw;
 wire  [9:0] vis_x0;
-wire  [8:0] vis_w;
+wire  [9:0] vis_w;
 wire        esc_gen, esc_copy, prot4, esc_sal2, tile_rb66, orient_fy, fj_dma;
 wire        esc_chip;
 wire [15:0] esc_s10;
@@ -337,12 +361,14 @@ wire [23:0] esc_src;
 wire  [8:0] esc_count;
 gx_board_cfg u_cfg ( .clk(clk_sys), .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w,
                      .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma,
-                     .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes );
+                     .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .psac_base, .psmap_base );
 
 wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
 wire [63:0] rom_data;
-wire [23:0] tile_rom_addr;
+wire [23:0] tile_rom_addr, tile_rom2_addr;
+wire        tile_rom2_cs, tile_rom2_ok;
+wire [63:0] tile_rom2_data;
 wire [22:0] obj_rom_addr, obj_pf_addr;
 // the sound board's SDRAM client (gx_sound, below)
 wire        snd_cs, snd_ok, snd_inval, snd_wreq, snd_wbusy;
@@ -361,6 +387,17 @@ wire        dsp_cs, dsp_ok, dsp_inval;
 wire        pcm_cs, pcm_ok, pcm_inval;
 wire [20:0] pcm_addr;
 wire [63:0] pcm_data;
+// the sound 68000's RAM in SDRAM, in the Type 3/4 build (gx_sound's r_)
+wire        sram_cs, sram_ok, sram_inval;
+// the Type 3/4 K053936's map and tile clients (gx_psac, through gx_main)
+wire        psm_cs, psm_ok;
+wire [15:0] psm_addr;
+wire [63:0] psm_data;
+wire [ 3:0] pst_cs, pst_ok;
+wire [67:0] pst_addr;
+wire [255:0] pst_data;
+wire [12:0] sram_addr;
+wire [63:0] sram_data;
 wire [14:0] dsp_addr;
 wire [63:0] dsp_data;
 wire        gfx_cs, gfx_ok;
@@ -375,18 +412,21 @@ gx_sdram_top u_mem (
 	.SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS, .SDRAM_CKE, .SDRAM_CLK(),
 	.ioctl_download(m_download), .ioctl_index(m_index), .ioctl_wr(m_wr), .ioctl_addr(m_addr),
 	.ioctl_dout(m_dout), .ioctl_wait(mem_wait),
-	.tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .tile_bpp, .obj_layout,
+	.tile_base({ 1'b0, tile_base }), .obj_base({ 1'b0, obj_base }), .tile_size4, .obj_size4, .snd_pcm, .tile_bpp, .obj_layout,
 	.cpu_cs(rom_cs), .cpu_addr(rom_addr), .cpu_ok(rom_ok), .cpu_data(rom_data),
 	// gx_tilemap's rom_addr is a row index and gx_obj's a half-row index (the
 	// video benches' ROM models); each is one granule
 	.tile_cs(tile_rom_cs), .tile_addr(tile_rom_addr[20:0]), .tile_ok(tile_rom_ok), .tile_data(tile_rom_data),
+	.tile2_cs(tile_rom2_cs), .tile2_addr(tile_rom2_addr[20:0]), .tile2_ok(tile_rom2_ok), .tile2_data(tile_rom2_data),
 	.obj_cs(obj_rom_cs), .obj_addr(obj_rom_addr[21:0]), .obj_ok(obj_rom_ok), .obj_data(obj_rom_data),
 	.obj_pf_cs(obj_pf_cs), .obj_pf_addr(obj_pf_addr[21:0]),
 	.gfx_cs, .gfx_addr, .gfx_ok, .gfx_data,
 	.snd_cs, .snd_addr(snd_maddr), .snd_ok, .snd_data(snd_mdata), .snd_inval,
-	.snd_wreq, .snd_waddr, .snd_wdata, .snd_we16, .snd_wbusy,
+	.snd_wreq, .snd_waddr({ 1'b0, snd_waddr }), .snd_wdata, .snd_we16, .snd_wbusy,
 	.dsp_cs, .dsp_addr, .dsp_ok, .dsp_data, .dsp_inval,
-	.pcm_cs, .pcm_addr, .pcm_ok, .pcm_data, .pcm_inval
+	.pcm_cs, .pcm_addr, .pcm_ok, .pcm_data, .pcm_inval,
+	.sram_cs, .sram_addr, .sram_ok, .sram_data, .sram_inval,
+	.psac_base, .psmap_base, .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data
 );
 
 ///////////////////////   INPUTS   ///////////////////////////////
@@ -468,7 +508,7 @@ wire  [3:0] snd_addr;
 wire  [7:0] snd_dout, snd_din;
 
 wire [23:0] rgb, dbg_addr;
-wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, pxl_cen, unsupported, dbg_access;
+wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, vid_sub, pxl_cen, unsupported, dbg_access;
 wire  [3:0] pxl_div;
 // The sound board: the K056800 with the sound CPU behind it running the
 // real program, held in reset until the main CPU releases it.
@@ -504,7 +544,8 @@ wire [23:1] ss_mb_addr, ss_sb_addr;
 wire [ 1:0] ss_mb_be;
 wire [15:0] ss_mb_wd, ss_mb_rd, ss_sb_wd, ss_sb_rd, ss_sd_wd, ss_sd_rd;
 wire [17:0] ss_sd_addr;
-wire [ 8:0] ss_vpos, ss_hpos;
+wire [ 8:0] ss_vpos;
+wire [ 9:0] ss_hpos;
 wire        ss_esc_busy, ss_dma_busy;
 wire        sl_start, sl_save, sl_wv, sl_wready, sl_end, sl_idle, sl_rv, sl_rtake;
 wire [15:0] sl_wd, sl_rd;
@@ -545,6 +586,7 @@ gx_sound u_sound (
 	.w_req(s_wreq), .w_addr(s_waddr), .w_data(s_wdata), .w_we16(s_we16), .w_busy(snd_wbusy),
 	.x_cs(dsp_cs), .x_addr(dsp_addr), .x_ok(dsp_ok), .x_data(dsp_data), .x_inval(x_inval_s),
 	.p_cs(pcm_cs), .p_addr(pcm_addr), .p_ok(pcm_ok), .p_data(pcm_data), .p_inval(p_inval_s),
+	.r_cs(sram_cs), .r_addr(sram_addr), .r_ok(sram_ok), .r_data(sram_data), .r_inval(sram_inval),
 	.aud_l(snd_aud_l), .aud_r(snd_aud_r),
 	.k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
 	.dbg(snd_dbg), .dsp_dbg, .ovr_dbg(snd_ovr), .dsp_dbg_clr(dsp_src[0]),
@@ -561,7 +603,7 @@ wire [95:0] dbg_obj;
 wire [63:0] dbg_k338;
 wire [135:0] dbg_shd;
 wire [111:0] dbg_mix;
-wire [131:0] dbg_line;
+wire [167:0] dbg_line;
 wire [83:0] dbg_rom;
 wire [ 1:0] dbg_esc;
 
@@ -576,7 +618,11 @@ wire  [7:0] line_src;                   // probe T: [0] turns gx_tilemap's blank
 `else
 wire [31:0] peek_src = 32'd0;
 wire [31:0] mem_src  = 32'd0;
+`ifdef DEBUG_ISSP_LINE
+wire  [7:0] line_src;
+`else
 wire  [7:0] line_src = 8'd0;
+`endif
 `endif
 wire [87:0] dbg_mem;
 
@@ -638,6 +684,7 @@ gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
 	.tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
+	.tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
 	.obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
 	.snd_wr, .snd_rd, .snd_addr, .snd_dout, .snd_din,
 	.inputs, .coins, .dsw, .service,
@@ -645,8 +692,10 @@ gx_main u_board (
 	.ee_rd_addr(ioctl_addr[6:1]), .ee_rd_data(ee_rd_data), .ee_written(ee_written),
 	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
-	.esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes,
-	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
+	.esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34,
+	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .vid_sub,
+	.psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
+	.pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
 	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .spr_mix_on(1'b1), .dbg_rom(dbg_rom),
 	.peek_t(peek_src[0]), .peek_addr(peek_src[31:12]),
@@ -683,7 +732,7 @@ wire [1:0] ss_slot = status[100:99];
 gx_savestate u_ss (
 	.clk(clk_vid), .rst(rst_vid),
 	.save_req(ss_save), .load_req(ss_load), .set_id(mod_byte), .busy(ss_busy), .err(),
-	.esc_busy(ss_esc_busy), .dma_busy(ss_dma_busy), .vpos(ss_vpos), .hpos({ 1'b0, ss_hpos }),
+	.esc_busy(ss_esc_busy), .dma_busy(ss_dma_busy), .vpos(ss_vpos), .hpos(ss_hpos),
 	.m_req(ss_m_req), .m_go(ss_m_go), .m_held(ss_m_held), .m_done(ss_m_done),
 	.m_bidx(ss_m_bidx), .m_bwe(ss_m_bwe), .m_bd(ss_m_bd), .m_bq(ss_m_bq),
 	.s_req(ss_s_req), .s_go(ss_s_go), .s_held(ss_s_held), .s_done(ss_s_done),
@@ -805,9 +854,16 @@ issp_probe #(.INSTANCE_ID("J"), .PROBE_W(96), .SOURCE_W(8)) u_issp_obj (
 issp_probe #(.INSTANCE_ID("I"), .PROBE_W(96), .SOURCE_W(8)) u_issp_esc (
 	.clk(clk_vid), .probe(dbg_esc_st), .source()
 );
-// Instance T, 132 bits: line time per frame (gx_video dbg_line; fields_T).
+// Instance T, 168 bits: line time per frame (gx_video dbg_line; fields_T).
 // Source bit 0 turns the blank-row skip off, to compare the same scene.
-issp_probe #(.INSTANCE_ID("T"), .PROBE_W(132), .SOURCE_W(8)) u_issp_line (
+issp_probe #(.INSTANCE_ID("T"), .PROBE_W(168), .SOURCE_W(8)) u_issp_line (
+	.clk(clk_vid), .probe(dbg_line), .source(line_src)
+);
+`endif
+// KonamiGXT34_stp (DEBUG_ISSP_LINE): the line-time probe alone, as the Type
+// 3/4 build has no room for the rest
+`ifdef DEBUG_ISSP_LINE
+issp_probe #(.INSTANCE_ID("T"), .PROBE_W(168), .SOURCE_W(8)) u_issp_line (
 	.clk(clk_vid), .probe(dbg_line), .source(line_src)
 );
 `endif
@@ -820,7 +876,13 @@ gx_guns u_guns (
 	.ana0(stick_0), .ana1(stick_1), .mouse(ps2_mouse),
 	.mode0(status[70:69]), .mode1(status[72:71]), .ms_who(status[74:73]),
 	.yrev(orient_fy), .gun_h, .gun_v, .trig(gun_trig),
-	.show(guns & status[68]), .pxl_cen, .lhbl(vid_lhbl), .lvbl(vid_lvbl), .vis_w,
+	.show(guns & status[68]), .pxl_cen, .lhbl(vid_lhbl), .lvbl(vid_lvbl),
+`ifdef GX_T34
+	// no gun sets on these boards: a constant, not the clk_sys config (a hold path into clk_vid)
+	.vis_w(9'd288),
+`else
+	.vis_w(vis_w[8:0]),
+`endif
 	.rgb_in(rgb), .rgb_out(rgb_x)
 );
 
@@ -880,6 +942,27 @@ wire  [7:0] rot_DDRAM_BURSTCNT, rot_DDRAM_BE;
 wire [28:0] rot_DDRAM_ADDR;
 wire [63:0] rot_DDRAM_DIN;
 
+`ifdef GX_T34
+gx_t34_fb u_t34fb (
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
+	.vid_sub(vid_sub), .mode(scr_mode),
+	.FB_EN(FB_EN), .FB_FORMAT(FB_FORMAT),
+	.FB_WIDTH(FB_WIDTH), .FB_HEIGHT(FB_HEIGHT),
+	.FB_BASE(FB_BASE), .FB_STRIDE(FB_STRIDE),
+	.FB_VBL(FB_VBL),
+	.DDRAM_CLK(rot_DDRAM_CLK),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy | ss_own),
+	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(rot_DDRAM_ADDR),
+	.DDRAM_DIN(rot_DDRAM_DIN),
+	.DDRAM_BE(rot_DDRAM_BE),
+	.DDRAM_WE(rot_DDRAM_WE),
+	.DDRAM_RD(rot_DDRAM_RD)
+);
+`else
 screen_rotate_two u_rotate (
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
@@ -907,6 +990,7 @@ screen_rotate_two u_rotate (
 	.DDRAM_WE(rot_DDRAM_WE),
 	.DDRAM_RD(rot_DDRAM_RD)
 );
+`endif
 
 assign DDRAM_CLK      = ldr_busy ? clk_sys            : rot_DDRAM_CLK;
 // after the load the port is the rotator's, on its clock (clk_vid), except

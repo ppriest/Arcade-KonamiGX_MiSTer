@@ -107,6 +107,43 @@ always @(posedge clk) begin
         tile_rom_data <= trom_v[((tile_rom_addr >> 3) % tntiles) * 8 + tile_rom_addr[2:0]];
     end
 end
+// The Type 3/4 build's graphics clients: the tilemap's second, the K053936's
+// map (gfx4) and four tile clients (gfx3), granules byte 0 in [63:56]. Each
+// answers once per fetch after ROM_LAT clocks, as the tile model does.
+wire [23:0] tile_rom2_addr; wire tile_rom2_cs; reg tile_rom2_ok = 0; reg [63:0] tile_rom2_data;
+wire        psm_cs;  wire [15:0] psm_addr;  reg psm_ok = 0;  reg [63:0] psm_data;
+wire [ 3:0] pst_cs;  wire [67:0] pst_addr;  reg [3:0] pst_ok = 0; reg [255:0] pst_data;
+wire        vid_sub;
+`ifdef GX_T34
+reg [63:0] p3_v [1 << 17];
+reg [63:0] p4_v [1 << 16];
+reg [23:0] glast [6]; int glat [6]; reg gdone [6];
+always @(posedge clk) begin
+    reg        cs_c;
+    reg [23:0] a_c;
+    tile_rom2_ok <= 1'b0; psm_ok <= 1'b0; pst_ok <= 4'd0;
+    for (int c = 0; c < 6; c++) begin
+        cs_c = c == 0 ? tile_rom2_cs : c == 1 ? psm_cs : pst_cs[c - 2];
+        a_c  = c == 0 ? tile_rom2_addr : c == 1 ? 24'(psm_addr) : 24'(pst_addr[17 * (c - 2) +: 17]);
+        if (!cs_c) begin glat[c] = 0; gdone[c] = 0; end
+        else if (glat[c] == 0 || a_c != glast[c]) begin glast[c] = a_c; glat[c] = 1; gdone[c] = 0; end
+        else if (glat[c] < ROM_LAT) glat[c] = glat[c] + 1;
+        else if (!gdone[c]) begin
+            gdone[c] = 1;
+            if (c == 0) begin
+                tile_rom2_ok <= 1'b1;
+                tile_rom2_data <= trom_v[((a_c >> 3) % tntiles) * 8 + a_c[2:0]];
+            end else if (c == 1) begin psm_ok <= 1'b1; psm_data <= p4_v[a_c[15:0]]; end
+            else begin pst_ok[c - 2] <= 1'b1; pst_data[64 * (c - 2) +: 64] <= p3_v[a_c[16:0]]; end
+        end
+    end
+end
+initial begin
+    $readmemh("debug/gx_main_tb_psac/gfx3.hex", p3_v);
+    $readmemh("debug/gx_main_tb_psac/gfx4.hex", p4_v);
+end
+`endif
+
 // One ok per fetch, as gx_rom_port gives it: a fetch is a new address or cs
 // raised again. The model used to repeat ok on every clock once the latency
 // had passed, which hid a lost-ok deadlock in the sprite drawer that the
@@ -179,7 +216,8 @@ wire        e_snap, e_commit, e_freeze, e_ssen, e_sswe, e_step;
 wire [ 3:0] e_sssel;
 wire [11:0] e_ssaddr;
 wire [15:0] e_sswd, e_ssrd_main, e_ssrd_snd, e_ssrd_k8;
-wire [ 8:0] e_vpos, e_hpos;
+wire [ 8:0] e_vpos;
+wire [ 9:0] e_hpos;
 wire        e_esc_busy, e_dma_busy, e_busy, e_err;
 wire        sl_start, sl_save, sl_wv, sl_end, sl_rtake;
 wire [15:0] sl_wd;
@@ -195,7 +233,7 @@ gx_k056800 u_k056800 (
     .ss_we(e_sswe), .ss_wd(e_sswd), .ss_rd(e_ssrd_k8)
 );
 
-localparam int SMEM = 'h490000 / 8;
+localparam int SMEM = 'h4a0000 / 8;     // to 0x490000, and the Type 3/4 build's 68000 RAM after
 reg  [63:0] smem [0:SMEM-1];
 wire        sm_cs, sm_inval, sm_wreq;
 wire [22:0] sm_addr;
@@ -242,6 +280,24 @@ always @(posedge clk) begin
         sp_ok   <= 1'b1;
         sp_cnt  <= 0;
     end else sp_cnt <= sp_cnt + 4'd1;
+end
+
+// GX_T34: the 68000's RAM (gx_sound's r_ port), at 0x490000 in this model
+wire        sr_cs, sr_inval;
+wire [12:0] sr_addr;
+reg         sr_ok = 0;
+reg  [63:0] sr_data;
+reg  [3:0]  sr_cnt = 0;
+int         sr_lat = 8;                 // +SR_LAT=n: its clocks to answer
+initial void'($value$plusargs("SR_LAT=%d", sr_lat));
+always @(posedge clk) begin
+    sr_ok <= 1'b0;
+    if (!sr_cs || sr_ok) sr_cnt <= 0;
+    else if (sr_cnt == 4'(sr_lat)) begin
+        sr_data <= smem[('h490000 >> 3) + int'(sr_addr)];
+        sr_ok   <= 1'b1;
+        sr_cnt  <= 0;
+    end else sr_cnt <= sr_cnt + 4'd1;
 end
 
 reg  [3:0] dx_cnt = 0;
@@ -402,6 +458,7 @@ gx_sound u_sound (
     .w_req(sm_wreq), .w_addr(sm_waddr), .w_data(sm_wdata), .w_we16(sm_we16), .w_busy(sm_wbusy),
     .x_cs(dx_cs), .x_addr(dx_addr), .x_ok(dx_ok), .x_data(dx_data), .x_inval(dx_inval),
     .p_cs(sp_cs), .p_addr(sp_addr), .p_ok(sp_ok), .p_data(sp_data), .p_inval(),
+    .r_cs(sr_cs), .r_addr(sr_addr), .r_ok(sr_ok), .r_data(sr_data), .r_inval(sr_inval),
     .aud_l(), .aud_r(),
     .k8_wr, .k8_rd, .k8_addr, .k8_din, .k8_dout, .k8_irq,
     .dbg(snd_dbg), .dsp_dbg(dsp_dbg),
@@ -532,7 +589,7 @@ wire [ 3:0] cfg_primode;
 wire [ 1:0] cfg_tile_bpp, cfg_obj_layout;
 wire [ 1:0] cfg_obj_pri_raw;
 wire [ 9:0] cfg_vis_x0;
-wire [ 8:0] cfg_vis_w;
+wire [ 9:0] cfg_vis_w;
 wire [ 9:0] cfg_obj_hadj;
 // +ROM_UNCACHED=n: gx_main's clocks for an instruction fetch with the cache off
 int rom_uncached = 6;          // as KonamiGX.sv
@@ -546,6 +603,7 @@ wire [15:0] cfg_esc_s10;
 wire [ 3:0] cfg_esc_s11n;
 wire [31:0] cfg_esc_xor;
 wire [63:0] cfg_esc_lanes;
+wire        cfg_t34;
 int esc_chip_on = 1;
 initial void'($value$plusargs("ESC_CHIP=%d", esc_chip_on));
 gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_size4(), .obj_size4(), .snd_pcm(),
@@ -554,7 +612,8 @@ gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_siz
                      .obj_hadj(cfg_obj_hadj), .esc_gen(cfg_esc_gen), .esc_src(cfg_esc_src),
                      .esc_count(cfg_esc_count), .esc_copy(cfg_esc_copy), .prot4(cfg_prot4),
                      .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma),
-                     .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes) );
+                     .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
+                     .t34(cfg_t34), .psac_base(), .psmap_base() );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -645,6 +704,8 @@ gx_main dut (
     .rst, .clk, .clk_cpu,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
+    .tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
+    .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data, .vid_sub,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
     // the ROM readback windows: the bench answers with zero, which is what
     // the board did before they existed
@@ -659,7 +720,7 @@ gx_main dut (
     .esc_copy(cfg_esc_copy), .prot4(cfg_prot4), .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66),
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
-    .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
+    .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes), .t34(cfg_t34),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
@@ -721,7 +782,7 @@ end
 gx_savestate u_ssg (
     .clk, .rst,
     .save_req(e_save), .load_req(e_load), .set_id(8'(game)), .busy(e_busy), .err(e_err),
-    .esc_busy(e_esc_busy), .dma_busy(e_dma_busy), .vpos(e_vpos), .hpos({ 1'b0, e_hpos }),
+    .esc_busy(e_esc_busy), .dma_busy(e_dma_busy), .vpos(e_vpos), .hpos(e_hpos),
     .m_req(e_m_req), .m_go(e_m_go), .m_held(e_m_held), .m_done(e_m_done),
     .m_bidx(e_m_bidx), .m_bwe(e_m_bwe), .m_bd(e_m_bd), .m_bq(e_m_bq),
     .s_req(e_s_req), .s_go(e_s_go), .s_held(e_s_held), .s_done(e_s_done),
@@ -1030,6 +1091,7 @@ always @(posedge clk) if (!rst) begin
     if (vid_lvbl && !lvbl_s && ((frame >= shot_from && frame <= shot_to) || (frame < 16384 && shot_want[frame]))) begin
         fs = $fopen($sformatf("%sshot_%0d.hex", od, frame), "w");
         shooting <= 1; shot_px = 0; shot_n = frame;
+        $display("SHOT %0d %s", frame, vid_sub ? "sub" : "main");
     end else if (!vid_lvbl && lvbl_s && shooting) begin
         $fclose(fs); shooting <= 0;
         if (shot_px != 64512) $display("SHOT %0d: %0d visible pixels", shot_n, shot_px);

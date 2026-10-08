@@ -78,6 +78,10 @@ module gx_main (
     output            tile_rom_cs,
     input             tile_rom_ok,
     input      [63:0] tile_rom_data,     // the row's bytes, byte 0 in [63:56]
+    output     [23:0] tile_rom2_addr,    // the Type 3/4 build's second tile client
+    output            tile_rom2_cs,
+    input             tile_rom2_ok,
+    input      [63:0] tile_rom2_data,
     output     [22:0] obj_rom_addr,
     output            obj_rom_cs,
     output     [22:0] obj_pf_addr,           // the row the sprite scan will draw next
@@ -115,7 +119,7 @@ module gx_main (
     input      [ 1:0] obj_layout,           // K055673 layout: 0 GX, 1 RNG, 2 GX6, 3 LE2
     input      [ 1:0] obj_pri_raw,          // 1 dragoonj's, 2 salmndr2's sprite priority callback
     input      [ 9:0] vis_x0,               // the visible window (gx_board_cfg)
-    input      [ 8:0] vis_w,
+    input      [9:0] vis_w,
     input      [ 9:0] obj_hadj,             // the set's K055673 dx - (-26), signed
     input             esc_gen,              // the set's ESC callback generates sprites
     input      [23:0] esc_src,              // from this list
@@ -129,6 +133,7 @@ module gx_main (
     input      [ 3:0] esc_s11n,
     input      [31:0] esc_xor,
     input      [63:0] esc_lanes,
+    input             t34,                  // a Type 3/4 set (gx_board_cfg; the KonamiGXT34 bitstream, docs/TYPE34.md)
     input      [ 4:0] rom_uncached,         // clocks an instruction fetch takes while CACR's cache is off
     input             tile_rb66,            // the K056832 window is k_6bpp_rom_long_r (six-byte rows)
     input             guns,                 // le2: the light guns at 0xd44000, P2's trigger at 0xd5e002
@@ -140,6 +145,16 @@ module gx_main (
     // video out
     output     [23:0] rgb,
     output            vid_lhbl, vid_lvbl, vid_hs, vid_vs,
+    output            vid_sub,              // Type 3/4: this frame is the sub monitor's (gx_t34_fb)
+    // Type 3/4: the K053936's SDRAM clients (gx_psac, through gx_video)
+    output            psm_cs,
+    output     [15:0] psm_addr,
+    input             psm_ok,
+    input      [63:0] psm_data,
+    output     [ 3:0] pst_cs,
+    output     [67:0] pst_addr,
+    input      [ 3:0] pst_ok,
+    input     [255:0] pst_data,
     output            pxl_cen_o,            // the dot clock enable, for the video output
     output     [ 3:0] pxl_div_o,            // clk a pixel: 8, 6, 4 or 3 (CRT Adjust)
     output            unsupported,
@@ -160,7 +175,7 @@ module gx_main (
     output reg [63:0] dbg_k338,              // the last write to K054338 register 14's high byte (probe O)
     output    [135:0] dbg_shd,               // gx_obj's shadow-code-1 tile probe (probe O)
     output    [111:0] dbg_mix,               // the mixer's registers (probe L)
-    output    [131:0] dbg_line,              // line time, tilemap and sprites (probe T)
+    output    [167:0] dbg_line,              // line time, tilemap, sprites, K053936 (probe T)
     input             tm_blank_skip,         // gx_tilemap's blank-row skip on
     input             spr_mix_on,            // gx_mixer: a sprite's effect bits are its mix code (OSD)
     output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
@@ -204,7 +219,8 @@ module gx_main (
     input             ss_we,
     input      [15:0] ss_wd,
     output     [15:0] ss_rd,
-    output     [ 8:0] ss_vpos, ss_hpos,
+    output     [ 8:0] ss_vpos,
+    output     [ 9:0] ss_hpos,
     output            ss_esc_busy, ss_dma_busy,
 
     // cheats (KonamiGX.sv, from the .mra): a code with its strobe in bit 128,
@@ -347,11 +363,68 @@ reg  [12:0] pl_a;
 reg  [15:0] pl_d;
 wire [7:0]  pl_q [4];
 wire [23:0] pal_q;
+`ifndef GX_T34
 gx_sdpram #(.AW(13), .DW(8)) u_pal_x ( .clk, .we(pl_we[3]), .wa(pl_a),
     .d(pl_d[15:8]), .ra(pl_a), .q(pl_q[3]) );                           // x: high byte
+`else
+assign pl_q[3] = 8'h00;     // soccerss's RAM test reads back bytes 2-0 of each long only
+`endif
 assign pl_q[2] = pal_q[23:16];
 assign pl_q[1] = pal_q[15:8];
 assign pl_q[0] = pal_q[7:0];
+reg  [1:0]  pl3_we;                         // the Type 3/4 palettes, in gx_mixer
+reg         pl3_sub;
+reg  [15:0] pl3_d;
+wire        pix_sub;
+wire [15:0] pal3_q;
+
+`ifdef GX_T34
+// ------------------------------------------------------------ Type 3/4 (docs/TYPE34.md)
+// konamigx.cpp gx_type3_map: 0xd90000 is plain RAM on these boards, kept in
+// the Type 2 palette's RAM (gx_mixer's 888 one, which no pixel reads here);
+// the palettes are at 0xe80000 (main monitor) and 0xea0000 (sub), 16 KB each,
+// xRGB 555 a word (palformat 1), both in gx_mixer, which draws from the one
+// for this frame's monitor.
+// 0xe60000 is the PSAC2's line control, 0xe00000 its registers, 0xe40000
+// the bank register, 0xec0000 the sync read: which monitor this frame is.
+localparam [1:0] T3_PM = 1, T3_PS = 2, T3_LC = 3;
+reg  [1:0]  t3_sel;
+reg  [1:0]  t3_we;
+reg  [12:0] t3_a;
+reg  [15:0] t3_d;
+wire [15:0] t3_lc_q;
+// the line control: the CPU on one port, the K053936 (gx_psac) on the other
+wire [10:0] ps_lc_addr;
+wire [15:0] ps_lc_q;
+gx_tdpram #(.AW(11), .DW(8)) u_t3lc_h ( .clk, .we_a(t3_we[1] && t3_sel == T3_LC), .a(t3_a[10:0]), .d(t3_d[15:8]), .qa(t3_lc_q[15:8]),
+                                         .b(ps_lc_addr), .qb(ps_lc_q[15:8]) );
+gx_tdpram #(.AW(11), .DW(8)) u_t3lc_l ( .clk, .we_a(t3_we[0] && t3_sel == T3_LC), .a(t3_a[10:0]), .d(t3_d[ 7:0]), .qa(t3_lc_q[ 7:0]),
+                                         .b(ps_lc_addr), .qb(ps_lc_q[ 7:0]) );
+wire [15:0] t3_q = t3_sel == T3_LC ? t3_lc_q : pal3_q;
+reg  [15:0] t3_psac [0:15];                  // the K053936's registers (0xe00000)
+wire [255:0] ps_regs;
+genvar gp;
+generate for( gp = 0; gp < 16; gp++ ) begin : g_psreg assign ps_regs[16*gp +: 16] = t3_psac[gp]; end endgenerate
+reg  [ 7:0] t3_bank = 8'd0;                  // type3_bank_w
+reg         t3_frame = 1'b0;                 // the monitor this frame is drawn for (type3_sync_r)
+reg         t3_lvbl_d = 1'b1;
+always @(posedge clk) begin
+    // every vblank, as MAME's screen update toggles it, whether or not
+    // the game takes the interrupt
+    t3_lvbl_d <= vid_lvbl;
+    if( !vid_lvbl && t3_lvbl_d ) t3_frame <= ~t3_frame;
+    if( ss_commit ) t3_frame <= ss_bq[122];
+end
+// The frame whose flag reads 0xffff (t3_frame 0) is the main monitor's. MAME
+// draws it at the next update, when its flag has turned (screen_update_
+// konamigx_left); here it is scanned out as the game draws it. Checked in
+// sim/gx_main_tb from MAME's state after Start: team select in the frames
+// with t3_frame 0, as MAME's main screen.
+assign pix_sub = t3_frame;
+`else
+assign pix_sub = 1'b0;
+`endif
+assign vid_sub = pix_sub;
 
 // ------------------------------------------------------------ video
 reg         tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs;
@@ -367,6 +440,11 @@ reg  [ 3:0] k46_addr, k338_addr, crtc_addr;
 reg  [ 5:0] k55_addr;
 wire [15:0] vram_dout, spr_ram_dout;
 wire        int1, int2, obj_dma_busy, obj_ln_short;
+`ifdef GX_T34
+wire        obj_bank = t3_bank[0];  // type3_bank_w: the list at words 0x800-0xfff
+`else
+wire        obj_bank = 1'b0;
+`endif
 reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
 wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
 
@@ -375,13 +453,14 @@ wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
 wire [22:1] rmrd_addr;
 wire [31:0] tile_gfx_bank;
 gx_video u_video (
-    .rst, .clk, .pxl_cen, .pxl2_cen, .obj_vmirror(orient_fy),
+    .rst, .clk, .pxl_cen, .pxl2_cen, .obj_vmirror(orient_fy), .obj_bank(obj_bank),
     .crtc_cs, .crtc_addr, .crtc_din, .crtc_dout(), .int1, .int2,
     .tm_reg_we, .tm_reg_addr(tm_addr), .tm_reg_din(bus_d16), .tm_reg_be(tm_be),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd, .vram_addr, .vram_din(bus_d16), .vram_be, .vram_dout,
     .offs_x, .offs_y,
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
+    .tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj,
@@ -391,6 +470,13 @@ gx_video u_video (
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
     .pal_we(pl_we[2:0]), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }), .pal_q,
+    .pal3_we(pl3_we), .pal3_sub(pl3_sub), .pal3_din(pl3_d), .pal3_q, .pix_sub,
+`ifdef GX_T34
+    .psac_regs(ps_regs), .psac_alt(t3_bank[4]), .psac_lc_addr(ps_lc_addr), .psac_lc_q(ps_lc_q),
+`else
+    .psac_regs(256'd0), .psac_alt(1'b0), .psac_lc_addr(), .psac_lc_q(16'd0),
+`endif
+    .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short,
     .ss_vpos, .ss_hpos
 );
@@ -436,6 +522,7 @@ wire        k734_irq, k734_req, k734_we, k734_ack;
 wire [23:1] k734_addr;
 wire [ 1:0] k734_be;
 wire [15:0] k734_dout;
+`ifndef GX_T34
 k056734 u_esc734 (
     .clk, .rst(rst | ~esc_chip),
     .s10(esc_s10), .s11n(esc_s11n), .dxor(esc_xor), .dlanes(esc_lanes),
@@ -446,6 +533,12 @@ k056734 u_esc734 (
     .ss_addr, .ss_we, .ss_wd, .ss_rd(ss_rd_k734),
     .icount(), .pc_out(), .running()
 );
+`else
+// the Type 3/4 bitstream has no 056734 (none of its sets carries one)
+assign k734_irq = 1'b0; assign k734_req = 1'b0; assign k734_we = 1'b0;
+assign k734_addr = 23'd0; assign k734_be = 2'b00; assign k734_dout = 16'd0;
+assign ss_rd_k734 = 16'd0;
+`endif
 
 // ------------------------------------------------------------ JTAG reads
 // A third bus master, below the ESC and the CPU: on a toggle of mem_t it
@@ -503,7 +596,7 @@ reg         uwe_r;
 reg  [15:0] ud_r;
 reg  [ 3:0] usrc;                           // where the read data comes from
 
-localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6, R_REGS=7;
+localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6, R_REGS=7, R_T3=8;
 
 reg  [15:0] io_q;
 
@@ -700,7 +793,10 @@ always @(posedge clk) begin
     { tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs } <= 0;
     k47_we <= 0; k338_we <= 0;
     { wr_we_h, wr_we_l } <= 0;
-    pl_we <= 0;
+    pl_we <= 0; pl3_we <= 0;
+`ifdef GX_T34
+    t3_we <= 0;
+`endif
     snd_wr <= 0; snd_rd <= 0;
     spr_ram_we <= 0;
     k734_mail_we <= 0;
@@ -853,6 +949,30 @@ always @(posedge clk) begin
                 usrc <= R_IO;
             end else if( ub >= 24'hd80000 && ub < 24'hd80020 ) begin
                 if( uwe ) begin k338_we <= ube; k338_addr <= ua[4:1]; end
+`ifdef GX_T34
+            end else if( t34 && ((ub >= 24'he80000 && ub < 24'he84000) || (ub >= 24'hea0000 && ub < 24'hea4000)) ) begin
+                t3_sel <= ub[17] ? T3_PS : T3_PM; t3_a <= ua[13:1]; t3_d <= ud;
+                pl_a <= ua[13:1]; pl3_d <= ud; pl3_sub <= ub[17];
+                if( uwe ) pl3_we <= ube;
+                usrc <= R_T3; ucnt <= 3'd2;
+            end else if( t34 && ub >= 24'he60000 && ub < 24'he61000 ) begin
+                t3_sel <= T3_LC; t3_a <= { 2'b00, ua[11:1] }; t3_d <= ud;
+                if( uwe ) t3_we <= ube;
+                usrc <= R_T3; ucnt <= 3'd2;
+            end else if( t34 && ub >= 24'he00000 && ub < 24'he00020 ) begin
+                io_q <= t3_psac[ua[4:1]];       // RAM in konamigx.cpp: the save state reads it
+                usrc <= R_IO;
+                if( uwe ) begin
+                    if( ube[1] ) t3_psac[ua[4:1]][15:8] <= ud[15:8];
+                    if( ube[0] ) t3_psac[ua[4:1]][ 7:0] <= ud[ 7:0];
+                end
+            end else if( t34 && ub >= 24'he40000 && ub < 24'he40004 ) begin
+                // a byte handler on bits 31:24 (umask32 ffffffff, offset 0)
+                if( uwe && !ua[1] && ube[1] ) t3_bank <= ud[15:8];
+            end else if( t34 && ub >= 24'hec0000 && ub < 24'hec0004 ) begin
+                io_q <= t3_frame ? 16'h0000 : 16'hffff;
+                usrc <= R_IO;
+`endif
             end else if( ub >= 24'hd90000 && ub < 24'hd98000 ) begin
                 pl_a <= ua[14:2]; pl_d <= ud;
                 if( uwe ) begin
@@ -884,6 +1004,9 @@ always @(posedge clk) begin
                 R_IO:   u_din <= io_q;
                 R_SND:  u_din <= { snd_din, 8'h00 };
                 R_REGS: u_din <= { rg_qh, rg_ql };
+`ifdef GX_T34
+                R_T3:   u_din <= t3_q;
+`endif
                 default: u_din <= 16'h0000;
             endcase
             u_ack <= 1;
@@ -905,6 +1028,9 @@ always @(posedge clk) begin
     endcase
     if( ss_commit )
         { wrport1_0, wrport1_1, wrport2, vram_bank, esc_hi, p4_op, p4_op_v, p4_clk, rom_half } <= ss_bq[66:0];
+`ifdef GX_T34
+    if( ss_commit ) t3_bank <= ss_bq[130:123];
+`endif
     // The K053252's INT lines hold until acknowledged, and only a vblank
     // (an INT2 count) raises them: one that is up now but was down in the
     // state is acknowledged here, INT1 then INT2, as the game would.
@@ -1045,10 +1171,20 @@ end
 // ------------------------------------------------------------ save states
 // The latches above as one vector for gx_savestate: snapped when the CPU is
 // taken, committed back by each block that owns them.
-wire [121:0] ss_bq;
-gx_ss_vec #(.W(122)) u_ss_board (
+// The Type 3/4 build adds the bank register and the frame flag on top.
+`ifdef GX_T34
+localparam SSB_W = 131;
+`else
+localparam SSB_W = 122;
+`endif
+wire [SSB_W-1:0] ss_bq;
+gx_ss_vec #(.W(SSB_W)) u_ss_board (
     .clk, .snap(ss_snap),
-    .d({ int1, int2, dma_pend, hs_cnt, lvbl_dt, hs_dt,
+    .d({
+`ifdef GX_T34
+         t3_bank, t3_frame,
+`endif
+         int1, int2, dma_pend, hs_cnt, lvbl_dt, hs_dt,
          rdport1_3, syncen, irq3, irq4, dma_run, int1_l, int2_l, pend1, pend2, lvbl_l, dma_t,
          wrport1_0, wrport1_1, wrport2, vram_bank, esc_hi, p4_op, p4_op_v, p4_clk, rom_half }),
     .q(ss_bq),

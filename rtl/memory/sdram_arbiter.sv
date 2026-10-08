@@ -13,13 +13,16 @@
 // (docs/ROADMAP.md, sprite drawing time).
 
 module sdram_arbiter #(
-	parameter int N = 4
+	parameter int N = 4,
+	// clients 0..HI-1 are served before any other that is waiting (round-robin
+	// among themselves); the rest share what they leave. 0: all round-robin.
+	parameter int HI = 0
 ) (
 	input  logic clk,
 	input  logic reset,
 
 	// sdram.sv port
-	output logic [25:1] port_addr,
+	output logic [26:1] port_addr,
 	output logic        port_wrl,
 	output logic        port_wrh,
 	output logic [15:0] port_din,
@@ -30,7 +33,7 @@ module sdram_arbiter #(
 	input  logic        port_ack,
 
 	input  logic [N-1:0]      c_req,
-	input  logic [26*N-1:0]   c_addr,
+	input  logic [27*N-1:0]   c_addr,
 	input  logic [N-1:0]      c_dbl,       // with c_req: two granules from a 16-byte-aligned c_addr
 	output logic [N-1:0]      c_valid,
 	output logic [63:0]       c_rdata,     // shared; capture it on your own valid
@@ -38,7 +41,7 @@ module sdram_arbiter #(
 
 	// download write path
 	input  logic         dl_req,
-	input  logic [25:0]  dl_addr,
+	input  logic [26:0]  dl_addr,
 	input  logic [15:0]  dl_data,
 	input  logic         dl_we16,
 	output logic         dl_busy
@@ -61,21 +64,22 @@ module sdram_arbiter #(
 	always_comb begin
 		have_pick = 1'b0;
 		pick      = rr_ptr;
-		for (int k = 0; k < N; k++) begin
-			int unsigned idx;
-			idx = (int'(rr_ptr) + k) % N;
-			if (!have_pick && avail[idx]) begin
-				have_pick = 1'b1;
-				pick      = $bits(pick)'(idx);
+		for (int pass = 0; pass < 2; pass++)
+			for (int k = 0; k < N; k++) begin
+				int unsigned idx;
+				idx = (int'(rr_ptr) + k) % N;
+				if (!have_pick && avail[idx] && (pass == 1 || int'(idx) < HI)) begin
+					have_pick = 1'b1;
+					pick      = $bits(pick)'(idx);
+				end
 			end
-		end
 	end
 
-	logic [25:0] pick_addr;
+	logic [26:0] pick_addr;
 	always_comb begin
-		pick_addr = 26'd0;
+		pick_addr = 27'd0;
 		for (int k = 0; k < N; k++)
-			if (k == int'(pick)) pick_addr = c_addr[26*k +: 26];
+			if (k == int'(pick)) pick_addr = c_addr[27*k +: 27];
 	end
 
 	logic [63:0] rdata_l, rdata2_l;
@@ -103,7 +107,7 @@ module sdram_arbiter #(
 			case (st)
 			S_IDLE: begin
 				if (dl_req) begin
-					port_addr <= dl_addr[25:1];
+					port_addr <= dl_addr[26:1];
 					port_wrl  <= dl_we16 || !dl_addr[0];
 					port_wrh  <= dl_we16 ||  dl_addr[0];
 					port_din  <= dl_we16 ? dl_data : {dl_data[7:0], dl_data[7:0]};
@@ -112,7 +116,7 @@ module sdram_arbiter #(
 					dl_busy   <= 1'b1;
 					st        <= S_WRITE;
 				end else if (have_pick) begin
-					port_addr <= pick_addr[25:1];
+					port_addr <= pick_addr[26:1];
 					port_wrl  <= 1'b0;
 					port_wrh  <= 1'b0;
 					port_dbl  <= c_dbl[pick];

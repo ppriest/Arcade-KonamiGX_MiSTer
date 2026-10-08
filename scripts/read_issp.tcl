@@ -99,6 +99,9 @@ set fields_T {
     {tile_fetch_frm  84  99 dec}
     {tile_blank_frm 100 115 dec}
     {tile_skip_frm  116 131 dec}
+    {ps_busy_max_frm 132 143 dec}
+    {ps_busy_max    144 155 dec}
+    {ps_late_frm    156 167 dec}
 }
 
 # INSTANCE K, 64 bits: the ROM load (KonamiGX.sv). The cycle counts are

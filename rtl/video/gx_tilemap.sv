@@ -81,19 +81,31 @@ module gx_tilemap (
     output reg          rom_cs,
     input               rom_ok,
     input       [63:0]  rom_data,
+    // the Type 3/4 build's second tile ROM client (the fetcher keeps two rows
+    // in flight there); idle in the other build
+    output reg  [23:0]  rom2_addr,
+    output reg          rom2_cs,
+    input               rom2_ok,
+    input       [63:0]  rom2_data,
 
     // the visible window's first bitmap column and width (24 and 288 on
     // most sets; dragoonj 40 and 384, winspike 24 and 384)
     input        [9:0]  vis_x0,
-    input        [8:0]  vis_w,
+    input        [9:0]  vis_w,
 
     // line buffer read: bitmap column vis_x0 + rd_x, one cycle latency
-    input        [8:0]  rd_x,
+    input        [9:0]  rd_x,
     output      [13:0]  rd_pix [4]
 );
 
 wire [9:0] VIS_X0 = vis_x0;
-wire [8:0] VIS_W  = vis_w;
+wire [9:0] VIS_W  = vis_w;
+// a line buffer's width: 576 columns in the Type 3/4 build (12 MHz dots)
+`ifdef GX_T34
+localparam LB = 10;
+`else
+localparam LB = 9;
+`endif
 
 // ------------------------------------------------------------ registers ---
 reg [15:0] regs [32];
@@ -196,12 +208,31 @@ wire        [11:0] mx0   = xsum >= width ? xsum - width : xsum;
 
 // fetcher
 reg  [11:0] fmx;             // map column of the tile being fetched
-reg  [ 5:0] fleft;           // tiles still to fetch on this layer
+reg  [ 6:0] fleft;           // tiles still to fetch on this layer (73 at 576 wide)
 reg  [ 2:0] ftx;
 reg  [ 5:0] fcol;
 reg  [ 1:0] fflip;
 reg  [63:0] frow;
 wire [11:0] fnext = {fmx[11:3], 3'd0} + 12'd8;
+
+`ifdef GX_T34
+// At 12 MHz dots a line is 576 columns: 4 x 73 tiles in 3,072 clocks, where a
+// tile row from SDRAM takes about ten (sim/gx_tilemap_tb: 3,050 a line at a
+// 10-clock ROM with one fetch at a time, 3,394 at 14). So the VRAM reads go on
+// while two rows are fetched, one on each ROM client, into two slots taken in
+// turn, and the emitter is given them in the order they were read.
+reg  [ 1:0] s_busy, s_done;
+reg  [23:0] s_key  [2];
+reg  [63:0] s_row  [2];
+reg  [ 5:0] s_col  [2];
+reg  [ 1:0] s_flip [2];
+reg  [ 2:0] s_tx   [2];
+reg         s_iss, s_ret;            // the slot filled next, the slot retired next
+function automatic blank_of( input [63:0] d );
+    blank_of = tile_bpp == 2'd2 ? d == 64'd0 :
+               tile_bpp == 2'd1 ? d[63:16] == 48'd0 : d[63:24] == 40'd0;
+endfunction
+`endif
 
 // one-tile buffer between fetcher and emitter
 reg         nb_valid;
@@ -212,7 +243,7 @@ reg  [ 2:0] nb_tx;
 
 // emitter
 reg         e_valid;
-reg  [ 8:0] px;
+reg  [ 9:0] px;
 reg  [ 2:0] tx;
 reg  [ 1:0] flip;
 reg  [ 5:0] colour;
@@ -234,7 +265,7 @@ wire [7:0] pixel = tile_bpp == 2'd2 ? { b7[bitsel], b3[bitsel], b5[bitsel], b1[b
                                         b1[bitsel], b2[bitsel], b0[bitsel] } :
                                       { 3'd0, b4[bitsel], b3[bitsel], b1[bitsel], b2[bitsel], b0[bitsel] };
 
-wire last_px  = e_valid && px == VIS_W - 9'd1;
+wire last_px  = e_valid && px == VIS_W - 10'd1;
 wire tile_end = e_valid && tx == 3'd7 && !last_px;
 wire nb_take  = nb_valid && (!e_valid || tile_end);
 wire nb_free  = !nb_valid || nb_take;
@@ -284,21 +315,22 @@ always @(posedge clk) begin
     if (cpu_rd_l) vram_dout <= cpu_half ? ram_q[15:0] : ram_q[31:16];
 end
 
-// Line buffers: one RAM per layer, two lines of 512 (288 used).
+// Line buffers: one RAM per layer, two lines of 512 (1024 in the Type 3/4
+// build: 576 used).
 reg        wr_half;
 reg        lb_we;
 reg [ 1:0] lb_layer;
-reg [ 8:0] lb_px;
+reg [ 9:0] lb_px;
 reg [13:0] lb_din;
 
 genvar l;
 generate for (l = 0; l < 4; l++) begin : g_lbuf
-    gx_sdpram #(.AW(10), .DW(14)) u_lbuf (
+    gx_sdpram #(.AW(LB+1), .DW(14)) u_lbuf (
         .clk ( clk ),
         .we  ( lb_we && lb_layer == l ),
-        .wa  ( {wr_half, lb_px} ),
+        .wa  ( {wr_half, lb_px[LB-1:0]} ),
         .d   ( lb_din ),
-        .ra  ( {~wr_half, rd_x} ),
+        .ra  ( {~wr_half, rd_x[LB-1:0]} ),
         .q   ( rd_pix[l] )
     );
 end endgenerate
@@ -330,6 +362,13 @@ always @(posedge clk) begin
         e_valid     <= 1'b0;
         fleft       <= 6'd0;
         unsupported <= 1'b0;
+        rom2_cs     <= 1'b0;
+`ifdef GX_T34
+        s_busy      <= 2'b00;
+        s_done      <= 2'b00;
+        s_iss       <= 1'b0;
+        s_ret       <= 1'b0;
+`endif
     end else case (st)
         IDLE: if (line_start) begin
             wr_half <= ~wr_half;
@@ -376,12 +415,13 @@ always @(posedge clk) begin
         PREP: begin
             my    <= ly;
             fmx   <= mx0;
-            fleft <= 6'((10'(mx0[2:0]) + { 1'b0, VIS_W } + 10'd7) >> 3);   // tiles the VIS_W pixels touch
-            px    <= 9'd0;
+            fleft <= 7'((11'(mx0[2:0]) + 11'(VIS_W) + 11'd7) >> 3);   // tiles the VIS_W pixels touch
+            px    <= 10'd0;
             st    <= RUN;
         end
         RUN: begin
             // ---- fetcher
+`ifndef GX_T34
             case (fst)
                 F_IDLE: if (scan_rd) fst <= F_VWAIT;
                 F_VWAIT: begin
@@ -427,13 +467,66 @@ always @(posedge clk) begin
                 nb_tx    <= ftx;
             end else if (nb_take) nb_valid <= 1'b0;
 
+`else
+            // VRAM, then the row into the next slot (a ROM client of its own)
+            case (fst)
+                F_IDLE: if (scan_rd) fst <= F_VWAIT;
+                F_VWAIT: begin
+                    scan_q <= ram_q;
+                    fst    <= F_VDATA;
+                end
+                F_VDATA: if (!s_busy[s_iss]) begin
+                    s_busy[s_iss] <= 1'b1;
+                    s_key[s_iss]  <= f_key;
+                    s_col[s_iss]  <= t_col;
+                    s_flip[s_iss] <= t_flip;
+                    s_tx[s_iss]   <= fmx[2:0];
+                    fmx      <= fnext == width ? 12'd0 : fnext;
+                    fleft    <= fleft - 6'd1;
+                    if (f_skip) begin
+                        s_row[s_iss]  <= 64'd0;
+                        s_done[s_iss] <= 1'b1;
+                        dbg_ev        <= 3'b100;
+                    end else if (!s_iss) begin
+                        rom_addr <= f_key; rom_cs <= 1'b1;
+                    end else begin
+                        rom2_addr <= f_key; rom2_cs <= 1'b1;
+                    end
+                    s_iss <= ~s_iss;
+                    fst   <= F_IDLE;
+                end
+                default: fst <= F_IDLE;
+            endcase
+            if (rom_cs && rom_ok) begin
+                rom_cs <= 1'b0; s_row[0] <= rom_data; s_done[0] <= 1'b1;
+                dbg_ev <= { 1'b0, blank_of(rom_data), 1'b1 };
+                if (blank_of(rom_data)) begin blank_key[layer] <= s_key[0]; blank_kv[layer] <= 1'b1; end
+            end
+            if (rom2_cs && rom2_ok) begin
+                rom2_cs <= 1'b0; s_row[1] <= rom2_data; s_done[1] <= 1'b1;
+                if (blank_of(rom2_data)) begin blank_key[layer] <= s_key[1]; blank_kv[layer] <= 1'b1; end
+            end
+
+            // ---- buffer: the slots in the order they were filled
+            if (s_done[s_ret] && nb_free) begin
+                nb_valid <= 1'b1;
+                nb_row   <= s_row[s_ret];
+                nb_col   <= s_col[s_ret];
+                nb_flip  <= s_flip[s_ret];
+                nb_tx    <= s_tx[s_ret];
+                s_busy[s_ret] <= 1'b0;
+                s_done[s_ret] <= 1'b0;
+                s_ret    <= ~s_ret;
+            end else if (nb_take) nb_valid <= 1'b0;
+`endif
+
             // ---- emitter
             if (e_valid) begin
                 lb_we    <= 1'b1;
                 lb_layer <= layer;
                 lb_px    <= px;
                 lb_din   <= { colour, pixel };
-                px       <= px + 9'd1;
+                px       <= px + 10'd1;
                 tx       <= tx + 3'd1;
             end
             if (nb_take) begin
@@ -456,7 +549,11 @@ end
 
 `ifdef SIMULATION
 // every tile fetched for a layer must have been emitted when it ends
+`ifdef GX_T34
+always @(posedge clk) if (st == RUN && last_px && (fleft != 0 || nb_valid || fst != F_IDLE || s_busy != 0))
+`else
 always @(posedge clk) if (st == RUN && last_px && (fleft != 0 || nb_valid || fst != F_IDLE))
+`endif
     $error("gx_tilemap: layer %0d ended with fetches outstanding", layer);
 `endif
 

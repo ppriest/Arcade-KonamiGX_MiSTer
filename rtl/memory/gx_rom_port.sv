@@ -62,9 +62,9 @@ module gx_rom_port #(
     // RNG sprites: two 4-byte half-rows a granule)
     input             halfsel,
 
-    input  [25:0]     base,         // the region's byte address in SDRAM
+    input  [26:0]     base,         // the region's byte address in SDRAM
     output reg        c_req,        // arbiter client (clk_mem)
-    output reg [25:0] c_addr,
+    output reg [26:0] c_addr,
     output reg        c_dbl,        // DBL: this request is a double read
     input             c_valid,
     input  [63:0]     c_rdata,
@@ -198,7 +198,7 @@ always @(posedge clk_mem) begin
         if( start ) begin
             c_req  <= 1;
             c_dbl  <= DBL && !halfsel;
-            c_addr <= base + ( halfsel ? { {(26-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }         // the row's granule
+            c_addr <= base + ( halfsel ? { {(27-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }         // the row's granule
                              : DBL     ? { {(26-AW-3){1'b0}}, a_l[AW-1:1], 1'b0, 3'b000 }   // the pair's even one
                                        : { {(26-AW-3){1'b0}}, a_l, 3'b000 } );
         end

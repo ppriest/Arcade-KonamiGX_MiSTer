@@ -6,7 +6,7 @@
 // equal to the software model on these captures) -- and compares out.hex
 // with MAME's screenshot. Run from the repository root.
 //
-// One pixel per pxl_cen, six clocks apart as at 48 MHz / 8 MHz.
+// One pixel per pxl_cen, DIV clocks apart: 6 as at 48 MHz / 8 MHz, 4 at 12 MHz.
 
 `timescale 1ns/1ps
 
@@ -15,13 +15,14 @@ module tb_gx_mixer;
 localparam string DIR = "debug/gx_mixer_tb/";
 localparam int W = 288, H = 224, X0 = 24, Y0 = 16;
 
+parameter int DIV = 6;
 reg clk = 0, rst = 1;
 always #10.417 clk = ~clk;
 
 reg  [2:0] cnt = 0;
 reg        pxl_cen = 0;
 always @(posedge clk) begin
-    cnt     <= cnt == 5 ? 3'd0 : cnt + 3'd1;
+    cnt     <= cnt == 3'(DIV - 1) ? 3'd0 : cnt + 3'd1;
     pxl_cen <= cnt == 0 && !rst;
 end
 

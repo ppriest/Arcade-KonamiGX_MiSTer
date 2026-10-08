@@ -33,9 +33,13 @@ wire [23:0] rom_addr;
 wire        rom_cs;
 reg         rom_ok = 0;
 reg  [63:0] rom_data;
+wire [23:0] rom2_addr;               // the Type 3/4 build's second client
+wire        rom2_cs;
+reg         rom2_ok = 0;
+reg  [63:0] rom2_data;
 int         tile_bpp = 0;        // +BPP=0 (5 bpp), 1 (6), 2 (8)
 int         vis_x0 = 24, vis_w = 288;   // +VIS_X0, +VIS_W
-reg  [ 8:0] rd_x = 0;
+reg  [ 9:0] rd_x = 0;
 wire [13:0] rd_pix [4];
 
 gx_tilemap dut (
@@ -46,7 +50,8 @@ gx_tilemap dut (
     .offs_x, .offs_y,
     .line_start, .line_y, .busy, .unsupported, .dbg_ev(), .blank_skip(1'b1),
     .tile_bpp(2'(tile_bpp)), .rom_addr, .rom_cs, .rom_ok, .rom_data,
-    .vis_x0(10'(vis_x0)), .vis_w(9'(vis_w)),
+    .rom2_addr, .rom2_cs, .rom2_ok, .rom2_data,
+    .vis_x0(10'(vis_x0)), .vis_w(10'(vis_w)),
     .rd_x, .rd_pix
 );
 
@@ -54,13 +59,14 @@ reg [15:0] regs_v [32];
 reg [ 7:0] tbank_v [8];
 reg [15:0] vram_v [65536];
 reg [ 7:0] offs_v [8];
-reg [63:0] rom_v [];
+reg [63:0] rom_v [0:(1 << 20) - 1];   // a row an entry: 128K tiles
 int        ntiles;
 int        ROM_LAT = 6;          // +ROM_LAT=n overrides
 
-// ROM: a new address (or cs rising) restarts the latency count
-reg [23:0] last_addr;
-int        lat;
+// ROM: a new address (or cs rising) restarts the latency count; each client
+// on its own (the SDRAM's sharing is not modelled)
+reg [23:0] last_addr, last2_addr;
+int        lat, lat2;
 always @(posedge clk) begin
     rom_ok <= 1'b0;
     if (!rom_cs) lat <= 0;
@@ -71,6 +77,16 @@ always @(posedge clk) begin
     else begin
         rom_ok   <= 1'b1;
         rom_data <= rom_v[((rom_addr >> 3) % ntiles) * 8 + rom_addr[2:0]];
+    end
+    rom2_ok <= 1'b0;
+    if (!rom2_cs) lat2 <= 0;
+    else if (lat2 == 0 || rom2_addr != last2_addr) begin
+        last2_addr <= rom2_addr;
+        lat2       <= 1;
+    end else if (lat2 < ROM_LAT) lat2 <= lat2 + 1;
+    else begin
+        rom2_ok   <= 1'b1;
+        rom2_data <= rom_v[((rom2_addr >> 3) % ntiles) * 8 + rom2_addr[2:0]];
     end
 end
 
@@ -93,7 +109,6 @@ initial begin
     void'($value$plusargs("BPP=%d", tile_bpp));
     void'($value$plusargs("VIS_X0=%d", vis_x0));
     void'($value$plusargs("VIS_W=%d", vis_w));
-    rom_v = new[ntiles * 8];
     $readmemh({DIR, "regs.hex"},  regs_v);
     $readmemh({DIR, "tbank.hex"}, tbank_v);
     $readmemh({DIR, "vram.hex"},  vram_v);
@@ -132,7 +147,7 @@ initial begin
         render(Y0 + n + 1);
         for (int l = 0; l < 4; l++)
             for (int x = 0; x < vis_w; x++) begin
-                @(posedge clk) rd_x <= x[8:0];
+                @(posedge clk) rd_x <= x[9:0];
                 @(posedge clk);
                 @(negedge clk) $fwrite(f, "%04x\n", rd_pix[l]);
             end

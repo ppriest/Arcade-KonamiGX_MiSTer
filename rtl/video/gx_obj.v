@@ -55,7 +55,7 @@ module gx_obj #(parameter
     input             clk,
     input             pxl_cen,
     input             pxl2_cen,
-    input      [ 8:0] hdump,
+    input      [ 9:0] hdump,       // the Type 3/4 build's is 10 bits; the other's top bit 0
     input      [ 8:0] vdump,
     input      [ 9:0] voffset,
     input      [ 9:0] hoff_adj,     // the set's K055673 dx - (-26), signed
@@ -96,6 +96,7 @@ module gx_obj #(parameter
     input      [ 7:0] spri_min,    // highest priority of a layer SHD_ON leaves unshadowed
     input      [ 1:0] obj_layout,  // K055673 set_config layout: 0 GX, 1 RNG, 2 GX6, 3 LE2
     input             vmirror,     // le2u/le2j: the sprite plane turned over its visible rows
+    input             bank,        // Type 3/4 (type3_bank_w bit 0): the list is words 0x800-0xfff
     input      [ 2:0] shd_defer,   // shadow codes SHD PRI SEL defers (gx_mixer): the line buffer keeps others first
     input      [ 1:0] obj_pri_raw, // 1 dragoonj_sprite_callback: pri = attr bit 9 ? 4 : attr[7:4];
                                    // 2 salmndr2_sprite_callback: pri = attr[9:4]
@@ -236,7 +237,7 @@ jt053246 #(
     .zcode      ( zcode     ),
     .attr_full  ( attr_full ),
     .obj_idx    ( obj_idx   ),
-    .hdump      ( hdump     ),
+    .hdump      ( hdump[8:0] ),
     .vdump      ( vmirror ? 9'h2fb - vdump : vdump ),
     .voffset    ( voffset   ),
     .hoff_adj   ( hoff_adj  ),
@@ -263,7 +264,7 @@ jtframe_dual_ram16 #(.AW(13)) u_ram(   // 16 KB; the DMA reads words 0-2047
     .q0     ( ram_dout         ),
     .clk1   ( clk              ),
     .data1  ( 16'd0            ),
-    .addr1  ( dma_addr[13:1]   ),
+    .addr1  ( { dma_addr[13], dma_addr[12] | bank, dma_addr[11:1] } ),
     .we1    ( 2'b0             ),
     .q1     ( dma_data         )
 );
@@ -472,7 +473,7 @@ jtframe_objdraw_gate #(
     .pxl_cen    ( pxl_cen        ),
     .hs         ( hs             ),
     .flip       ( 1'b0           ),
-    .hdump      ( {1'b0, hdump}  ),
+    .hdump      ( hdump          ),
     .draw       ( q_draw         ),
     .busy       ( dr_busy        ),
     .code       ( qd_code        ),
