@@ -1,4 +1,4 @@
--- soccerss: the K053936 (PSAC2) state at four vblanks from T3_T seconds, for
+-- soccerss (and the Type 4 sets, T3_T4=1): the K053936 (PSAC2) state at four vblanks from T3_T seconds, for
 -- scripts/psac2_model.py. At each vblank acknowledgement (0xd4c01c) the
 -- registers, line control, both palettes and the bank, then a snapshot of
 -- both screens. The game writes the bank, registers and line control just
@@ -28,8 +28,11 @@ gx_psac_ack = sp:install_write_tap(0xd4c01c, 0xd4c01f, "ack", function(o,d,mk)
   local p = string.format("d%d_", n)
   dump(p .. "ctrl.bin", 0xe00000, 0x20)
   dump(p .. "line.bin", 0xe60000, 0x1000)
-  dump(p .. "palm.bin", 0xe80000, 0x4000)
-  dump(p .. "pals.bin", 0xea0000, 0x4000)
+  -- Type 4 (T3_T4=1): 32 KB palettes and the map RAM at 0xf00000
+  local t4 = os.getenv("T3_T4") == "1"
+  dump(p .. "palm.bin", 0xe80000, t4 and 0x8000 or 0x4000)
+  dump(p .. "pals.bin", 0xea0000, t4 and 0x8000 or 0x4000)
+  if t4 then dump(p .. "map.bin", 0xf00000, 0x8000) end
   dump(p .. "k55.bin", 0xd50000, 0x100)
   local f = assert(io.open(string.format("%s/%sinfo.txt", dir, p), "w"))
   f:write(string.format("bank %02x sync %08x time %s\n", bank, sp:read_u32(0xec0000), tostring(m.time)))

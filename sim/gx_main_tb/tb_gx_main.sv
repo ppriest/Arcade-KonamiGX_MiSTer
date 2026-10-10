@@ -92,8 +92,9 @@ end
 
 // ----------------------------------------------------------- graphics ROMs
 reg [63:0] trom_v [1 << 21];   // crzcross's tile region is 2M rows; rows of 5, 6 or 8 bytes, byte 0 in [63:56]
-reg [63:0] orom_v [1 << 22];   // half-rows, byte 0 in [63:56]
+reg [63:0] orom_v [1 << 23];   // half-rows, byte 0 in [63:56] (rushhero: 2^23)
 int        tntiles, ontiles, ROM_LAT = 6;
+initial void'($value$plusargs("GFX_LAT=%d", ROM_LAT));   // the graphics ROMs' fetch time, clocks
 wire [23:0] tile_rom_addr;  wire tile_rom_cs;  reg tile_rom_ok = 0; reg [63:0] tile_rom_data;
 wire [22:0] obj_rom_addr;   wire obj_rom_cs;   reg obj_rom_ok = 0;  reg [63:0] obj_rom_data;
 reg [23:0] tlast; int tlat;
@@ -112,10 +113,10 @@ end
 // answers once per fetch after ROM_LAT clocks, as the tile model does.
 wire [23:0] tile_rom2_addr; wire tile_rom2_cs; reg tile_rom2_ok = 0; reg [63:0] tile_rom2_data;
 wire        psm_cs;  wire [15:0] psm_addr;  reg psm_ok = 0;  reg [63:0] psm_data;
-wire [ 3:0] pst_cs;  wire [67:0] pst_addr;  reg [3:0] pst_ok = 0; reg [255:0] pst_data;
+wire [ 3:0] pst_cs;  wire [71:0] pst_addr;  reg [3:0] pst_ok = 0; reg [255:0] pst_data;
 wire        vid_sub;
 `ifdef GX_T34
-reg [63:0] p3_v [1 << 17];
+reg [63:0] p3_v [1 << 18];
 reg [63:0] p4_v [1 << 16];
 reg [23:0] glast [6]; int glat [6]; reg gdone [6];
 always @(posedge clk) begin
@@ -124,7 +125,7 @@ always @(posedge clk) begin
     tile_rom2_ok <= 1'b0; psm_ok <= 1'b0; pst_ok <= 4'd0;
     for (int c = 0; c < 6; c++) begin
         cs_c = c == 0 ? tile_rom2_cs : c == 1 ? psm_cs : pst_cs[c - 2];
-        a_c  = c == 0 ? tile_rom2_addr : c == 1 ? 24'(psm_addr) : 24'(pst_addr[17 * (c - 2) +: 17]);
+        a_c  = c == 0 ? tile_rom2_addr : c == 1 ? 24'(psm_addr) : 24'(pst_addr[18 * (c - 2) +: 18]);
         if (!cs_c) begin glat[c] = 0; gdone[c] = 0; end
         else if (glat[c] == 0 || a_c != glast[c]) begin glast[c] = a_c; glat[c] = 1; gdone[c] = 0; end
         else if (glat[c] < ROM_LAT) glat[c] = glat[c] + 1;
@@ -134,7 +135,7 @@ always @(posedge clk) begin
                 tile_rom2_ok <= 1'b1;
                 tile_rom2_data <= trom_v[((a_c >> 3) % tntiles) * 8 + a_c[2:0]];
             end else if (c == 1) begin psm_ok <= 1'b1; psm_data <= p4_v[a_c[15:0]]; end
-            else begin pst_ok[c - 2] <= 1'b1; pst_data[64 * (c - 2) +: 64] <= p3_v[a_c[16:0]]; end
+            else begin pst_ok[c - 2] <= 1'b1; pst_data[64 * (c - 2) +: 64] <= p3_v[a_c[17:0]]; end
         end
     end
 end
@@ -148,17 +149,51 @@ end
 // raised again. The model used to repeat ok on every clock once the latency
 // had passed, which hid a lost-ok deadlock in the sprite drawer that the
 // board showed (gx_obj.v). +OBJ_OK_LEVEL=1 restores the repeat.
-reg [22:0] olast; int olat; reg odone = 0; int obj_ok_level = 0;
+//
+// +OBJ_PORT=1 models the board's port instead (gx_rom_port PAIR=1, DBL=1):
+// a fetch brings both halves of a row, four granules are held and answer
+// in a clock, and while the drawer is not waiting the port fetches the
+// prefetch hint (obj_pf_addr). One fetch at a time, ROM_LAT clocks each.
+reg [22:0] olast; int olat; reg odone = 0; int obj_ok_level = 0, obj_port = 0;
 initial void'($value$plusargs("OBJ_OK_LEVEL=%d", obj_ok_level));
+initial void'($value$plusargs("OBJ_PORT=%d", obj_port));
+wire [22:0] obj_pf_addr; wire obj_pf_cs;
+reg  [22:0] ph_a [4]; reg [3:0] ph_v = 0; int ph_vic = 0;
+int         pf_lat = 0; reg [22:0] pf_a;
+function automatic bit ph_held(input [22:0] a);
+    ph_held = 0;
+    for (int k = 0; k < 4; k++) if (ph_v[k] && ph_a[k] == a) ph_held = 1;
+endfunction
 always @(posedge clk) begin
     obj_rom_ok <= 1'b0;
-    if (!obj_rom_cs) begin olat <= 0; odone <= 0; end
-    else if (olat == 0 || obj_rom_addr != olast) begin olast <= obj_rom_addr; olat <= 1; odone <= 0; end
-    else if (olat < ROM_LAT) olat <= olat + 1;
-    else if (!odone || obj_ok_level != 0) begin
-        odone <= 1;
-        obj_rom_ok   <= 1'b1;
-        obj_rom_data <= orom_v[(((obj_rom_addr >> 5) % ontiles) << 5) | obj_rom_addr[4:0]];
+    if (obj_port == 0) begin
+        if (!obj_rom_cs) begin olat <= 0; odone <= 0; end
+        else if (olat == 0 || obj_rom_addr != olast) begin olast <= obj_rom_addr; olat <= 1; odone <= 0; end
+        else if (olat < ROM_LAT) olat <= olat + 1;
+        else if (!odone || obj_ok_level != 0) begin
+            odone <= 1;
+            obj_rom_ok   <= 1'b1;
+            obj_rom_data <= orom_v[(((obj_rom_addr >> 5) % ontiles) << 5) | obj_rom_addr[4:0]];
+        end
+    end else begin
+        // the fetch in flight fills its row's two halves
+        if (pf_lat > 0) begin
+            pf_lat = pf_lat - 1;
+            if (pf_lat == 0) begin
+                ph_a[ph_vic] = { pf_a[22:1], 1'b0 }; ph_v[ph_vic] = 1; ph_vic = (ph_vic + 1) % 4;
+                ph_a[ph_vic] = { pf_a[22:1], 1'b1 }; ph_v[ph_vic] = 1; ph_vic = (ph_vic + 1) % 4;
+            end
+        end
+        if (!obj_rom_cs) odone <= 0;
+        else if (obj_rom_addr != olast) begin olast <= obj_rom_addr; odone <= 0; end
+        if (obj_rom_cs && !(odone && obj_rom_addr == olast) && ph_held(obj_rom_addr)) begin
+            odone <= 1; olast <= obj_rom_addr;
+            obj_rom_ok   <= 1'b1;
+            obj_rom_data <= orom_v[(((obj_rom_addr >> 5) % ontiles) << 5) | obj_rom_addr[4:0]];
+        end else if (pf_lat == 0) begin
+            if (obj_rom_cs && !odone && !ph_held(obj_rom_addr)) begin pf_a = obj_rom_addr; pf_lat = ROM_LAT; end
+            else if (obj_pf_cs && !ph_held(obj_pf_addr)) begin pf_a = obj_pf_addr; pf_lat = ROM_LAT; end
+        end
     end
 end
 
@@ -236,10 +271,10 @@ gx_k056800 u_k056800 (
 localparam int SMEM = 'h4a0000 / 8;     // to 0x490000, and the Type 3/4 build's 68000 RAM after
 reg  [63:0] smem [0:SMEM-1];
 wire        sm_cs, sm_inval, sm_wreq;
-wire [22:0] sm_addr;
+wire [23:0] sm_addr;
 reg         sm_ok = 0, sm_wbusy = 0;
 reg  [63:0] sm_data;
-wire [25:0] sm_waddr;
+wire [26:0] sm_waddr;
 wire [15:0] sm_wdata;
 wire        sm_we16;
 reg  [ 3:0] sm_wcnt = 0;
@@ -452,7 +487,7 @@ always @(posedge clk) if (snd_tf != 0 && snd_tr_valid)
             snd_tr_data[39:16], snd_tr_data[15:0]);
 gx_sound u_sound (
     .clk, .clk_cpu, .rst(rst || !snd_run || snd_real == 0), .rst_chip(rst || snd_real == 0),
-    .snd_base(26'd0), .snd_pcm(24'h400000),   // this model's layout: RAMs at 0x440000 and 0x450000
+    .snd_base(27'd0), .snd_pcm(24'h400000),   // this model's layout: RAMs at 0x440000 and 0x450000
     .dsp_dbg_clr(1'b0),
     .m_cs(sm_cs), .m_addr(sm_addr), .m_ok(sm_ok), .m_data(sm_data), .m_inval(sm_inval),
     .w_req(sm_wreq), .w_addr(sm_waddr), .w_data(sm_wdata), .w_we16(sm_we16), .w_busy(sm_wbusy),
@@ -603,7 +638,8 @@ wire [15:0] cfg_esc_s10;
 wire [ 3:0] cfg_esc_s11n;
 wire [31:0] cfg_esc_xor;
 wire [63:0] cfg_esc_lanes;
-wire        cfg_t34;
+wire        cfg_t34, cfg_t4;
+wire  [2:0] cfg_ps_oy;
 int esc_chip_on = 1;
 initial void'($value$plusargs("ESC_CHIP=%d", esc_chip_on));
 gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_size4(), .obj_size4(), .snd_pcm(),
@@ -613,7 +649,7 @@ gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_siz
                      .esc_count(cfg_esc_count), .esc_copy(cfg_esc_copy), .prot4(cfg_prot4),
                      .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma),
                      .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
-                     .t34(cfg_t34), .psac_base(), .psmap_base() );
+                     .t34(cfg_t34), .t4(cfg_t4), .ps_oy(cfg_ps_oy), .psac_base(), .psmap_base() );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -700,13 +736,17 @@ always @* begin
     for (int e = 16; e + 8 <= hs_cfg_n; e += 8) hs_ul_n += { hs_cfg[e+4], hs_cfg[e+5] };
 end
 
+wire [203:0] dbg_line;
+integer      line_stats = 0;
+initial void'($value$plusargs("LINE_STATS=%d", line_stats));
+
 gx_main dut (
     .rst, .clk, .clk_cpu,
     .rom_addr, .rom_cs, .rom_ok, .rom_data,
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
     .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data, .vid_sub,
-    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr(), .obj_pf_cs(),
+    .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     // the ROM readback windows: the bench answers with zero, which is what
     // the board did before they existed
     .tile_base(26'(tile_base)), .obj_base(26'(obj_base)),
@@ -720,9 +760,9 @@ gx_main dut (
     .esc_copy(cfg_esc_copy), .prot4(cfg_prot4), .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66),
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
-    .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes), .t34(cfg_t34),
+    .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes), .t34(cfg_t34), .t4_cfg(cfg_t4), .ps_oy_cfg(cfg_ps_oy),
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
-    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
+    .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(dbg_line), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP
     // sets it larger to get the behaviour before gx_main bounded it, when a
     // read above the image's length returned what follows it in SDRAM --
@@ -965,7 +1005,7 @@ initial begin
     void'($value$plusargs("OBJ_BASE=%h", obj_base));
 end
 wire        gfx_cs;
-wire [22:0] gfx_addr;
+wire [23:0] gfx_addr;
 reg         gfx_ok = 0;
 reg  [63:0] gfx_data = 0;
 always @(posedge clk) begin
@@ -1056,6 +1096,13 @@ always @(posedge clk) if (!rst) begin
         $fdisplay(ft, "# frame %0d", frame);
         $fflush(ft);                    // a snapshot taken here keeps the trace whole
         if (frame % 20 == 0) $display("frame %0d  seq %0d  %t", frame, seq, $time);
+        // +LINE_STATS=1: the last frame's line times (probe T's fields), clocks
+        // of 3072 a line: tilemap, sprites, K053936 busiest line, and lines
+        // each began late
+        if (line_stats != 0)
+            $display("LINE %0d tm %0d obj %0d ps %0d late tm %0d obj %0d ps %0d", frame,
+                     dbg_line[47:36], dbg_line[71:60], dbg_line[143:132],
+                     dbg_line[35:24], dbg_line[179:168], dbg_line[167:156]);
         if (frame >= frames) begin
             $fdisplay(ft, "# %0d accesses logged", seq);
             $fclose(ft);
@@ -1099,6 +1146,30 @@ always @(posedge clk) if (!rst) begin
         $fwrite(fs, "%06x\n", rgb); shot_px++;
     end
 end
+
+// +OBJ_LINES=a: from frame a, each sprite line over 2600 clocks, where the
+// time went: the drawer drawing, the drawer waiting on ROM, the queue empty
+// with the scan not done (scan-bound), and tiles drawn. Verilator only.
+`ifdef VERILATOR
+integer ol_from = -1, ol_busy = 0, ol_draw = 0, ol_rom = 0, ol_scan = 0, ol_tiles = 0, ol_line = 0;
+initial void'($value$plusargs("OBJ_LINES=%d", ol_from));
+always @(posedge clk) if (!rst && ol_from >= 0 && frame >= ol_from) begin
+    if (dut.u_video.u_obj.ln_start) begin
+        if (ol_busy > 2600)
+            $display("OBJLINE f%0d l%0d busy %0d draw %0d romwait %0d scanwait %0d tiles %0d", frame, ol_line,
+                     ol_busy, ol_draw, ol_rom, ol_scan, ol_tiles);
+        ol_busy = 0; ol_draw = 0; ol_rom = 0; ol_scan = 0; ol_tiles = 0; ol_line++;
+    end
+    if (!vid_lvbl) ol_line = 0;
+    if (dut.u_video.u_obj.ln_busy) begin
+        ol_busy++;
+        if (dut.u_video.u_obj.dr_busy) begin
+            if (dut.u_video.u_obj.rom_cs && !dut.u_video.u_obj.drw_ok) ol_rom++; else ol_draw++;
+        end else if (dut.u_video.u_obj.q_empty) ol_scan++;
+    end
+    if (dut.u_video.u_obj.q_draw) ol_tiles++;
+end
+`endif
 
 // ----------------------------------------------------------- probes
 // +PROBE_FROM=a +PROBE_TO=b: per frame, what the sprite path did -- DMA

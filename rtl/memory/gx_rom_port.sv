@@ -198,9 +198,9 @@ always @(posedge clk_mem) begin
         if( start ) begin
             c_req  <= 1;
             c_dbl  <= DBL && !halfsel;
-            c_addr <= base + ( halfsel ? { {(27-AW-2){1'b0}}, a_l[AW-1:1], 3'b000 }         // the row's granule
-                             : DBL     ? { {(26-AW-3){1'b0}}, a_l[AW-1:1], 1'b0, 3'b000 }   // the pair's even one
-                                       : { {(26-AW-3){1'b0}}, a_l, 3'b000 } );
+            c_addr <= base + ( halfsel ? 27'({ a_l[AW-1:1], 3'b000 })          // the row's granule
+                             : DBL     ? 27'({ a_l[AW-1:1], 1'b0, 3'b000 })    // the pair's even one
+                                       : 27'({ a_l, 3'b000 }) );
         end
         if( c_req && c_valid ) begin
             c_req  <= 0;

@@ -31,6 +31,16 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGX_20261010** / **Arcade-KonamiGXT34_20261010** (new RBF)
+  * **Beta**
+  * The Type 3 and Type 4 twin-monitor boards: Soccer Superstars, Run and Gun 2 / Slam Dunk 2,
+    Versus Net Soccer, Rushing Heroes ([docs/TYPE34.md](docs/TYPE34.md))
+  * Four players
+  * OSD *Screen (HDMI)*: first monitor, second, both side by side, or both stacked on their side
+    (*Stacked CCW*, *Stacked CW*) for a panel turned 90 degrees
+  * Rushing Heroes needs the 128 MB SDRAM module
+  * Salamander 2 sprite properties are fixed from a rebuild
+
 * **Arcade-KonamiGX_20261005**
   * The ESC protection chip (Konami 056734) runs the games' own protection programs [docs/ESC.md](docs/ESC.md)
     * Sexy Parodius: the snow, rain, starfield and particle effects are drawn
@@ -119,13 +129,49 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 | Salamander 2 | 1996 | 6bpp | 6bpp | ESC (056734) |
 | Lethal Enforcers II | 1994 | 8bpp | 8bpp | Light guns: stick, d-pad or mouse, button 2 reloads, crosshair option; UAA and JAA flip their own screen |
 
+### Type 3 and Type 4 boards (work in progress)
+
+A second bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md), released as
+`Arcade-KonamiGXT34_<date>.rbf`. Its `.mra`s name it. All of these boot and play on the board.
+
+| Name | Year | Board | SDRAM | Notes |
+|-|-|-|-|-|
+| Soccer Superstars | 1994 | Type 3 | 64 MB | 576 wide (12 MHz dots) |
+| Run and Gun 2 / Slam Dunk 2 | 1996 | Type 4 | 64 MB | |
+| Versus Net Soccer | 1996 | Type 4 | 64 MB | 576 wide |
+| Rushing Heroes | 1996 | Type 4 | 128 MB | 82 MB: needs the 128 MB module |
+
+The board draws the two monitors on alternate frames. On HDMI the OSD's *Screen (HDMI)* shows the
+first monitor, the second, both side by side, or both turned 90 degrees and stacked for a panel
+on its side (*Stacked CCW* for a panel turned clockwise, *Stacked CW* the other way). The analog
+output carries the alternating frames as the board sends them.
+
+Graphics are as good, and as wrong, as MAME 0.289's, which marks every one of these sets
+`MACHINE_IMPERFECT_GRAPHICS` (Versus Net Soccer also `MACHINE_IMPERFECT_SOUND`). The core follows
+MAME on purpose (docs/MAME_KLUDGES.md), including:
+* Soccer Superstars' team select: the background behind the flags is a garbled tilemap falling
+  away from the camera, in MAME too;
+* the Type 4 K053936 layer (court, field, pitch): drawn one row low, with every shadow fixed at a
+  -80 darkening and the layer shown whatever the mixer's enable says, all MAME's
+  `rushingheroes_hack`.
+
+One place the core does not follow MAME: in Rushing Heroes and Versus Net Soccer the K053936's
+map wraps, so the stadium crowd runs round the field. MAME draws it once and says in its source
+that its wraparound is broken for these two games' crowds.
+
+Known issues:
+* **Rushing Heroes' busy scenes overrun the line time**: sprites and the K053936 layer share the
+  SDRAM, and on crowded lines some are drawn late (the probe build counts them).
+* **Soccer Superstars can fail 4F/4H on the first boot after loading**, the sound board's RAM
+  check; resetting passes it.
+* No hiscore, light guns or cheats in this bitstream (no set of it has the first two; the space
+  went to the K053936).
+
 ### Out of scope for now
 
 | MAME description | Why |
 |-|-|
 | Type 1: Racin' Force, Konami's Open Golf Championship, Golfing Greats 2 | `MACHINE_NOT_WORKING` in MAME; K053936 road plane, ADC0834, a LAN device MAME lacks; Open Golf is 33 MB |
-| Type 3: Soccer Superstars | Two monitors on alternating frames, a second CRTC and palette, PSAC2 |
-| Type 4: Versus Net Soccer, Run and Gun 2, Slam Dunk 2, Rushing Heroes | As Type 3; Rushing Heroes is 59 MB |
 | Sexy Parodius (bootleg) | Two OKI6295s for sound, `MACHINE_NOT_WORKING` |
 
 ## Hardware
@@ -290,7 +336,8 @@ Revision `KonamiGXT34` (the Type 3/4 boards, `fb8e5b4`), fitted 06 Oct 2026:
 
 ## Installation
 
-The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`
+The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`,
+and `releases/Arcade-KonamiGXT34_<date>.rbf` as `KonamiGXT34.rbf` for the Type 3/4 sets,
 and the `.mra` files from `releases/` to `_Arcade` (clones in `_alternatives`), with the MAME
 merged ROM sets and `konamigx.zip` (the BIOS, which every set needs) in `games/mame`.
 
@@ -314,16 +361,16 @@ To run a development build:
 
 ### Resource usage
 
-The release build (`KonamiGX`, commit `fa152d3`, fitter seed 4) on the DE10-nano's Cyclone V
-5CSEBA6, speed grade 7, timing met on every clock:
+The release builds (commit `e997bb3`, fitter seed 5) on the DE10-nano's Cyclone V 5CSEBA6,
+speed grade 7, timing met on every clock:
 
-| resource | used | available |
-| --- | --- | --- |
-| Logic (ALMs) | 38,987 (93%) | 41,910 |
-| Block memory bits | 4,162,797 (74%) | 5,662,720 |
-| RAM blocks | 532 (96%) | 553 |
-| DSP blocks | 69 (62%) | 112 |
-| PLLs | 3 | 6 |
+| resource | `KonamiGX` | `KonamiGXT34` | available |
+| --- | --- | --- | --- |
+| Logic (ALMs) | 37,676 (90%) | 36,279 (87%) | 41,910 |
+| Block memory bits | 4,163,821 (74%) | 4,317,677 (76%) | 5,662,720 |
+| RAM blocks | 533 (96%) | 542 (98%) | 553 |
+| DSP blocks | 69 (62%) | 55 (49%) | 112 |
+| PLLs | 3 | 3 | 6 |
 
 The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
 reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust has no V-Size: its

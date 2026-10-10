@@ -30,6 +30,11 @@
  * endian words: load_we/load_addr/load_data write it (the .mra's default
  * image, then the saved .nvm), rd_addr/rd_data read it back for the save,
  * and `written` pulses when a command changes it.
+ *
+ * The array is a RAM, one write a clock: a WRITEALL or ERASEALL fills it
+ * a word a clock (64 clocks of its 8 ms busy time). Reads come a clock after
+ * the address: the chip's on port A (its address held from the command),
+ * the save's and the save state's on port B.
  */
 
 module gx_eeprom93c46 #(
@@ -43,7 +48,7 @@ module gx_eeprom93c46 #(
     input             di,
     output            dout,
 
-    output     [63:0] dbg,           // { mem[63], mem[1], mem[0], 6'b0, sweep, locked, st }: the probe
+    output     [63:0] dbg,           // { 48'b0, 6'b0, sweep, locked, st }: the probe
     input             load_we,   // image load, one word
     input      [ 5:0] load_addr,
     input      [15:0] load_data,
@@ -63,10 +68,25 @@ module gx_eeprom93c46 #(
 
 localparam [2:0] S_RESET = 0, S_START = 1, S_CMD = 2, S_READ = 3, S_DATA = 4, S_DONE = 5;
 
-reg  [15:0] mem [0:63];
+// port B: the NVRAM save's, or the save state's (never both at once)
+wire [5:0] ra = ss_sel && ss_addr < 12'd64 ? ss_addr[5:0] : rd_addr;
+// the array: port A the chip's, written through the mux below; port B read
+reg         m_we;
+reg  [ 5:0] m_a;
+reg  [15:0] m_d;
+wire [15:0] m_qa, m_qb;
+gx_tdpram #(.AW(6), .DW(16)) u_mem (
+    .clk(clk), .we_a(m_we), .a(m_a), .d(m_d), .qa(m_qa), .b(ra), .qb(m_qb)
+);
+reg         fill;           // WRITEALL / ERASEALL in progress
+reg  [ 5:0] fill_n;
+reg  [15:0] fill_v;
+reg         c_we;           // a single WRITE or ERASE from the command
+reg  [ 5:0] c_a;
+reg  [15:0] c_d;
 // Blank (all ones, a new part) while `blank` is high: a sweep writes every
-// word, because the array is built as registers whose power-up value the
-// fitter may choose (Power-Up Don't Care), and a game whose EEPROM check only
+// word, because the array's power-up contents are not defined (as registers,
+// which it once was, the fitter chose them), and a game whose EEPROM check only
 // reads failed it on the board while Verilator, which honours an initial
 // value, passed. The sweep free-runs while blank is high, so it needs no
 // power-up value of its own. The top holds blank from configuration until
@@ -91,35 +111,42 @@ wire cs_rise = cs && !cs_l, cs_fall = !cs && cs_l;
 wire sk_rise = sk && !sk_l;
 wire [7:0] cmd_n = { cmd[6:0], di };
 
-integer i;
-// one read port: the NVRAM save's, or the save state's (never both at once)
-wire [5:0] ra = ss_sel && ss_addr < 12'd64 ? ss_addr[5:0] : rd_addr;
-assign rd_data = mem[ra];
+assign rd_data = m_qb;
+
+// port A's write, one source a clock
+always @* begin
+    m_we = 1'b1;
+    m_a  = addr;
+    m_d  = 16'hffff;
+    if( blank )                                   begin m_a = sweep; end
+    else if( load_we )                            begin m_a = load_addr; m_d = load_data; end
+    else if( ss_sel && ss_we && ss_addr < 12'd64 ) begin m_a = ss_addr[5:0]; m_d = ss_wd; end
+    else if( fill )                               begin m_a = fill_n; m_d = fill_v; end
+    else if( c_we )                               begin m_a = c_a; m_d = c_d; end
+    else                                          m_we = 1'b0;
+end
 
 // save states
 wire [78:0] ss_q;
 wire [15:0] ss_vrd;
-reg  [15:0] ss_mq;
 reg         ss_m;
-always @(posedge clk) begin
-    ss_mq <= rd_data;
-    ss_m  <= ss_sel && ss_addr < 12'd64;
-end
+always @(posedge clk) ss_m <= ss_sel && ss_addr < 12'd64;
 gx_ss_vec #(.W(79)) u_ss (
     .clk(clk), .snap(ss_snap), .d({ st, cs_l, sk_l, locked, cmd, nbits, shreg, addr, op, busy }), .q(ss_q),
     .sel(ss_sel && ss_addr >= 12'd64), .addr(ss_addr[9:0] - 10'd64), .we(ss_we), .wd(ss_wd), .rd(ss_vrd)
 );
-assign ss_rd = ss_m ? ss_mq : ss_vrd;
+assign ss_rd = ss_m ? m_qb : ss_vrd;
 always @(posedge clk) begin
     written <= 1'b0;
+    c_we    <= 1'b0;
     if( !ready ) busy <= busy - 20'd1;
-    if( blank ) begin
-        sweep <= sweep + 6'd1;
-        mem[sweep] <= 16'hffff;
+    if( blank ) sweep <= sweep + 6'd1;
+    if( fill && !blank && !load_we && !(ss_sel && ss_we && ss_addr < 12'd64) ) begin
+        fill_n <= fill_n + 6'd1;
+        if( fill_n == 6'd63 ) fill <= 1'b0;
     end
-    if( load_we ) mem[load_addr] <= load_data;
-    else if( ss_sel && ss_we && ss_addr < 12'd64 ) mem[ss_addr[5:0]] <= ss_wd;
     if( rst ) begin
+        fill   <= 0;
         st     <= S_RESET;
         cs_l   <= 0;
         sk_l   <= 0;
@@ -145,7 +172,7 @@ always @(posedge clk) begin
                         2'b10: begin shreg <= 0; st <= S_READ; end          // READ
                         2'b01: begin shreg <= 0; op <= 1; st <= S_DATA; end // WRITE
                         2'b11: begin                                          // ERASE
-                            if( !locked ) begin mem[cmd_n[5:0]] <= 16'hffff; written <= 1'b1; busy <= T_ERASE; end
+                            if( !locked ) begin c_we <= 1'b1; c_a <= cmd_n[5:0]; c_d <= 16'hffff; written <= 1'b1; busy <= T_ERASE; end
                             st <= locked ? S_RESET : S_DONE;
                         end
                         default: case( cmd_n[5:4] )
@@ -153,7 +180,7 @@ always @(posedge clk) begin
                             2'b01: begin shreg <= 0; op <= 2; st <= S_DATA; end // WRITEALL
                             2'b10: begin                                      // ERASEALL
                                 if( !locked ) begin
-                                    for( i=0; i<64; i=i+1 ) mem[i] <= 16'hffff;
+                                    fill <= 1'b1; fill_n <= 6'd0; fill_v <= 16'hffff;
                                     written <= 1'b1;
                                     busy    <= T_ALL;
                                 end
@@ -166,15 +193,15 @@ always @(posedge clk) begin
             end
             S_READ: if( sk_rise ) begin
                 nbits <= nbits + 5'd1;
-                shreg <= nbits == 5'd0 ? { mem[addr], 16'hffff } : { shreg[30:0], 1'b1 };
+                shreg <= nbits == 5'd0 ? { m_qa, 16'hffff } : { shreg[30:0], 1'b1 };
             end
             S_DATA: if( sk_rise ) begin
                 shreg <= { shreg[30:0], di };
                 nbits <= nbits + 5'd1;
                 if( nbits == 5'd15 ) begin
                     if( !locked ) begin
-                        if( op == 2'd2 ) for( i=0; i<64; i=i+1 ) mem[i] <= { shreg[14:0], di };
-                        else mem[addr] <= { shreg[14:0], di };
+                        if( op == 2'd2 ) begin fill <= 1'b1; fill_n <= 6'd0; fill_v <= { shreg[14:0], di }; end
+                        else begin c_we <= 1'b1; c_a <= addr; c_d <= { shreg[14:0], di }; end
                         written <= 1'b1;
                         busy    <= op == 2'd2 ? T_ALL : T_WRITE;
                     end
@@ -187,6 +214,6 @@ always @(posedge clk) begin
     if( ss_commit ) { st, cs_l, sk_l, locked, cmd, nbits, shreg, addr, op, busy } <= ss_q;
 end
 
-assign dbg = { mem[63], mem[1], mem[0], 6'd0, sweep, locked, st };
+assign dbg = { 48'd0, 6'd0, sweep, locked, st };
 
 endmodule

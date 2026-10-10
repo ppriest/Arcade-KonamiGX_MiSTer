@@ -59,7 +59,7 @@ always @(posedge clk or posedge reset) begin
             // ioctl_wait has had a clock to rise (as hps_io paces ioctl_wr)
             L_BYTE: if( !wait_in ) begin
                 wr   <= 1;
-                addr <= { 1'b0, gaddr[25:3], k };
+                addr <= { gaddr[26:3], k };          // all 27 bits: Rushing Heroes' image ends at 82 MB
                 dout <= gran[{ k, 3'b000 } +: 8];     // little-endian: byte k at bits 8k
                 st   <= L_GAP;
             end

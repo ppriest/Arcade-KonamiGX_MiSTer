@@ -35,7 +35,8 @@ gx_sa_crtc = sp:install_write_tap(0xd4c000, 0xd4c01f, "gx_crtc", function(o, d, 
   if mk & 0xff000000 ~= 0 then crtc[k] = (d >> 24) & 0xff end
   if mk & 0x0000ff00 ~= 0 then crtc[k + 1] = (d >> 8) & 0xff end
 end)
-local t3 = m.devices[":k053936_0"] ~= nil or m.system.name:find("^soccerss") ~= nil
+-- the Type 3/4 sets: the twin-monitor boards, MAME's second screen
+local t3 = m.screens[":screen2"] ~= nil
 if t3 then
   gx_sa_bank = sp:install_write_tap(0xe40000, 0xe40003, "gx_t3bank", function(o, d, mk)
     if o == 0xe40000 and mk & 0xff000000 ~= 0 then bank = (d >> 24) & 0xff end

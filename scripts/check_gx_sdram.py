@@ -177,7 +177,9 @@ def main():
           f"{ng} CPU granules, {len(trows)} tile rows, {len(orows)} sprite half-rows")
 
     runner = "scripts/run_verilator.sh" if a.sim == "verilator" else "scripts/run_sim.sh"
-    r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_sdram_tb"]
+    # the Type 3/4 sets: the 128 MB module (two chips)
+    sd128 = ["-GSD128=1"] if a.set in build_mra.T34 else []
+    r = subprocess.run([check_gx_obj.GIT_BASH, runner, "gx_sdram_tb"] + sd128
                        + [f"+{x}" for x in a.plus], cwd=REPO,
                        capture_output=True, text=True)
     log = r.stdout + r.stderr

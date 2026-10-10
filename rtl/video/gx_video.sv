@@ -134,10 +134,12 @@ module gx_video #(
     input      [12:0] pal_addr,
     input      [23:0] pal_din,
     output     [23:0] pal_q,           // the CPU's read of { R, G, B } at pal_addr
-    input      [ 1:0] pal3_we,         // the Type 3/4 palettes (gx_mixer)
+    input      [ 2:0] pal3_we,         // the Type 3/4 palettes (gx_mixer)
     input             pal3_sub,
     input      [15:0] pal3_din,
-    output     [15:0] pal3_q,
+    output     [23:0] pal3_q,
+    input             t4,               // a Type 4 set (gx_board_cfg)
+    input      [ 2:0] ps_oy,            // Type 4's K053936: row offset, [2] map wrap
     input             pix_sub,
 
     // ---- the Type 3/4 K053936 (gx_psac, GX_T34): its registers and bank,
@@ -146,12 +148,14 @@ module gx_video #(
     input             psac_alt,
     output     [10:0] psac_lc_addr,
     input      [15:0] psac_lc_q,
+    output     [13:0] psac_pm_addr,    // Type 4: the map RAM's read port (gx_main)
+    input      [15:0] psac_pm_q,
     output            psm_cs,
     output     [15:0] psm_addr,
     input             psm_ok,
     input      [63:0] psm_data,
     output     [ 3:0] pst_cs,
-    output     [67:0] pst_addr,
+    output     [71:0] pst_addr,
     input      [ 3:0] pst_ok,
     input     [255:0] pst_data,
 
@@ -168,7 +172,7 @@ module gx_video #(
     output     [ 9:0] ss_hpos,            // ...and the pixel since LHBL rose
     input             tm_blank_skip,      // gx_tilemap's blank-row skip on
     input             spr_mix_on,         // gx_mixer: a sprite's effect bits are its mix code
-    output reg [167:0] dbg_line           // line time, tilemap, sprites, K053936 (probe T)
+    output reg [203:0] dbg_line           // line time, tilemap, sprites, K053936 (probe T)
 );
 
 // ------------------------------------------------------------ K053252
@@ -244,9 +248,17 @@ always @* hdump = 10'(p) < hc - 10'd64 ? hd0[HW-1:0] : hdj[HW-1:0];
 // gx_mixer latches a pixel on the pxl_cen that ends it and drives rgb with
 // it on the next, so rgb shows a pixel two pixel periods later; two register
 // stages delay the blanking and syncs to match
+// The visible area is vis_w columns: the K053252's blanking gives the Type 4
+// 384-wide sets 386 (MAME's screens are 384), so the output's LHBL ends after
+// vis_w pixels. Every other set's blanking is already vis_w wide.
 reg [3:0] vd1;
+reg [9:0] vis_n = 10'd0;               // pixels of this line shown so far
+reg [9:0] vis_wr = 10'd288;            // vis_w (clk_sys's config) on this clock
+always @(posedge clk) vis_wr <= vis_w;
+wire      lhbl_v = lhbl && vis_n < vis_wr;
 always @(posedge clk) if( pxl_cen ) begin
-    vd1 <= { lhbl, lvbl, hs, vs };
+    vis_n <= lhbl ? vis_n + (vis_n != 10'h3ff ? 10'd1 : 10'd0) : 10'd0;
+    vd1 <= { lhbl_v, lvbl, hs, vs };
     { vid_lhbl, vid_lvbl, vid_hs, vid_vs } <= vd1;
 end
 
@@ -336,31 +348,32 @@ wire [9:0] ps_pix;
 wire       ps_busy;
 `ifdef GX_T34
 wire [15:0] ps_regs [16];
-wire [16:0] ps_taddr [4];
+wire [17:0] ps_taddr [4];
 wire [63:0] ps_tdata [4];
 genvar gr;
 generate
     for( gr = 0; gr < 16; gr++ ) begin : g_preg assign ps_regs[gr] = psac_regs[16*gr +: 16]; end
     for( gr = 0; gr < 4; gr++ ) begin : g_pst
-        assign pst_addr[17*gr +: 17] = ps_taddr[gr];
+        assign pst_addr[18*gr +: 18] = ps_taddr[gr];
         assign ps_tdata[gr] = pst_data[64*gr +: 64];
     end
 endgenerate
 gx_psac u_psac (
     .clk, .rst,
-    .regs(ps_regs), .map_alt(psac_alt),
+    .regs(ps_regs), .map_alt(psac_alt), .t4, .oy(ps_oy[1:0]), .wrap(ps_oy[2]), .dbl(vis_w[9]), .pm_addr(psac_pm_addr), .pm_q(psac_pm_q),
     .lc_addr(psac_lc_addr), .lc_q(psac_lc_q),
     .line_start, .line_y(line_y[8:0]), .busy(ps_busy), .unsupported(),
     .map_cs(psm_cs), .map_addr(psm_addr), .map_ok(psm_ok), .map_data(psm_data),
     .tile_cs(pst_cs), .tile_addr(ps_taddr), .tile_ok(pst_ok), .tile_data(ps_tdata),
-    .rd_x(bx[9:1]), .rd_pix(ps_pix)
+    .rd_x(t4 && !vis_w[9] ? bx[8:0] : bx[9:1]), .rd_pix(ps_pix)
 );
 `else
 assign ps_busy = 1'b0;
 assign ps_pix = 10'd0;
 assign psac_lc_addr = 11'd0;
+assign psac_pm_addr = 14'd0;
 assign psm_cs = 1'b0; assign psm_addr = 16'd0;
-assign pst_cs = 4'd0; assign pst_addr = 68'd0;
+assign pst_cs = 4'd0; assign pst_addr = 72'd0;
 `endif
 
 // ------------------------------------------------------------ sprites
@@ -392,7 +405,7 @@ gx_mixer u_mix (
     .rst, .clk, .pxl_cen,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pri_c_le2(primode == 4'hf),
-    .pal_we, .pal_addr, .pal_din, .pal_q, .pal3_we, .pal3_sub, .pal3_din, .pal3_q, .pix_sub,
+    .pal_we, .pal_addr, .pal_din, .pal_q, .pal3_we, .pal3_sub, .pal3_din, .pal3_q, .t4, .pix_sub,
     .bx, .by,
     .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]), .sub2(ps_pix),
     .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx), .spr_mix(s_mix), .spr_mix_on,
@@ -417,11 +430,15 @@ reg [11:0] ob_cnt = 0, ob_max_f = 0, ob_max_l = 0, ob_max_all = 0;
 reg [15:0] fe_f = 0, fe_l = 0, bl_f = 0, bl_l = 0, sk_f = 0, sk_l = 0;
 // the K053936 (Type 3/4): its busiest line, and lines that began while it was
 // still rendering the one before
-reg [11:0] ps_cnt = 0, ps_max_f = 0, ps_max_l = 0, ps_max_all = 0, ps_late_f = 0, ps_late_l = 0;
+reg [11:0] ps_cnt = 0, ps_max_f = 0, ps_max_l = 0, ps_max_all = 0, ps_late_f = 0, ps_late_l = 0, ps_late_all = 0;
+// sprite lines that began while the one before was still drawing
+reg [11:0] ob_late_f = 0, ob_late_l = 0, ob_late_all = 0;
+reg        o_busy_d = 0;     // o_start is a clock after HS, when the next scan has begun
 reg        lvbl_d = 0;
 
 always @(posedge clk) begin
     lvbl_d <= vid_lvbl;
+    o_busy_d <= o_busy;
     if( line_start ) begin
         tm_max_f <= max12(tm_max_f, tm_cnt);
         tm_cnt   <= 12'd0;
@@ -430,9 +447,10 @@ always @(posedge clk) begin
     if( line_start ) begin
         ps_max_f <= max12(ps_max_f, ps_cnt);
         ps_cnt   <= 12'd0;
-        if( ps_busy ) ps_late_f <= inc12(ps_late_f);
+        if( ps_busy ) begin ps_late_f <= inc12(ps_late_f); ps_late_all <= inc12(ps_late_all); end
     end else if( ps_busy ) ps_cnt <= inc12(ps_cnt);
     if( o_start ) begin
+        if( o_busy_d ) begin ob_late_f <= inc12(ob_late_f); ob_late_all <= inc12(ob_late_all); end
         ob_max_f <= max12(ob_max_f, ob_cnt);
         ob_cnt   <= 12'd0;
     end else if( o_busy ) ob_cnt <= inc12(ob_cnt);
@@ -452,8 +470,9 @@ always @(posedge clk) begin
         ps_max_l   <= ps_max_f;    ps_max_f  <= 12'd0;
         ps_max_all <= max12(ps_max_all, ps_max_f);
         ps_late_l  <= ps_late_f;   ps_late_f <= 12'd0;
+        ob_late_l  <= ob_late_f;   ob_late_f <= 12'd0;
     end
-    dbg_line <= { ps_late_l, ps_max_all, ps_max_l, sk_l, bl_l, fe_l, ob_max_all, ob_max_l, tm_max_all, tm_max_l, tm_late_l, tm_late_all, frames };
+    dbg_line <= { ps_late_all, ob_late_all, ob_late_l, ps_late_l, ps_max_all, ps_max_l, sk_l, bl_l, fe_l, ob_max_all, ob_max_l, tm_max_all, tm_max_l, tm_late_l, tm_late_all, frames };
 end
 
 endmodule

@@ -360,8 +360,11 @@ def from_mame(sta_path, out_path, k053252=None, side=None):
     if t34:
         g.set_sec("psreg", be32(m + ":k053936_0_ctrl"))
         g.set_sec("psline", be32(m + ":k053936_0_line"))
-        g.set_sec("mpal", be32(m + ":paletteram"))
-        g.set_sec("spal", be32(m + ":subpaletteram"))
+        # Type 3's palettes are the sections' first half
+        g.set_sec("mpal", (be32(m + ":paletteram") + [0] * 16384)[:16384])
+        g.set_sec("spal", (be32(m + ":subpaletteram") + [0] * 16384)[:16384])
+        if m + ":psacram" in it:
+            g.set_sec("psmap", be32(m + ":psacram"))
     g.set_sec("spr", arr(":k055673/0/m_ram", 2))
     g.set_sec("vram", arr(":k056832/0/m_videoram", 2)[:65536])
     g.set_sec("sram", arr(s + "100000-10ffff", 2))
@@ -599,8 +602,10 @@ def to_mame(ss_path, out_path):
         put(m + "d90000-d97fff", pal, 4)
         put(m + ":k053936_0_ctrl", be32(g.sec("psreg")), 4)
         put(m + ":k053936_0_line", be32(g.sec("psline")), 4)
-        put(m + ":paletteram", be32(g.sec("mpal")), 4)
-        put(m + ":subpaletteram", be32(g.sec("spal")), 4)
+        put(m + ":paletteram", be32(g.sec("mpal"))[:len(it[m + ":paletteram"]) // 4], 4)
+        put(m + ":subpaletteram", be32(g.sec("spal"))[:len(it[m + ":subpaletteram"]) // 4], 4)
+        if m + ":psacram" in it:
+            put(m + ":psacram", be32(g.sec("psmap")), 4)
         fix.append(f"w32 e40000 {bd['t3_bank'] << 24:x}")
     else:
         fix += [f"w32 {0xD90000 + 4 * i:x} {v:x}" for i, v in enumerate(pal)]

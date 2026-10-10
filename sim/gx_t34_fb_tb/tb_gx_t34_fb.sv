@@ -27,7 +27,7 @@ wire        ddr_we;
 
 gx_t34_fb uut (
     .CLK_VIDEO(clk), .CE_PIXEL(1'b1), .VGA_R(r), .VGA_G(g), .VGA_B(b), .VGA_VS(vs), .VGA_DE(de),
-    .vid_sub, .mode,
+    .vid_sub, .mode_in(mode),
     .FB_EN(fb_en), .FB_FORMAT(), .FB_WIDTH(fb_w), .FB_HEIGHT(fb_h), .FB_BASE(fb_base), .FB_STRIDE(fb_stride),
     .FB_VBL(fb_vbl),
     .DDRAM_CLK(), .DDRAM_BUSY(1'b0), .DDRAM_BURSTCNT(), .DDRAM_ADDR(ddr_addr), .DDRAM_DIN(ddr_din),

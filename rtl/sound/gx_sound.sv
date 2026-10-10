@@ -45,19 +45,19 @@ module gx_sound (
     // MAME's (a ±1 in the delay line, k054539_model.py).
     input             rst_chip,
 
-    input      [25:0] snd_base,     // the sound program in SDRAM
+    input      [26:0] snd_base,     // the sound program in SDRAM (27 bits: Rushing Heroes' is past 64 MB)
     input      [23:0] snd_pcm,      // the sample area's size (gx_board_cfg): the RAMs follow it
     // SDRAM reads: the program, the samples, the K054539s' RAM (absolute
     // granules); inval drops what the port holds after a RAM write
     output reg        m_cs,
-    output reg [22:0] m_addr,
+    output reg [23:0] m_addr,
     input             m_ok,
     input      [63:0] m_data,
     output reg        m_inval,
     // SDRAM writes, a byte or (w_we16) an even-addressed pair, the even
     // byte low: the K054539s' RAM, the DSP's
     output reg        w_req,
-    output reg [25:0] w_addr,
+    output reg [26:0] w_addr,
     output reg [15:0] w_data,
     output reg        w_we16,
     input             w_busy,
@@ -137,10 +137,10 @@ module gx_sound (
     output     [15:0] ss_rd
 );
 
-localparam [25:0] PCM_OFF = 26'h040000;     // the samples, after the program
-wire [25:0] RAM_OFF = PCM_OFF + { 2'd0, snd_pcm };   // the K054539s' RAM, after the samples
-wire [25:0] DSP_OFF = RAM_OFF + 26'h010000;          // the DSP's RAM, 256 KB, after theirs
-wire [25:0] SRAM_OFF = DSP_OFF + 26'h040000;         // GX_T34: the 68000's RAM, 64 KB, after that
+localparam [26:0] PCM_OFF = 27'h040000;     // the samples, after the program
+wire [26:0] RAM_OFF = PCM_OFF + { 3'd0, snd_pcm };   // the K054539s' RAM, after the samples
+wire [26:0] DSP_OFF = RAM_OFF + 27'h010000;          // the DSP's RAM, 256 KB, after theirs
+wire [26:0] SRAM_OFF = DSP_OFF + 27'h040000;         // GX_T34: the 68000's RAM, 64 KB, after that
 
 
 // ---------------------------------------------------------------- CPU
@@ -255,7 +255,7 @@ gx_sdpram #(.AW(11), .DW(8)) u_raml ( .clk, .we(c_we_l), .wa(c_wa), .d(c_d[ 7:0]
 gx_sdpram #(.AW(9),  .DW(5)) u_rtag ( .clk, .we(t_we),   .wa(t_wa), .d(t_d),       .ra(ram_a[10:2]), .q(t_q) );
 wire        c_hit = t_q == { 1'b1, ram_a[14:11] };
 reg         sr_pw_full;             // a write posted, not yet in SDRAM
-reg  [25:0] sr_pw_addr;
+reg  [26:0] sr_pw_addr;
 reg  [15:0] sr_pw_data;
 reg         sr_pw_16;
 reg  [ 9:0] c_clr;                  // the tags being cleared after a reset: [9] done
@@ -334,8 +334,8 @@ reg         k_both;                     // a word access: #1, then #2
 reg  [ 7:0] k_hi;                       // #1's byte of a word read
 // where the chip's byte lives in SDRAM: its own 32 KB of RAM (chip n at
 // n * 0x8000), or the shared samples
-wire [25:0] k_byte  = k_ram ? snd_base + RAM_OFF + { 10'd0, kw, k_addr[14:0] }
-                            : snd_base + PCM_OFF + { 2'd0, 24'(k_addr) & pcm_mask };   // mirrored, as MAME's rom interface
+wire [26:0] k_byte  = k_ram ? snd_base + RAM_OFF + { 11'd0, kw, k_addr[14:0] }
+                            : snd_base + PCM_OFF + { 3'd0, 24'(k_addr) & pcm_mask };   // mirrored, as MAME's rom interface
 
 // ---------------------------------------------------------------- TMS57002
 reg         d_ctrl_wr, d_wr, d_rd;
@@ -464,7 +464,7 @@ localparam [4:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_K539 = 3, U_KMEM = 4, U_KW
                  U_SB = 18, U_SB2 = 19, U_SD = 20, U_SDR = 21, U_SDW1 = 22, U_SDW2 = 23,
                  U_SR = 24, U_SW1 = 25, U_SW2 = 26, U_CR = 27, U_CR2 = 28, U_CF = 29, U_CF2 = 30;
 // the save-state engine's SDRAM word: its granule, and its byte
-wire [25:0] sd_byte = snd_base + RAM_OFF + { 7'd0, ss_sd_addr, 1'b0 };
+wire [26:0] sd_byte = snd_base + RAM_OFF + { 8'd0, ss_sd_addr, 1'b0 };
 reg  [4:0] ust;
 reg  [2:1] u_w;                 // the word of the granule the ROM read wants
 wire [23:0] ub = { a32[23:1], 1'b0 };
@@ -565,7 +565,7 @@ always @(posedge clk) begin
         u_take <= 1'b1;
         u_w <= a32[2:1];
         if( ub < 24'h040000 ) begin
-            m_cs <= 1'b1; m_addr <= 23'((snd_base + { 2'd0, ub }) >> 3); ust <= U_ROM;
+            m_cs <= 1'b1; m_addr <= 24'((snd_base + { 3'd0, ub }) >> 3); ust <= U_ROM;
         end else if( ub >= 24'h100000 && ub < 24'h110000 ) begin
             ram_a <= a32[15:1]; ram_d <= cpu_dout;
 `ifndef GX_T34

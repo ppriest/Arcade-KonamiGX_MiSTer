@@ -44,7 +44,17 @@
  *   word the CPU wrote to 0xcc0004: 0x0a56/0x0d96/0x0d14/0x0d1c copy 0x400
  *   bytes from 0xc01000 to 0xc01400; 0x057a copies the dwords at 0xc00f10,
  *   0xc00f14, 0xc00f20, 0xc00f24, 0xc00f30, 0xc00f34 to 0xc10f00, 0xc10f04,
- *   0xc10f20, 0xc10f24, 0xc0fe00, 0xc0fe04; any other command does nothing.
+ *   0xc10f20, 0xc10f24, 0xc0fe00, 0xc0fe04; Slam Dunk 2's 0x0b16 copies the
+ *   high words of 0x100 longs from 0xc01000 to 0xd20000, a word apart, and
+ *   0x3a4f 0x400 of them from 0xc18400 to 0xd21000; Versus Net Soccer's
+ *   0x0515 and 0x115d copy 0x400 bytes, 0xc01800 to 0xc01c00 and 0xc18800
+ *   to 0xc18c00. Rushing Heroes' 0x0d97 copies 256 sprites of five dwords
+ *   from 0xc09ff0 down by 0x10 a sprite to 0xd20000 up by 0x10 (a sprite's
+ *   fifth dword lands on the next's first, which the next copy replaces) --
+ *   0xc19ff0 to 0xd21000 when the parameter was 0x0062 (data[16]) -- then
+ *   the inputs: the inverted bytes at 0xc00507, 0xc00527, 0xc00547,
+ *   0xc00567 to 0xc01cc0, 0xc01cc1, 0xc01cc4, 0xc01cc5 and again at
+ *   0xc11cc0. Any other command does nothing.
  *   Then `irq` pulses; there is no packet to mark.
  *
  *   generate_sprites: pass 1 lists the entries at src + 0x100*i whose word
@@ -112,7 +122,7 @@ localparam [6:0]
     S_CNT=21, S_IDX=22, S_FLIP=23, S_COL=24, S_Y=25, S_X=26, S_DIVY=27, S_DIVX=28,
     S_POS=29, S_W0=30, S_W1=31, S_W2=32, S_W3=33, S_W4=34, S_W5=35, S_W6=36, S_NEXT=37,
     S_FILL=38, S_END=39, S_ENTRY=40, S_W7=41, S_DONE=42, S_CP_RD=43, S_CP_WR=44, S_CP_NEXT=45,
-    S_CP_SEG=46,
+    S_CP_SEG=46, S_RH_IN=73, S_RH_WB=74, S_RH_NX=75,
     S2_MG0=47, S2_MG1=48, S2_VC=49, S2_HC=50, S2_VV=51, S2_VV1=52, S2_VV2=53, S2_LB=54,
     S2_LB1=55, S2_LB2=56, S2_G0=57, S2_G1=58, S2_GC=59, S2_GH=60, S2_GV=61, S2_GN=62,
     S2_ORD=63, S2_OT=64, S2_OW=65, S2_ONEXT=66, S2_CLR=67, S2_CLRW=68,
@@ -126,7 +136,12 @@ reg  [8:0]  i, ecount, e, scount;
 reg  [7:0]  pri;
 reg  [23:0] adr, set, spr;
 reg  [23:0] cp_last;             // the copy's last destination word
+reg         cp_s4;               // the source steps a long (0x0b16, 0x3a4f)
 reg  [1:0]  cp_seg;              // 0x057a: which of its three copies
+reg         rh_run;              // 0x0d97
+reg  [23:0] rh_src, rh_dst;      // 0x0d97: this sprite's source and destination
+reg  [ 8:0] rh_n;                // 0x0d97: sprites copied; then the input bytes
+reg  [ 2:0] rh_b;
 reg         p4_run, p4_in;       // a type 4 command; 0x057a
 reg  [15:0] w_hi, glob_x, glob_y, glob_f, zoom_x, zoom_y, v16;
 reg  [15:0] color_val, color_mask, color_set, color_rotate, count2;
@@ -205,6 +220,13 @@ endtask
 task wr( input [23:0] a, input [15:0] d );
     begin m_req <= 1; m_we <= 1; m_addr <= a[23:1]; m_be <= 2'b11; m_dout <= d; end
 endtask
+task wrb( input [23:0] a, input [7:0] d );     // one byte
+    begin m_req <= 1; m_we <= 1; m_addr <= a[23:1]; m_be <= a[0] ? 2'b01 : 2'b10; m_dout <= { d, d }; end
+endtask
+// 0x0d97's input bytes: byte k of four from 0xc00507 + 0x20 * k, to the
+// offsets 0, 1, 4, 5 at 0xc01cc0 (b 0-3) and 0xc11cc0 (b 4-7)
+wire [23:0] rh_isrc = 24'hc00507 + { 17'd0, rh_b[1:0], 5'd0 };
+wire [23:0] rh_idst = (rh_b[2] ? 24'hc11cc0 : 24'hc01cc0) + { 21'd0, rh_b[1], 1'b0, rh_b[0] };
 
 // the colour and position arithmetic for the piece just read
 reg  [15:0] col_m;
@@ -253,6 +275,8 @@ always @(posedge clk) begin
         end else if( start && p4 ) begin
             fj_run <= 0;
             busy <= 1; p4_run <= 1; p4_in <= data[15:0] == 16'h057a; cp_seg <= 0;
+            rh_run <= data[15:0] == 16'h0d97; rh_n <= 0; rh_b <= 0;
+            cp_s4 <= data[15:0] == 16'h0b16 || data[15:0] == 16'h3a4f;
             case( data[15:0] )
                 16'h0a56, 16'h0d96, 16'h0d14, 16'h0d1c: begin
                     adr <= 24'hc01000; spr <= 24'hc01400; cp_last <= 24'hc017fe;
@@ -261,6 +285,30 @@ always @(posedge clk) begin
                 16'h057a: begin
                     adr <= 24'hc00f10; spr <= 24'hc10f00; cp_last <= 24'hc10f06;
                     rd( 24'hc00f10 ); st <= S_CP_RD;
+                end
+                16'h0d97: begin
+                    rh_src <= data[16] ? 24'hc19ff0 : 24'hc09ff0;
+                    rh_dst <= data[16] ? 24'hd21000 : 24'hd20000;
+                    adr <= data[16] ? 24'hc19ff0 : 24'hc09ff0;
+                    spr <= data[16] ? 24'hd21000 : 24'hd20000;
+                    cp_last <= (data[16] ? 24'hd21000 : 24'hd20000) + 24'h12;
+                    rd( data[16] ? 24'hc19ff0 : 24'hc09ff0 ); st <= S_CP_RD;
+                end
+                16'h0b16: begin
+                    adr <= 24'hc01000; spr <= 24'hd20000; cp_last <= 24'hd201fe;
+                    rd( 24'hc01000 ); st <= S_CP_RD;
+                end
+                16'h3a4f: begin
+                    adr <= 24'hc18400; spr <= 24'hd21000; cp_last <= 24'hd217fe;
+                    rd( 24'hc18400 ); st <= S_CP_RD;
+                end
+                16'h0515: begin
+                    adr <= 24'hc01800; spr <= 24'hc01c00; cp_last <= 24'hc01ffe;
+                    rd( 24'hc01800 ); st <= S_CP_RD;
+                end
+                16'h115d: begin
+                    adr <= 24'hc18800; spr <= 24'hc18c00; cp_last <= 24'hc18ffe;
+                    rd( 24'hc18800 ); st <= S_CP_RD;
                 end
                 default: st <= S_END;
             endcase
@@ -293,7 +341,7 @@ always @(posedge clk) begin
         S_CP_RD: if( m_ack ) begin v16 <= m_din; st <= S_CP_WR; end
         S_CP_WR: if( !m_req ) begin
             wr( spr, v16 );
-            spr <= spr + 24'd2; adr <= adr + 24'd2;
+            spr <= spr + 24'd2; adr <= adr + (p4_run && cp_s4 ? 24'd4 : 24'd2);
             if( spr == cp_last ) st <= S_CP_SEG;
             else st <= S_CP_NEXT;
         end
@@ -309,6 +357,16 @@ always @(posedge clk) begin
                 if( fj_fill ) st <= F_WH;
                 else begin rd( fj_fill ? adr : adr + 24'd4 ); st <= F_RH; end
             end
+        end else if( !m_req && rh_run ) begin
+            // 0x0d97: the next sprite, or the input bytes
+            if( rh_n != 9'd255 ) begin
+                rh_n   <= rh_n + 9'd1;
+                rh_src <= rh_src - 24'h10; rh_dst <= rh_dst + 24'h10;
+                adr <= rh_src - 24'h10; spr <= rh_dst + 24'h10; cp_last <= rh_dst + 24'h22;
+                rd( rh_src - 24'h10 ); st <= S_CP_RD;
+            end else begin
+                rd( { rh_isrc[23:1], 1'b0 } ); st <= S_RH_IN;
+            end
         end else if( !m_req ) begin
             cp_seg <= cp_seg + 2'd1;
             if( p4_in && cp_seg == 2'd0 ) begin
@@ -319,6 +377,15 @@ always @(posedge clk) begin
                 rd( 24'hc00f30 ); st <= S_CP_RD;
             end else st <= S_END;
         end
+        // ---- 0x0d97's input bytes (the source byte is the word's low one)
+        S_RH_IN: if( m_ack ) begin v16 <= m_din; st <= S_RH_WB; end
+        S_RH_WB: if( !m_req ) begin
+            wrb( rh_idst, ~v16[7:0] );
+            rh_b <= rh_b + 3'd1;
+            if( rh_b == 3'd7 ) begin rh_run <= 1'b0; st <= S_END; end
+            else st <= S_RH_NX;
+        end
+        S_RH_NX: if( !m_req ) begin rd( { rh_isrc[23:1], 1'b0 } ); st <= S_RH_IN; end
         // ---- fantjour_dma_w: a dword is two words, high first
         F_RH: if( m_ack ) begin w_hi <= m_din ^ fj_xr[31:16]; rd( adr + 24'd2 ); st <= F_RL; end
         F_RL: if( m_ack ) begin v16 <= m_din ^ fj_xr[15:0]; st <= F_WH; end

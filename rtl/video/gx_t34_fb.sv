@@ -30,7 +30,7 @@ module gx_t34_fb (
     input             VGA_DE,
 
     input             vid_sub,      // the frame now being sent is the sub monitor's (clk_sys)
-    input      [ 2:0] mode,
+    input      [ 2:0] mode_in,      // the OSD's (clk_sys): registered here
 
     output            FB_EN,
     output     [ 4:0] FB_FORMAT,
@@ -52,6 +52,8 @@ module gx_t34_fb (
 
 localparam [6:0] MEM_BASE = 7'b0010010;     // 0x24000000, 3 x 8 MB, as screen_rotate_two
 
+reg  [ 2:0] mode = 3'd0;
+always @(posedge CLK_VIDEO) mode <= mode_in;
 reg  [ 1:0] i_fb = 2'd0, o_fb = 2'd1, r_fb = 2'd2;
 reg         ready = 1'b0;                   // r_fb holds a finished picture
 reg  [ 2:0] fb_en = 3'd0;
@@ -147,12 +149,17 @@ end
 // CW from the top down; ly, the line in the frame, picks the column.
 reg  [11:0] ly;
 reg  [22:0] rbase;                              // the last row's start (CCW)
+reg  [11:0] rb_h;
+reg  [13:0] rb_s;
 wire [11:0] ccol = (sub ? vsz : 12'd0) + ly;                    // CCW: main left
 wire [11:0] wcol = (sub ? vsz : { vsz[10:0], 1'b0 }) - 12'd1 - ly;  // CW: main right
 always @(posedge CLK_VIDEO) begin
     reg old_vs, old_de;
     ram_wr <= 1'b0;
-    rbase  <= 23'(hsz * stride) - { 9'd0, stride };
+    // the last row's start, a clock for the product's inputs and one for it
+    rb_h   <= hsz - 12'd1;
+    rb_s   <= stride;
+    rbase  <= 23'(rb_h * rb_s);
     if( CE_PIXEL && FB_EN ) begin
         old_vs <= VGA_VS;
         old_de <= VGA_DE;

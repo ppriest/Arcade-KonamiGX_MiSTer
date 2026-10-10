@@ -102,6 +102,25 @@ set fields_T {
     {ps_busy_max_frm 132 143 dec}
     {ps_busy_max    144 155 dec}
     {ps_late_frm    156 167 dec}
+    {obj_late_frm   168 179 dec}
+    {obj_late_total 180 191 dec}
+    {ps_late_total  192 203 dec}
+}
+
+# INSTANCE B, 264 bits: the SDRAM's use in the last frame (gx_sdram_top
+# dbg_bw), clk_mem cycles (96 MHz: 1,621,962 a 59.19 Hz frame).
+set fields_B {
+    {gfx_port_busy     0  23 dec}
+    {snd_port_busy    24  47 dec}
+    {tile_wait        48  71 dec}
+    {obj_wait         72  95 dec}
+    {psac_wait        96 119 dec}
+    {snd_prog_req    120 143 dec}
+    {dsp_ram_req     144 167 dec}
+    {samples_req     168 191 dec}
+    {snd_ram_req     192 215 dec}
+    {snd_ram_write   216 239 dec}
+    {cpu_port_busy2  240 263 dec}
 }
 
 # INSTANCE K, 64 bits: the ROM load (KonamiGX.sv). The cycle counts are
@@ -278,6 +297,7 @@ switch -- $inst_id {
     S       { set fields $fields_S }
     D       { set fields $fields_D }
     T       { set fields $fields_T }
+    B       { set fields $fields_B }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1

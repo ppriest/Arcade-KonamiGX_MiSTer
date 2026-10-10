@@ -134,6 +134,8 @@ module gx_main (
     input      [31:0] esc_xor,
     input      [63:0] esc_lanes,
     input             t34,                  // a Type 3/4 set (gx_board_cfg; the KonamiGXT34 bitstream, docs/TYPE34.md)
+    input             t4_cfg,               // a Type 4 set (gx_board_cfg, clk_sys)
+    input      [ 2:0] ps_oy_cfg,            // its K053936 row offset, [2] map wrap
     input      [ 4:0] rom_uncached,         // clocks an instruction fetch takes while CACR's cache is off
     input             tile_rb66,            // the K056832 window is k_6bpp_rom_long_r (six-byte rows)
     input             guns,                 // le2: the light guns at 0xd44000, P2's trigger at 0xd5e002
@@ -152,7 +154,7 @@ module gx_main (
     input             psm_ok,
     input      [63:0] psm_data,
     output     [ 3:0] pst_cs,
-    output     [67:0] pst_addr,
+    output     [71:0] pst_addr,
     input      [ 3:0] pst_ok,
     input     [255:0] pst_data,
     output            pxl_cen_o,            // the dot clock enable, for the video output
@@ -175,7 +177,7 @@ module gx_main (
     output reg [63:0] dbg_k338,              // the last write to K054338 register 14's high byte (probe O)
     output    [135:0] dbg_shd,               // gx_obj's shadow-code-1 tile probe (probe O)
     output    [111:0] dbg_mix,               // the mixer's registers (probe L)
-    output    [167:0] dbg_line,              // line time, tilemap, sprites, K053936 (probe T)
+    output    [203:0] dbg_line,              // line time, tilemap, sprites, K053936 (probe T)
     input             tm_blank_skip,         // gx_tilemap's blank-row skip on
     input             spr_mix_on,            // gx_mixer: a sprite's effect bits are its mix code (OSD)
     output     [83:0] dbg_rom,               // the last granule the CPU cache fetched (probe M)
@@ -190,7 +192,7 @@ module gx_main (
     input      [25:0] tile_base,
     input      [25:0] obj_base,
     output reg        gfx_cs,
-    output reg [22:0] gfx_addr,
+    output reg [23:0] gfx_addr,          // granule: 27-bit byte addresses (Rushing Heroes' sprites reach 75 MB)
     input             gfx_ok,
     input      [63:0] gfx_data,
     input             mem_t,
@@ -326,6 +328,7 @@ reg  [7:0] vram_bank;                       // K056832 m_regs[0x19], low byte
 reg [15:0] esc_hi;
 reg [15:0] p4_op;                           // type4_prot_w: the command word
 reg        p4_op_v, p4_clk;                 // m_last_prot_op != -1, m_last_prot_clk
+reg [15:0] p4_param;                        // m_last_prot_param (Rushing Heroes' screen)
 reg        esc_p4;
 reg        esc_fj;
 reg [15:0] fjw [0:15];                      // fantjour_dma_w's eight dwords, as words
@@ -372,11 +375,17 @@ assign pl_q[3] = 8'h00;     // soccerss's RAM test reads back bytes 2-0 of each 
 assign pl_q[2] = pal_q[23:16];
 assign pl_q[1] = pal_q[15:8];
 assign pl_q[0] = pal_q[7:0];
-reg  [1:0]  pl3_we;                         // the Type 3/4 palettes, in gx_mixer
+reg  [2:0]  pl3_we;                         // the Type 3/4 palettes, in gx_mixer
 reg         pl3_sub;
 reg  [15:0] pl3_d;
 wire        pix_sub;
-wire [15:0] pal3_q;
+wire [23:0] pal3_q;
+reg         t4_w;                           // Type 4: the palette access's word in its long
+// the config on this clock: t4 reaches the mixer's pixel path, too deep to
+// take straight from clk_sys (-8.7 ns in KonamiGXT34)
+reg         t4 = 1'b0;
+reg  [ 2:0] ps_oy = 3'd0;
+always @(posedge clk) begin t4 <= t4_cfg; ps_oy <= ps_oy_cfg; end
 
 `ifdef GX_T34
 // ------------------------------------------------------------ Type 3/4 (docs/TYPE34.md)
@@ -400,7 +409,20 @@ gx_tdpram #(.AW(11), .DW(8)) u_t3lc_h ( .clk, .we_a(t3_we[1] && t3_sel == T3_LC)
                                          .b(ps_lc_addr), .qb(ps_lc_q[15:8]) );
 gx_tdpram #(.AW(11), .DW(8)) u_t3lc_l ( .clk, .we_a(t3_we[0] && t3_sel == T3_LC), .a(t3_a[10:0]), .d(t3_d[ 7:0]), .qa(t3_lc_q[ 7:0]),
                                          .b(ps_lc_addr), .qb(ps_lc_q[ 7:0]) );
-wire [15:0] t3_q = t3_sel == T3_LC ? t3_lc_q : pal3_q;
+// Type 4: the K053936's map, 0xf00000 (32 KB, gx_type4_map's psacram), a
+// tile a word in MAME's tile_index order; gx_psac reads it on port b
+reg         pm_sel;
+reg  [ 1:0] pm_we;
+reg  [13:0] pm_a;
+wire [15:0] pm_q;
+wire [13:0] ps_pm_addr;
+wire [15:0] ps_pm_q;
+gx_tdpram #(.AW(14), .DW(8)) u_t4pm_h ( .clk, .we_a(pm_we[1]), .a(pm_a), .d(t3_d[15:8]), .qa(pm_q[15:8]),
+                                         .b(ps_pm_addr), .qb(ps_pm_q[15:8]) );
+gx_tdpram #(.AW(14), .DW(8)) u_t4pm_l ( .clk, .we_a(pm_we[0]), .a(pm_a), .d(t3_d[ 7:0]), .qa(pm_q[ 7:0]),
+                                         .b(ps_pm_addr), .qb(ps_pm_q[ 7:0]) );
+// Type 4's palettes: word 0 { x, R } (x not kept), word 1 { G, B }
+wire [15:0] t3_q = pm_sel ? pm_q : t3_sel == T3_LC ? t3_lc_q : !t4 ? pal3_q[15:0] : t4_w ? pal3_q[15:0] : { 8'h00, pal3_q[23:16] };
 reg  [15:0] t3_psac [0:15];                  // the K053936's registers (0xe00000)
 wire [255:0] ps_regs;
 genvar gp;
@@ -470,11 +492,12 @@ gx_video u_video (
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
     .bg_grad(wrport1_0[5]),
     .pal_we(pl_we[2:0]), .pal_addr(pl_a), .pal_din({ pl_d[7:0], pl_d }), .pal_q,
-    .pal3_we(pl3_we), .pal3_sub(pl3_sub), .pal3_din(pl3_d), .pal3_q, .pix_sub,
+    .pal3_we(pl3_we), .pal3_sub(pl3_sub), .pal3_din(pl3_d), .pal3_q, .t4, .ps_oy, .pix_sub,
 `ifdef GX_T34
     .psac_regs(ps_regs), .psac_alt(t3_bank[4]), .psac_lc_addr(ps_lc_addr), .psac_lc_q(ps_lc_q),
+    .psac_pm_addr(ps_pm_addr), .psac_pm_q(ps_pm_q),
 `else
-    .psac_regs(256'd0), .psac_alt(1'b0), .psac_lc_addr(), .psac_lc_q(16'd0),
+    .psac_regs(256'd0), .psac_alt(1'b0), .psac_lc_addr(), .psac_lc_q(16'd0), .psac_pm_addr(), .psac_pm_q(16'd0),
 `endif
     .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short,
@@ -505,9 +528,18 @@ wire [23:1] esc_addr;
 wire [ 1:0] esc_be;
 wire [15:0] esc_dout;
 
+// The Type 3/4 bitstream keeps only the type 4 commands: no set of its
+// generates sprites by ESC, runs Salamander 2's mode or Fantastic Journey's
+// DMA, and tied off here they are not built.
+`ifdef GX_T34
+gx_esc u_escm (
+    .rst, .clk, .start(esc_start && esc_p4), .data(esc_data), .p4(1'b1), .fj(1'b0), .fj_mode, .fj_sz2, .fj_sa, .fj_da, .fj_db, .fj_x, .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
+    .gen_en(1'b0), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(1'b0), .gen_sal2(1'b0),
+`else
 gx_esc u_escm (
     .rst, .clk, .start(esc_start), .data(esc_data), .p4(esc_p4), .fj(esc_fj), .fj_mode, .fj_sz2, .fj_sa, .fj_da, .fj_db, .fj_x, .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
     .gen_en(esc_gen), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(esc_copy), .gen_sal2(esc_sal2),
+`endif
     .m_req(esc_req), .m_we(esc_we), .m_addr(esc_addr), .m_be(esc_be), .m_dout(esc_dout),
     .m_din(u_din), .m_ack(esc_ack)
 );
@@ -605,10 +637,15 @@ reg  [15:0] io_q;
 reg  [ 1:0] ch_clr_s = 2'b00;
 always @(posedge clk) ch_clr_s <= { ch_clr_s[0], cheat_clr };
 wire [15:0] ch_wram;
+`ifdef GX_T34
+// the Type 3/4 bitstream has no cheats: not built, for room
+assign ch_wram = { wr_qh, wr_ql };
+`else
 cheatengine_32_16 #(.ADDR_WIDTH(24), .MAX_CODES(16)) u_cheat (
     .clk, .reset(ch_clr_s[1]), .enable(1'b1), .available(), .code(cheat_code),
     .addr_in({ ua_r, 1'b0 }), .data_in({ wr_qh, wr_ql }), .data_out(ch_wram)
 );
+`endif
 
 
 wire        cpu_req_now;
@@ -738,7 +775,7 @@ always @* begin
     endcase
 end
 // the fifth byte of a row sits at offset 4 of its granule, the other four at 0-3
-wire [25:0] tr_byte = tile_base + { tr_row, 3'b000 } + { 23'd0, tr_bir };
+wire [26:0] tr_byte = 27'(tile_base) + 27'({ tr_row, 3'b000 }) + 27'(tr_bir);
 
 // the sprite window: eight offsets, four words of the four-byte part and two
 // bytes of the fifth-bit part (k055673_5bpp_rom_word_r)
@@ -748,11 +785,11 @@ wire [22:1] sr_w    = rmrd_addr + ( sr_off == 3'd0 ? 22'd2 :
                                     sr_off == 3'd5 ? 22'd1 : 22'd0 );
 // sr_w counts in words, so its value is the byte offset halved: the region
 // byte is i = 2*sr_w, and a row's four bytes are the granule's first four
-wire [25:0] sr_byte4 = obj_base + { 2'd0, sr_w[22:2], 3'b000 } + { 24'd0, sr_w[1], 1'b0 };
+wire [26:0] sr_byte4 = 27'(obj_base) + 27'({ sr_w[22:2], 3'b000 }) + 27'({ sr_w[1], 1'b0 });
 // cases 2,3 and 6,7: romofs/2 is a byte of the fifth-bit part, +1 for 2,3.
 // romofs is rmrd_addr's own value, so romofs/2 is it shifted once more.
 wire [22:0] sr_five = { 1'b0, rmrd_addr[22:2] } + ( sr_off[2] ? 23'd0 : 23'd1 );
-wire [25:0] sr_byte5 = obj_base + { sr_five, 3'b000 } + 26'd4;
+wire [26:0] sr_byte5 = 27'(obj_base) + 27'({ sr_five, 3'b000 }) + 27'd4;
 wire        sr_is5   = sr_off[1:0] == 2'd2 || sr_off[1:0] == 2'd3;
 
 // ------------------------------------------------------------ ROM cache
@@ -795,7 +832,7 @@ always @(posedge clk) begin
     { wr_we_h, wr_we_l } <= 0;
     pl_we <= 0; pl3_we <= 0;
 `ifdef GX_T34
-    t3_we <= 0;
+    t3_we <= 0; pm_we <= 0;
 `endif
     snd_wr <= 0; snd_rd <= 0;
     spr_ram_we <= 0;
@@ -872,9 +909,12 @@ always @(posedge clk) begin
                 // runs the command, once
                 if( uwe && ub[2:1] == 2'b10 ) begin p4_op <= ud; p4_op_v <= 1; end
                 if( uwe && ub[2:1] == 2'b00 ) begin
+                    // MAME sees the word in both halves: a word whose high
+                    // byte is 0 is the parameter
+                    if( ud[15:8] == 8'd0 ) p4_param <= ud;
                     p4_clk <= ud[9];
                     if( p4_clk && !ud[9] && p4_op_v ) begin
-                        esc_data <= { 8'd0, p4_op }; esc_p4 <= 1; esc_fj <= 0; esc_start <= 1; esc_started <= 1;
+                        esc_data <= { 7'd0, p4_param == 16'h0062, p4_op }; esc_p4 <= 1; esc_fj <= 0; esc_start <= 1; esc_started <= 1;
                         p4_op_v <= 0;
                     end
                 end
@@ -887,14 +927,14 @@ always @(posedge clk) begin
                 end
             end else if( ub >= 24'hd00000 && ub < 24'hd02000 ) begin
                 // K056832 ROM readback, a byte at a time
-                gfx_cs <= 1; gfx_addr <= tr_byte[25:3]; gfx_sel <= tr_byte[2:0];
+                gfx_cs <= 1; gfx_addr <= tr_byte[26:3]; gfx_sel <= tr_byte[2:0];
                 gfx_five <= 1'b0; gfx_word <= 1'b0;
                 ust <= U_GFX;
             end else if( ub >= 24'hd4a000 && ub < 24'hd4a010 ) begin
                 // K055673 ROM readback: four words of the four-byte part,
                 // two bytes of the fifth-bit part
                 gfx_cs <= 1;
-                gfx_addr <= sr_is5 ? sr_byte5[25:3] : sr_byte4[25:3];
+                gfx_addr <= sr_is5 ? sr_byte5[26:3] : sr_byte4[26:3];
                 gfx_sel  <= sr_is5 ? sr_byte5[2:0]  : sr_byte4[2:0];
                 gfx_five <= sr_is5; gfx_word <= !sr_is5;
                 ust <= U_GFX;
@@ -950,12 +990,25 @@ always @(posedge clk) begin
             end else if( ub >= 24'hd80000 && ub < 24'hd80020 ) begin
                 if( uwe ) begin k338_we <= ube; k338_addr <= ua[4:1]; end
 `ifdef GX_T34
+            end else if( t4 && ub >= 24'hf00000 && ub < 24'hf08000 ) begin
+                pm_sel <= 1'b1; pm_a <= ua[14:1]; t3_d <= ud;
+                if( uwe ) pm_we <= ube;
+                usrc <= R_T3; ucnt <= 3'd2;
+            end else if( t4 && ((ub >= 24'he80000 && ub < 24'he88000) || (ub >= 24'hea0000 && ub < 24'hea8000)) ) begin
+                // Type 4: 32 KB each, a pen a long
+                pm_sel <= 1'b0;
+                t3_sel <= ub[17] ? T3_PS : T3_PM; t4_w <= ub[1];
+                pl_a <= ua[14:2]; pl3_d <= ud; pl3_sub <= ub[17];
+                if( uwe ) pl3_we <= ub[1] ? { 1'b0, ube } : { ube[0], 2'b00 };
+                usrc <= R_T3; ucnt <= 3'd2;
             end else if( t34 && ((ub >= 24'he80000 && ub < 24'he84000) || (ub >= 24'hea0000 && ub < 24'hea4000)) ) begin
+                pm_sel <= 1'b0;
                 t3_sel <= ub[17] ? T3_PS : T3_PM; t3_a <= ua[13:1]; t3_d <= ud;
                 pl_a <= ua[13:1]; pl3_d <= ud; pl3_sub <= ub[17];
-                if( uwe ) pl3_we <= ube;
+                if( uwe ) pl3_we <= { 1'b0, ube };
                 usrc <= R_T3; ucnt <= 3'd2;
             end else if( t34 && ub >= 24'he60000 && ub < 24'he61000 ) begin
+                pm_sel <= 1'b0;
                 t3_sel <= T3_LC; t3_a <= { 2'b00, ua[11:1] }; t3_d <= ud;
                 if( uwe ) t3_we <= ube;
                 usrc <= R_T3; ucnt <= 3'd2;

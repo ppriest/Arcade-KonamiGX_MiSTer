@@ -202,11 +202,18 @@ SETS = ["daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
         "dragoona", "dragoonj", "winspike", "winspikea", "winspikej", "salmndr2", "salmndr2a",
         "le2u", "le2j",
         # the Type 3 board (docs/TYPE34.md): the KonamiGXT34 bitstream
-        "soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"]
+        "soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu",
+        # the Type 4 board, the same bitstream
+        "rungun2", "slamdnk2", "rushhero",
+        "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"]
 
 # The sets the second bitstream runs (Type 3 and 4 boards, docs/TYPE34.md):
 # their .mra names it, and their image may use the 128 MB module.
-T34 = {"soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"}
+T34 = {"soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu", "rungun2", "slamdnk2", "rushhero",
+       "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"}
+
+# The Type 4 sets among them: the K053936's map is RAM (no gfx4 region)
+T4 = {"rungun2", "slamdnk2", "rushhero", "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"}
 
 
 def rbf_of(set_name):
@@ -220,7 +227,9 @@ def sdram_limit(set_name):
 # BPP_5 unless listed. gx_board_cfg's tile_bpp says the same to the core.
 TILE_BYTES = {"tokkae": 6, "tkmmpzdm": 6, "le2": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
               "salmndr2": 6, "salmndr2a": 6, "le2u": 8, "le2j": 8,
-              "soccerss": 6, "soccerssa": 6, "soccerssj": 6, "soccerssja": 6, "soccerssu": 6}
+              "soccerss": 6, "soccerssa": 6, "soccerssj": 6, "soccerssja": 6, "soccerssu": 6,
+              "rungun2": 8, "slamdnk2": 8, "rushhero": 8,
+              **{k: 8 for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 
 # Program patches MAME applies at start-up, carried as .mra <patch>es:
 # (CPU address, old byte, new byte). tkmmpzdm (init_konamigx, special 2):
@@ -236,7 +245,9 @@ PATCHES = {"tkmmpzdm": [(0x2043c7, 0x01, 0x00), (0x21cba9, 0x11, 0x1f)]}
 OBJ_LAYOUT = {"le2": "LE2", "dragoona": "RNG", "dragoonj": "RNG",
               "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2",
               "salmndr2": "GX6", "salmndr2a": "GX6", "le2u": "LE2", "le2j": "LE2",
-              "soccerss": "GX6", "soccerssa": "GX6", "soccerssj": "GX6", "soccerssja": "GX6", "soccerssu": "GX6"}
+              "soccerss": "GX6", "soccerssa": "GX6", "soccerssj": "GX6", "soccerssja": "GX6", "soccerssu": "GX6",
+              "rungun2": "GX6", "slamdnk2": "GX6", "rushhero": "GX6",
+              **{k: "GX6" for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 
 # The game buttons each set's .mra names, in order: KonamiGX.sv reads buttons
 # 1-3 at joystick bits 4-6 and 4-6 at bits 7-9. EDIT THE NAMES HERE; the
@@ -340,6 +351,8 @@ def layout(set_name, blocks):
     tr = ts // TILE_BYTES.get(set_name, 5)
     if OBJ_LAYOUT.get(set_name, "GX") in ("RNG", "LE2"):
         orow = os_ // 8                          # as it comes: 2 * obj_size4 = the region
+    elif OBJ_LAYOUT.get(set_name) == "GX6":
+        orow = os_ // 6                          # 6-byte rows through the region (K055673_LAYOUT_GX6)
     else:
         orow = ((os_ >> 20) // 5) << 20
     up = lambda x: (x + MB - 1) // MB * MB
@@ -356,7 +369,7 @@ def layout(set_name, blocks):
         # the PSAC2's tiles (gfx3) and map (gfx4), as they come, after the
         # sound board's RAMs (gx_sdram_top's psac_base, psmap_base)
         g3, _ = bri.region_loads(blocks[set_name], "gfx3")
-        g4, _ = bri.region_loads(blocks[set_name], "gfx4")
+        g4 = 0 if set_name in T4 else bri.region_loads(blocks[set_name], "gfx4")[0]
         lo["psac_base"] = up(snd_ram_end(lo, set_name))
         lo["psmap_base"] = lo["psac_base"] + up(g3)
         lo["end"] = lo["psmap_base"] + up(g4)
@@ -367,8 +380,8 @@ def layout(set_name, blocks):
 
 def cfg_arm(mod, set_name, lo):
     return (f"        8'd{mod}:{' ' * (3 - len(str(mod)))}begin tile_base = 26'h{lo['tile_base']:07x}; "
-            f"obj_base = 26'h{lo['obj_base']:07x}; tile_size4 = 24'h{lo['tile_size4']:06x}; "
-            f"obj_size4 = 24'h{lo['obj_size4']:06x}; snd_pcm = 24'h{lo['snd_pcm']:06x}; end  // {set_name}")
+            f"obj_base = 26'h{lo['obj_base']:07x}; tile_size4 = 26'h{lo['tile_size4']:07x}; "
+            f"obj_size4 = 26'h{lo['obj_size4']:07x}; snd_pcm = 24'h{lo['snd_pcm']:06x}; end  // {set_name}")
 
 
 # The sound board's ROMs, after the graphics (gx_sdram_top's snd_base): the
@@ -403,7 +416,7 @@ def rtl_arm(mod):
     """gx_board_cfg.sv's arm for a mod byte, as a dict, or None."""
     src = RTL_CFG.read_text(encoding="utf8")
     m = re.search(rf"8'd{mod}:\s*begin\s*tile_base = 26'h([0-9a-f]+); obj_base = 26'h([0-9a-f]+); "
-                  rf"tile_size4 = 24'h([0-9a-f]+); obj_size4 = 24'h([0-9a-f]+); "
+                  rf"tile_size4 = 26'h([0-9a-f]+); obj_size4 = 26'h([0-9a-f]+); "
                   rf"snd_pcm = 24'h([0-9a-f]+); end", src)
     if not m:
         return None
@@ -742,7 +755,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
     if set_name in T34:
         # the sound board's RAMs (zeros, written at runtime), then the PSAC2's
         # tiles and map, as they come
-        for region, at in (("gfx3", lo["psac_base"]), ("gfx4", lo["psmap_base"])):
+        for region, at in (("gfx3", lo["psac_base"]),) + ((("gfx4", lo["psmap_base"]),) if set_name not in T4 else ()):
             size, loads = bri.region_loads(blocks[set_name], region)
             truth = bri.build(set_name, region)
             st.fill_to(at)

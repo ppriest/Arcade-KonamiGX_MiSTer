@@ -185,7 +185,9 @@ def k056832_pages(cap):
 # (tokkae, tkmmpzdm) and salmndr2 BPP_6; le2 and winspike BPP_8.
 TILE_BPP = {"tokkae": 6, "tkmmpzdm": 6, "salmndr2": 6, "salmndr2a": 6,
             "le2": 8, "le2u": 8, "le2j": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
-            **{k: 6 for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']}}             # gxtype3(): BPP_6
+            **{k: 6 for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']},             # gxtype3(): BPP_6
+            "rungun2": 8, "slamdnk2": 8, "rushhero": 8,
+            **{k: 8 for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}                                                            # gxtype4_vsn(): BPP_8                                                                    # gxtype4(): BPP_8
 
 # The row byte that holds each plane, most significant plane first: the
 # charlayout planes' bit offsets / 8 (k054156_k054157_k056832.cpp).
@@ -419,6 +421,10 @@ SPRITE_CFG = {
     "le2u": dict(dx=-46, dy=-23, primode=-1),
     "le2j": dict(dx=-46, dy=-23, primode=-1),
     **{k: dict(dx=-132, dy=-23, primode=0) for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']},   # gxtype3(): LAYOUT_GX6 -132
+    "rungun2": dict(dx=-81, dy=-23, primode=0),   # gxtype4sd2(): LAYOUT_GX6 -81
+    "slamdnk2": dict(dx=-81, dy=-23, primode=0),
+    "rushhero": dict(dx=-79, dy=-24, primode=0),   # gxtype4(): LAYOUT_GX6 -79, -24
+    **{k: dict(dx=-132, dy=-23, primode=0) for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']},   # gxtype4_vsn(): LAYOUT_GX6 -132
 }
 
 
@@ -437,7 +443,9 @@ OBJ_PRI_RAW = {"dragoonj": 1, "dragoona": 1, "salmndr2": 2, "salmndr2a": 2}
 OBJ_LAYOUT = {"dragoonj": "RNG", "dragoona": "RNG", "salmndr2": "GX6", "salmndr2a": "GX6",
               "le2": "LE2", "le2u": "LE2", "le2j": "LE2",
               "winspike": "LE2", "winspikea": "LE2", "winspikej": "LE2",
-              **{k: "GX6" for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']}}
+              **{k: "GX6" for k in ['soccerss', 'soccerssa', 'soccerssj', 'soccerssja', 'soccerssu']},
+              "rungun2": "GX6", "slamdnk2": "GX6", "rushhero": "GX6",
+              **{k: "GX6" for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 OBJ_BPP = {"GX": 5, "RNG": 4, "GX6": 6, "LE2": 8}
 
 

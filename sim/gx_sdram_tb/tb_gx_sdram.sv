@@ -42,12 +42,12 @@ reg   [7:0] ioctl_dout = 0;
 wire        ioctl_wait;
 
 reg  [26:0] tile_base, obj_base;
-reg  [23:0] tile_size4, obj_size4;
+reg  [25:0] tile_size4, obj_size4;
 reg  [ 1:0] tile_bpp = 0, obj_layout = 0;
 reg         cpu_cs = 0, tile_cs = 0, obj_cs = 0;
 reg         go_hammer = 0;
 reg  [19:0] cpu_addr = 0;
-reg  [21:0] obj_addr = 0;
+reg  [22:0] obj_addr = 0;
 reg  [20:0] tile_addr = 0;
 wire        cpu_ok, tile_ok, obj_ok;
 wire [63:0] cpu_data;
@@ -62,18 +62,22 @@ gx_sdram_top dut (
     .cpu_cs, .cpu_addr, .cpu_ok, .cpu_data,
     .tile_cs, .tile_addr, .tile_ok, .tile_data,
     .obj_cs, .obj_addr, .obj_ok, .obj_data,
-    .obj_pf_cs(1'b0), .obj_pf_addr(22'd0),
+    .obj_pf_cs(1'b0), .obj_pf_addr(23'd0),
     .gfx_cs, .gfx_addr, .gfx_ok, .gfx_data
 );
 
 // the absolute-address port the ROM readback windows use: here it checks the
 // sound board's ROMs, which nothing else reads yet
 reg         gfx_cs = 0;
-reg  [22:0] gfx_addr = 0;
+reg  [23:0] gfx_addr = 0;
 wire        gfx_ok;
 wire [63:0] gfx_data;
 
+event report_ev;
 generate if (SD128) begin : g_128
+    always @(report_ev) $display("  chips: writes %0d / %0d, refreshes %0d / %0d",
+                                 u_chip.u_c0.writes, u_chip.u_c1.writes,
+                                 u_chip.u_c0.refreshes, u_chip.u_c1.refreshes);
 sdram_chip_model_128 u_chip (
     .clk(SDRAM_CLK), .SDRAM_DQ, .SDRAM_A, .SDRAM_BA, .SDRAM_nCS, .SDRAM_nWE, .SDRAM_nRAS, .SDRAM_nCAS
 );
@@ -100,14 +104,14 @@ always @(posedge clk_mem) begin
 end
 
 // ------------------------------------------------------------ fixtures
-localparam int MAXB = 1 << 25, MAXR = 1 << 15;   // tokkae streams 17 MB of non-zero runs
+localparam int MAXB = 1 << 26, MAXR = 1 << 15;   // rushhero streams 57 MB of non-zero runs
 reg   [7:0] stream [0:MAXB-1];
 reg  [27:0] run_s [0:255], run_n [0:255], run_o [0:255];
 int         nruns = 0;
 reg  [19:0] cpu_a [0:MAXR-1];   reg [63:0] cpu_d [0:MAXR-1];   int ncpu = 0;
 reg  [23:0] tile_a [0:MAXR-1];  reg [63:0] tile_d [0:MAXR-1];  int ntile = 0;
 reg  [23:0] obj_a [0:MAXR-1];   reg [63:0] obj_d [0:MAXR-1];   int nobj = 0;
-reg  [22:0] snd_a [0:MAXR-1];   reg [63:0] snd_d [0:MAXR-1];   int nsnd = 0;
+reg  [23:0] snd_a [0:MAXR-1];   reg [63:0] snd_d [0:MAXR-1];   int nsnd = 0;
 int  bads = 0;
 
 int bad = 0, checked = 0, badc = 0, badt = 0, bado = 0;
@@ -223,7 +227,7 @@ task automatic read_tile(input [20:0] a, output [63:0] d);
 endtask
 
 // cs held across reads: only the address moves
-task automatic read_obj_held(input [21:0] a, output [63:0] d);
+task automatic read_obj_held(input [22:0] a, output [63:0] d);
     @(posedge clk); obj_addr <= a; obj_cs <= 1;
     do @(posedge clk); while (!obj_ok);
     d = obj_data;
@@ -310,7 +314,7 @@ initial begin
 
     // sprite half-rows, cs held
     for (k = 0; k < nobj; k++) begin
-        read_obj_held(obj_a[k][21:0], got);
+        read_obj_held(obj_a[k][22:0], got);
         checked++;
         if (got !== obj_d[k]) begin
             if (bado < 8) $display("  sprite half-row %06x: got %016x want %016x", obj_a[k], got, obj_d[k]);
@@ -357,10 +361,8 @@ initial begin
     $display("  total checked %0d, mismatches %0d (cpu %0d, tiles %0d, sprites %0d, sound %0d)", checked, bad, badc, badt, bado, bads);
     if (checked == 0 || bad != 0) $display("FAIL: %0d readbacks disagree with MAME's images", bad);
     else $display("PASS: every region reads back as MAME's image");
-    if (SD128) $display("  chips: writes %0d / %0d, refreshes %0d / %0d",
-                        g_128.u_chip.u_c0.writes, g_128.u_chip.u_c1.writes,
-                        g_128.u_chip.u_c0.refreshes, g_128.u_chip.u_c1.refreshes);
-    $finish;
+    -> report_ev;           // the 128 MB module's per-chip counts (g_128)
+    #1 $finish;
 end
 
 endmodule

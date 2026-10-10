@@ -17,12 +17,12 @@
 module gx_snd_clear (
     input             clk,
     input             hold,         // the core is being reset or loaded: clear once it is not
-    input      [25:0] snd_base,
+    input      [26:0] snd_base,
     input      [23:0] snd_pcm,
     output            busy,
     output reg        inval,
     output reg        w_req,
-    output reg [25:0] w_addr,
+    output reg [26:0] w_addr,
     input             w_busy
 );
 
@@ -40,7 +40,7 @@ always @(posedge clk) begin
     end else if( need ) case( st )
         2'd0: begin
             w_req  <= 1'b1;
-            w_addr <= snd_base + 26'h040000 + { 2'd0, snd_pcm } + { 7'd0, n, 1'b0 };
+            w_addr <= snd_base + 27'h040000 + { 3'd0, snd_pcm } + { 8'd0, n, 1'b0 };
             st     <= 2'd1;
         end
         2'd1: if( w_busy ) begin w_req <= 1'b0; st <= 2'd2; end    // taken

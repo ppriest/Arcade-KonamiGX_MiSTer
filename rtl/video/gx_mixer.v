@@ -64,10 +64,13 @@ module gx_mixer (
     // word, xBBBBBGGGGGRRRRR, at { pal3_sub, pal_addr }; the pixels read the
     // one pix_sub picks, in place of the 888 palette, which is left to the CPU
     // as plain RAM (0xd90000)
-    input      [ 1:0] pal3_we,          // byte lanes { 15:8, 7:0 }
+    // Type 4 (t4): xRGB 888 a pen, R in a third RAM, G and B where Type 3's
+    // word is
+    input      [ 2:0] pal3_we,          // byte lanes { R (Type 4), 15:8, 7:0 }
     input             pal3_sub,         // the CPU's access: 0 main monitor, 1 sub
-    input      [15:0] pal3_din,
-    output     [15:0] pal3_q,
+    input      [15:0] pal3_din,         // R from bits 7:0
+    output     [23:0] pal3_q,           // { R, 15:8, 7:0 }
+    input             t4,
     input             pix_sub,          // this frame is the sub monitor's
 
     // this pixel, in MAME bitmap coordinates
@@ -178,6 +181,14 @@ reg  [  12:0] pen [0:5];
 reg  [   8:0] lpal [0:3];
 reg  [   9:0] alpha [0:3];      // { add, on, level }
 reg  [   9:0] alpha4;           // the sprite's
+// Type 4's SUB1 (the K053936): its blend level, from the mix code in
+// OSBLEND_ENABLES as the K054338 levels the tiles' (not additive)
+wire [ 1:0] s1_code  = k55[35][3:2];
+wire        s1_blend = t4 && k55[35] != 8'hff && s1_code != 2'd0;
+wire [ 7:0] s1_set   = s1_code[0] ? (s1_code[1] ? k338[14][7:0] : k338[13][7:0])
+                                  : (s1_code[1] ? k338[14][15:8] : k338[13][15:8]);
+wire [ 4:0] s1_l5    = 5'h1f - s1_set[4:0];
+wire [ 7:0] s1_lv    = { s1_l5, s1_l5[4:2] };
 reg  [KW-1:0] shkey;
 reg  [   2:0] t, s;          // top and second source
 reg  [KW-1:0] tk, sk;
@@ -188,7 +199,7 @@ integer       i;
 reg  [   7:0] lpri [0:3];
 reg  [   7:0] lpri5;
 always @(posedge clk) begin
-    lpri5   <= k55[17];
+    lpri5   <= t4 ? k55[16] : k55[17];          // SUB1's PRIINP_9 on Type 4, SUB2's PRIINP_10
     lpri[0] <= k55[7];
     lpri[1] <= k55[10];
     lpri[2] <= pri_c_le2 ? k55[10] + 8'h20 : k55[13];
@@ -222,10 +233,15 @@ always @* begin
     alpha4  = alpha_of( spr_mix_on ? spr_mix_r : 2'd0, k338[13], k338[14] );
     cand[4] = disp[4] && spr_valid_r;
     pen[4]  = spr_pen_r;
-    // SUB2 (PRIINP_10), ordered as a layer after D (MAME's layer code 5)
+    // the K053936: SUB2 (PRIINP_10) on Type 3, ordered as a layer after D
+    // (MAME's layer code 5); SUB1 (PRIINP_9, code 4) on Type 4, drawn
+    // whatever INPUT_ENABLES says (MAME's rushingheroes_hack), from pen
+    // 0x1800 (gfx_type4). Type 4 blends it as gx_draw_basic_extended_
+    // tilemaps_1 does: OSBLEND_ENABLES (k55[35]) bits 3:2 are its mix code,
+    // unless the register is 0xff; level 0 is not drawn; never additive.
     key[5]  = { lpri5, 1'b0, 8'd0, 8'd4, 1'b0 };
-    cand[5] = disp[6] && sub2_r[7:0] != 8'd0;
-    pen[5]  = 13'h1000 | { 3'd0, sub2_r };
+    cand[5] = (t4 || disp[6]) && sub2_r[7:0] != 8'd0 && !(s1_blend && s1_lv == 8'd0);
+    pen[5]  = (t4 ? 13'h1800 : 13'h1000) | { 3'd0, sub2_r };
     shkey   = { shd_pri_r, 1'b1, shd_z_r, shd_idx_r, 1'b1 };
 
     // top and second by smallest key; the background is behind everything
@@ -297,16 +313,20 @@ gx_tdpram #(.AW(13), .DW(8)) u_pal_b (
     .b ( ra ), .qb ( rq888[7:0] ) );
 `ifdef GX_T34
 wire [15:0] rq3;
+wire [ 7:0] rq3r;
 gx_tdpram #(.AW(14), .DW(8)) u_pal3_h (
     .clk ( clk ), .we_a ( pal3_we[1] ), .a ( { pal3_sub, pal_addr } ), .d ( pal3_din[15:8] ), .qa ( pal3_q[15:8] ),
     .b ( { pix_sub, ra } ), .qb ( rq3[15:8] ) );
 gx_tdpram #(.AW(14), .DW(8)) u_pal3_l (
     .clk ( clk ), .we_a ( pal3_we[0] ), .a ( { pal3_sub, pal_addr } ), .d ( pal3_din[7:0] ), .qa ( pal3_q[7:0] ),
     .b ( { pix_sub, ra } ), .qb ( rq3[7:0] ) );
-assign rq = { rq3[4:0], rq3[4:2], rq3[9:5], rq3[9:7], rq3[14:10], rq3[14:12] };
+gx_tdpram #(.AW(14), .DW(8)) u_pal3_r (
+    .clk ( clk ), .we_a ( pal3_we[2] ), .a ( { pal3_sub, pal_addr } ), .d ( pal3_din[7:0] ), .qa ( pal3_q[23:16] ),
+    .b ( { pix_sub, ra } ), .qb ( rq3r ) );
+assign rq = t4 ? { rq3r, rq3 } : { rq3[4:0], rq3[4:2], rq3[9:5], rq3[9:7], rq3[14:10], rq3[14:12] };
 `else
 assign rq = rq888;
-assign pal3_q = 16'd0;
+assign pal3_q = 24'd0;
 `endif
 
 // MAME's shadow table: the colour is cut to 5 bits a channel, re-expanded
@@ -329,7 +349,10 @@ function [23:0] shade( input [23:0] c, input [1:0] code );
         if( dr == 9'h100 ) dr = 9'h101;
         if( dg == 9'h100 ) dg = 9'h101;
         if( db == 9'h100 ) db = 9'h101;
-        shade = { shch(c[23:16], dr, noclip), shch(c[15:8], dg, noclip), shch(c[7:0], db, noclip) };
+        // Type 4: update_all_shadows(rushingheroes_hack) sets every shadow
+        // to -80 a channel, clipped, whatever the registers say
+        if( t4 ) begin dr = 9'h1b0; dg = 9'h1b0; db = 9'h1b0; end
+        shade = { shch(c[23:16], dr, noclip && !t4), shch(c[15:8], dg, noclip && !t4), shch(c[7:0], db, noclip && !t4) };
     end
 endfunction
 
@@ -352,17 +375,28 @@ endfunction
 // The background's colour is read last: it is in rq from the clock after
 // the next pxl_cen (any pixel of 4 clocks or more: 12 MHz dots are 4), and
 // the pixel is finished there, at ph 0, while the next one is ranked.
-wire [23:0] bgc     = bg_grad ? rq : bgsolid;
-wire [23:0] ct_f    = t1 == SRC_BG || !en ? bgc : ct;
-wire [23:0] cs_f    = s1 == SRC_BG ? bgc : cs;
-wire        at_f    = en && alpha_top;
-wire        so_f    = en && shd_over;
-wire [23:0] cs_eff  = en && shd_under ? shade(cs_f, code1) : cs_f;
-wire [23:0] blended = { blendch(cs_eff[23:16], ct_f[23:16], a1, add1),
-                        blendch(cs_eff[15: 8], ct_f[15: 8], a1, add1),
-                        blendch(cs_eff[ 7: 0], ct_f[ 7: 0], a1, add1) };
+// The pixel is finished a clock later, at ph 1: at ph 0 the background's
+// colour and everything the finish needs are registered (the ranking stage
+// replaces t1, s1, a1 ... with the next pixel's on that clock), so the
+// palette read does not run through the blend and the shade into rgb in one
+// clock (KonamiGXT34 missed setup there). rgb still changes inside the
+// pixel's period, before the next pxl_cen samples it.
+reg  [23:0] bgq, ctq, csq;
+reg  [ 2:0] t1q, s1q;
+reg  [ 7:0] a1q;
+reg  [ 1:0] code1q;
+reg         enq, add1q, atq, soq, suq;
+wire [23:0] bgc     = bgq;
+wire [23:0] ct_f    = t1q == SRC_BG || !enq ? bgc : ctq;
+wire [23:0] cs_f    = s1q == SRC_BG ? bgc : csq;
+wire        at_f    = enq && atq;
+wire        so_f    = enq && soq;
+wire [23:0] cs_eff  = enq && suq ? shade(cs_f, code1q) : cs_f;
+wire [23:0] blended = { blendch(cs_eff[23:16], ct_f[23:16], a1q, add1q),
+                        blendch(cs_eff[15: 8], ct_f[15: 8], a1q, add1q),
+                        blendch(cs_eff[ 7: 0], ct_f[ 7: 0], a1q, add1q) };
 wire [23:0] mixed   = at_f ? blended : ct_f;
-wire [23:0] final_c = so_f ? shade(mixed, code1) : mixed;
+wire [23:0] final_c = so_f ? shade(mixed, code1q) : mixed;
 
 function [12:0] pen_of( input [2:0] src );
     pen_of = src==SRC_BG ? bgpen : pen[src];
@@ -376,17 +410,22 @@ always @(posedge clk) begin
     end else begin
         if( ph != 3'd7 ) ph <= ph + 3'd1;
         if( pxl_cen ) ph <= 3'd0;
-        if( ph == 3'd0 ) rgb <= final_c;              // the previous pixel
+        if( ph == 3'd0 ) begin                        // the previous pixel: its inputs
+            bgq <= bg_grad ? rq : bgsolid;
+            ctq <= ct; csq <= cs; t1q <= t1; s1q <= s1; a1q <= a1; code1q <= code1;
+            enq <= en; add1q <= add1; atq <= alpha_top; soq <= shd_over; suq <= shd_under;
+        end
+        if( ph == 3'd1 ) rgb <= final_c;              // and its colour
         // the pixel latched on pxl_cen: rank it, then read the palette for
         // the top, the second and the background, one read a clock
         case( ph )
             3'd0: begin
-                en   <= disp != 8'd0 && kill;
+                en   <= disp != 8'd0 && (kill || t4);   // Type 4: MAME's rushingheroes_hack skips K338_CTL_KILL
                 t1   <= t;
                 s1   <= s;
-                a1   <= t < 3'd4 ? alpha[t][7:0] : t == 3'd4 ? alpha4[7:0] : 8'd255;
+                a1   <= t < 3'd4 ? alpha[t][7:0] : t == 3'd4 ? alpha4[7:0] : t == 3'd5 && s1_blend ? s1_lv : 8'd255;
                 add1 <= t < 3'd4 ? alpha[t][9] : t == 3'd4 && alpha4[9];
-                alpha_top <= t < 3'd4 ? alpha[t][8] : t == 3'd4 && alpha4[8];
+                alpha_top <= t < 3'd4 ? alpha[t][8] : t == 3'd4 ? alpha4[8] : t == 3'd5 && s1_blend && s1_lv != 8'd255;
                 code1     <= shd_code_r;
                 if( shd_defer ) begin
                     // MAME 5c75784 gx_draw_deferred_shadows: over everything,

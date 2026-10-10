@@ -178,3 +178,29 @@ them is the plan; the bench measures it.
 3. **K053936.** jt053936 vendored, its tile fetch, the SUB layer in the mixer. Exit: the pitch
    matches MAME's render on captured frames.
 4. **Type 4.** Protection commands, 8 bpp, the PSAC2 RAM map. Exit: each set reaches play.
+   In the bench (`sim/gx_main_tb`, from MAME states): Run and Gun 2, Rushing Heroes and Versus Net
+   Soccer draw their attract play on both monitors. Run and Gun 2's first 1,234,685 writes from
+   reset (400 frames) are MAME's, in order. Not yet on the board.
+
+## Type 4
+
+Mods 27-34: rungun2, slamdnk2, rushhero, vsnetscr and four clones (`gx_board_cfg`'s `t4`).
+
+- **Palettes:** 32 KB each, xRGB 888 a long: R in a third byte RAM in `gx_mixer`, G and B where
+  Type 3's 555 word is. The x byte is not kept.
+- **K053936:** the map is RAM at `0xF00000`, 128 x 128 tiles a word each. `gx_psac`'s Type 4 mode
+  is `K053936GP_zoom_draw` (`scripts/psac4_model.py`): super and simple modes, 13-bit map pixels
+  at srcy * 2048 + srcx, skipped past the map's end. 384 columns, or 288 doubled for Versus Net
+  Soccer's 576-wide screen (MAME's `pixeldouble_output`, GP offset x -30). Row y is computed for
+  y - `ps_oy`, MAME's GP offset y + 1 (MAME_KLUDGES). Drawn as SUB1 (PRIINP_9) from pen 0x1800,
+  blended by OSBLEND_ENABLES bits 3:2.
+- **MAME's `rushingheroes_hack`**, reproduced: SUB1 drawn whatever INPUT_ENABLES says, K338 KILL
+  not tested, every shadow -80 a channel.
+- **Protection** (`type4_prot_w`, in `gx_esc`): 0x0a56/0x0d96/0x0d14/0x0d1c and 0x057a as before;
+  0x0b16 and 0x3a4f (Slam Dunk 2), 0x0d97 (Rushing Heroes, with the parameter word: 0x0062
+  for the second screen), 0x0515 and 0x115d (Versus Net Soccer).
+- **SDRAM:** Rushing Heroes' 48 MB of GX6 sprites spread to 64 MB; the sound board's region then
+  starts past 64 MB, so its absolute addresses are 27 bits. 82 MB in all.
+- **Room:** the Type 3/4 bitstream leaves out hiscore, the light guns and the cheat engine (no set
+  of its has them), and gx_esc's Type 2-only modes. The EEPROM is a RAM in both bitstreams, and
+  the K053936's tile cache 8 KB.

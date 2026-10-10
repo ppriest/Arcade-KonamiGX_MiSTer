@@ -179,7 +179,11 @@ def write_set_roms(game):
         from check_gx_psac import granules
         d = REPO / "debug" / "gx_main_tb_psac"
         d.mkdir(parents=True, exist_ok=True)
-        gfx3, gfx4 = pm.roms()
+        if game in build_mra.T4:
+            import psac4_model as pm4
+            gfx3, gfx4 = pm4.gfx3(game), bytes(8)      # the map is RAM
+        else:
+            gfx3, gfx4 = pm.roms()
         (d / "gfx3.hex").write_text(granules(gfx3))
         (d / "gfx4.hex").write_text(granules(gfx4))
     return len(rows) // 8, len(halves) // 32
