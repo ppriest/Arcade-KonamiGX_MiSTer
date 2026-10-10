@@ -56,7 +56,11 @@ module gx_board_cfg_c (
     output reg        t4,           // a Type 4 set: 888 palettes, the K053936's map in RAM
     output reg  [2:0] ps_oy,        // Type 4's K053936: [1:0] its row offset (psac4_model OFFS_Y), [2] the map wraps
     output reg [26:0] psac_base,
-    output reg [26:0] psmap_base
+    output reg [26:0] psmap_base,
+    // the Type 1 board (docs/TYPE1.md, the KonamiGXT1 bitstream)
+    output reg        t1,
+    output reg  [4:0] vis_y0,       // K053252 set_offsets y: the window's first bitmap row
+    output reg  [9:0] obj_vadj      // K055673 set_config dy less konamigx()'s -23, signed
 );
 
 always @* begin
@@ -68,6 +72,8 @@ always @* begin
     obj_pri_raw = 2'd0;
     vis_x0 = 10'd24;
     vis_w = 10'd288;
+    vis_y0 = 5'd16;
+    obj_vadj = 10'd0;
     // konamigx.cpp gameDefs' special and the *_esc callbacks: daiskiss_esc and
     // tbyahhoo_esc walk 0x100 entries from 0xc00000, sexyparo_esc 0xfc from
     // 0xc00604; gokuparo, fantjour(a), crzcross and puzldama have none
@@ -90,6 +96,7 @@ always @* begin
         8'd27, 8'd28:                 obj_hadj = -10'sd55;   // gxtype4sd2(): -81
         8'd29:                        obj_hadj = -10'sd53;   // gxtype4(): -79
         8'd30, 8'd31, 8'd32, 8'd33, 8'd34: obj_hadj = -10'sd106;  // gxtype4_vsn(): -132
+        8'd35, 8'd36:                 obj_hadj = -10'sd27;   // racinfrc(): -53
         default:                      obj_hadj = 10'd0;
     endcase
     case( game )
@@ -159,6 +166,8 @@ always @* begin
         8'd32: begin tile_base = 26'h0500000; obj_base = 26'h0a00000; tile_size4 = 26'h0280000; obj_size4 = 26'h1000000; snd_pcm = 24'h400000; end  // vsnetscru
         8'd33: begin tile_base = 26'h0500000; obj_base = 26'h0a00000; tile_size4 = 26'h0280000; obj_size4 = 26'h1000000; snd_pcm = 24'h400000; end  // vsnetscra
         8'd34: begin tile_base = 26'h0500000; obj_base = 26'h0a00000; tile_size4 = 26'h0280000; obj_size4 = 26'h1000000; snd_pcm = 24'h400000; end  // vsnetscrj
+        8'd35: begin tile_base = 26'h0700000; obj_base = 26'h0b00000; tile_size4 = 26'h0200000; obj_size4 = 26'h0800000; snd_pcm = 24'h400000; end  // racinfrc
+        8'd36: begin tile_base = 26'h0700000; obj_base = 26'h0b00000; tile_size4 = 26'h0200000; obj_size4 = 26'h0800000; snd_pcm = 24'h400000; end  // racinfrcu
         // ---- generated: end
         default: begin tile_base = 26'h0200000; obj_base = 26'h0a00000; tile_size4 = 26'h0400000; obj_size4 = 26'h0400000; snd_pcm = 24'h400000; end
     endcase
@@ -178,10 +187,13 @@ always @* begin
         8'd32: begin psac_base = 27'h2f00000; psmap_base = 27'h3100000; end  // vsnetscru
         8'd33: begin psac_base = 27'h2f00000; psmap_base = 27'h3100000; end  // vsnetscra
         8'd34: begin psac_base = 27'h2f00000; psmap_base = 27'h3100000; end  // vsnetscrj
+        8'd35: begin psac_base = 27'h2000000; psmap_base = 27'h2300000; end  // racinfrc
+        8'd36: begin psac_base = 27'h2000000; psmap_base = 27'h2300000; end  // racinfrcu
         // ---- generated: end
         default: ;
     endcase
     if( game >= 8'd22 && game <= 8'd34 ) t34 = 1'b1;
+    t1 = game == 8'd35 || game == 8'd36;
     t4 = game >= 8'd27 && game <= 8'd34;
     // K053936GP_set_offset's y + 1: rungun2/slamdnk2 -1, rushhero +1, vsnetscr 0
     ps_oy = game == 8'd29 ? 3'd2 : game >= 8'd30 && game <= 8'd34 ? 3'd1 : 3'd0;
@@ -223,6 +235,11 @@ always @* begin
         // BPP_8, LAYOUT_GX6 at -132, 576 wide, the layers at -52, -48, -48, -48
         8'd30, 8'd31, 8'd32, 8'd33, 8'd34: begin tile_bpp = 2'd2; obj_layout = 2'd2; vis_x0 = 10'd0; vis_w = 10'd576;
                      offs_x = '{ -8'sd52, -8'sd48, -8'sd48, -8'sd48 }; end
+        // racinfrc(u): racinfrc() / VIDEO_START racinfrc: BPP_6, LAYOUT_GX at
+        // (-53, -34), the K053252 at offset 32 + 0, 384 wide (8 MHz dots,
+        // 255 lines visible), the layers one right of common_init's and 16 up
+        8'd35, 8'd36: begin tile_bpp = 2'd1; vis_x0 = 10'd32; vis_w = 10'd384; vis_y0 = 5'd0; obj_vadj = -10'sd11;
+                     offs_x = '{ -8'sd1, 8'sd1, 8'sd3, 8'sd4 }; offs_y = '{ -8'sd16, -8'sd16, -8'sd16, -8'sd16 }; end
         default: ;
     endcase
 end
@@ -269,7 +286,10 @@ module gx_board_cfg (
     output reg        t4,
     output reg  [2:0] ps_oy,
     output reg [26:0] psac_base,
-    output reg [26:0] psmap_base
+    output reg [26:0] psmap_base,
+    output reg        t1,
+    output reg  [4:0] vis_y0,
+    output reg  [9:0] obj_vadj
 );
 
 wire [25:0] c_tile_base, c_obj_base;
@@ -291,6 +311,9 @@ wire [63:0] c_esc_lanes;
 wire        c_t34, c_t4;
 wire  [2:0] c_ps_oy;
 wire [26:0] c_psac_base, c_psmap_base;
+wire        c_t1;
+wire  [4:0] c_vis_y0;
+wire  [9:0] c_obj_vadj;
 
 gx_board_cfg_c u_c ( .game,
     .tile_base(c_tile_base), .obj_base(c_obj_base), .tile_size4(c_tile_size4), .obj_size4(c_obj_size4),
@@ -299,7 +322,8 @@ gx_board_cfg_c u_c ( .game,
     .obj_hadj(c_obj_hadj), .esc_gen(c_esc_gen), .esc_src(c_esc_src), .esc_count(c_esc_count),
     .esc_copy(c_esc_copy), .prot4(c_prot4), .esc_sal2(c_esc_sal2), .tile_rb66(c_tile_rb66), .guns(c_guns), .orient_fy(c_orient_fy), .fj_dma(c_fj_dma),
     .esc_chip(c_esc_chip), .esc_s10(c_esc_s10), .esc_s11n(c_esc_s11n), .esc_xor(c_esc_xor), .esc_lanes(c_esc_lanes),
-    .t34(c_t34), .t4(c_t4), .ps_oy(c_ps_oy), .psac_base(c_psac_base), .psmap_base(c_psmap_base) );
+    .t34(c_t34), .t4(c_t4), .ps_oy(c_ps_oy), .psac_base(c_psac_base), .psmap_base(c_psmap_base),
+    .t1(c_t1), .vis_y0(c_vis_y0), .obj_vadj(c_obj_vadj) );
 
 always @(posedge clk) begin
     tile_base <= c_tile_base; obj_base <= c_obj_base; tile_size4 <= c_tile_size4; obj_size4 <= c_obj_size4;
@@ -309,6 +333,7 @@ always @(posedge clk) begin
     esc_copy <= c_esc_copy; prot4 <= c_prot4; esc_sal2 <= c_esc_sal2; tile_rb66 <= c_tile_rb66; guns <= c_guns; orient_fy <= c_orient_fy; fj_dma <= c_fj_dma;
     esc_chip <= c_esc_chip; esc_s10 <= c_esc_s10; esc_s11n <= c_esc_s11n; esc_xor <= c_esc_xor; esc_lanes <= c_esc_lanes;
     t34 <= c_t34; t4 <= c_t4; ps_oy <= c_ps_oy; psac_base <= c_psac_base; psmap_base <= c_psmap_base;
+    t1 <= c_t1; vis_y0 <= c_vis_y0; obj_vadj <= c_obj_vadj;
 end
 
 endmodule

@@ -61,7 +61,16 @@ assign BUTTONS   = 0;
 wire [1:0] ar = status[122:121];
 
 `ifdef GX_T34
+// HDMI: the OSD's Screen (HDMI) alone. The analog output (gx_t34_crt): the
+// OSD's Screen (CRT) -- one monitor held, or the board's frames as they come
+// (status 127:126: First, the default, Second, Alternate) -- unless DIP
+// SW1:4, "Number of Screens" (MAME's type3 port), is at 1: then the game is
+// for one monitor, the main one (the second shows its MONITOR SETTING
+// notice), and the analog output holds it.
+wire       one_scr;                // sw[0][3], assigned with the DIPs below
 wire [2:0] scr_mode   = status[125:123] > 3'd4 ? 3'd0 : status[125:123];
+wire       crt_hold   = one_scr || status[127:126] != 2'd2;
+wire       crt_mon    = !one_scr && status[127:126] == 2'd1;
 wire       rotate_en  = 1'b0;
 wire       rotate_ccw = 1'b0;
 wire       flip_180   = 1'b0;
@@ -100,6 +109,10 @@ localparam CONF_STR = {
 	// Stacked: each monitor turned 90 degrees, main above sub, for a panel
 	// turned the other way (CCW for a panel turned clockwise)
 	"O[125:123],Screen (HDMI),First,Second,Both,Stacked CCW,Stacked CW;",
+	// the analog output: one monitor held as the cabinet's demux board held
+	// it, or the board's alternate frames as they come (one CRT flickers
+	// between the two). DIP Number of Screens 1 holds the first.
+	"O[127:126],Screen (CRT),First,Second,Alternate;",
 `else
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
@@ -328,8 +341,10 @@ ddram_phy u_ddram (
 	.req(ldr_ddr_req), .we(1'b0), .addr(ldr_ddr_addr), .wdata(8'd0),
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
-// gx_board_cfg's (below): the loader's length for a Type 3/4 set
-wire        t34, t4;
+// gx_board_cfg's (below): the loader's length for a Type 3/4 or Type 1 set
+wire        t34, t4, t1;
+wire  [4:0] vis_y0;
+wire  [9:0] obj_vadj;
 wire  [2:0] ps_oy;
 wire [26:0] psac_base, psmap_base;
 gx_rom_loader u_ldr (
@@ -339,6 +354,7 @@ gx_rom_loader u_ldr (
 	// 0x400000 (build_mra's SND_CPU and SND_PCM); a Type 3 set's goes on to
 	// the K053936's map, 512 KB at psmap_base (gfx4)
 	.length(t34 ? { 1'b0, psmap_base } + 28'h0080000
+	      : t1  ? { 1'b0, psmap_base } + 28'h0300000          // Type 1: the HROM (gfx4), 3 MB
 	            : { 1'd0, 27'(obj_base) + { obj_size4, 1'b0 } + 27'h040000 + { 3'd0, snd_pcm } }),
 	.start(ldr_start), .busy(ldr_busy),
 	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
@@ -368,7 +384,8 @@ wire [23:0] esc_src;
 wire  [8:0] esc_count;
 gx_board_cfg u_cfg ( .clk(clk_sys), .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w,
                      .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma,
-                     .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .t4, .ps_oy, .psac_base, .psmap_base );
+                     .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .t4, .ps_oy, .psac_base, .psmap_base,
+                     .t1, .vis_y0, .obj_vadj );
 
 wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
@@ -414,6 +431,15 @@ wire        obj_pf_cs;
 wire [63:0] tile_rom_data, obj_rom_data;
 
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, vid_sub, pxl_cen, unsupported, dbg_access;
+// Type 1: the K053936's map RAM in SDRAM (gx_main)
+wire        t1m_cs, t1m_ok, t1m_inval, t1w_req, t1w_we16, t1w_busy;
+wire [13:0] t1m_addr;
+wire [63:0] t1m_data;
+wire [16:0] t1w_addr;
+wire [15:0] t1w_data;
+`ifndef GX_T1
+wire  [7:0] an_steer = 8'h80, an_gas = 8'hff;
+`endif
 gx_sdram_top u_mem (
 	.clk(clk_vid), .clk_mem(clk_sys), .reset(mem_reset), .init(~pll_locked),
 	.SDRAM_A, .SDRAM_DQ, .SDRAM_DQML, .SDRAM_DQMH, .SDRAM_BA, .SDRAM_nCS,
@@ -435,6 +461,7 @@ gx_sdram_top u_mem (
 	.pcm_cs, .pcm_addr, .pcm_ok, .pcm_data, .pcm_inval,
 	.sram_cs, .sram_addr, .sram_ok, .sram_data, .sram_inval,
 	.psac_base, .psmap_base, .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
+	.t1m_cs, .t1m_addr, .t1m_ok, .t1m_data, .t1m_inval, .t1w_req, .t1w_addr, .t1w_data, .t1w_we16, .t1w_busy,
 	.lvbl(vid_lvbl), .dbg_bw
 );
 
@@ -457,6 +484,31 @@ endfunction
 // the Type 3/4 sets are four-player (MAME: players="4" coins="4"): P3 at
 // 15:8, P4 at 7:0, as the common port has them
 wire [31:0] inputs  = { player(joystick_0), player(joystick_1), player(joystick_2), player(joystick_3) };
+`elsif GX_T1
+// racinfrc's port: Gear Shift (a toggle, button 3) at bit 26, Brake (button
+// 2) at bit 27, the rest unused; all active low. The steering and the gas
+// pedal are the ADC0834's (below).
+reg  [1:0] gear_b = 2'b00;
+reg        gear = 1'b0;
+always @(posedge clk_sys) begin
+	gear_b <= { gear_b[0], joystick_0[6] };
+	if( gear_b == 2'b01 ) gear <= ~gear;
+end
+wire [31:0] inputs  = { 4'hf, ~joystick_0[5], ~gear, 6'h3f, 20'hfffff };
+// the steering (AN0, 0x38-0xc8, centre 0x80, reversed: right is lower) from
+// the left stick's x, or the d-pad at full lock; the gas pedal (AN1, 0xff
+// up, 0x90 down) from button 1, or the stick pushed up
+wire signed [7:0] st_x = stick_0[7:0];
+wire signed [7:0] st_y = stick_0[15:8];
+wire [15:0] st_m = 16'($signed(st_x) * 9'sd72);           // x * 0x48 / 128
+wire [15:0] gs_m = 16'(9'(-st_y) * 9'd111);               // up * 0x6f / 128
+// registered here: the ADC takes them on clk_vid (-0.56 ns from the stick
+// through the product in one clock)
+reg   [7:0] an_steer = 8'h80, an_gas = 8'hff;
+always @(posedge clk_sys) begin
+	an_steer <= joystick_0[0] ? 8'h38 : joystick_0[1] ? 8'hc8 : 8'h80 - st_m[14:7];
+	an_gas   <= joystick_0[4] ? 8'h90 : st_y < 0 ? 8'hff - gs_m[14:7] : 8'hff;
+end
 `else
 wire [31:0] inputs  = { player(joystick_0), player(joystick_1),
                         1'b1, ~joystick_0[9], ~joystick_0[8], ~joystick_0[7],
@@ -521,6 +573,9 @@ initial begin sw[0] = 8'hfe; sw[1] = 8'hff; end       // common's defaults, unti
 always @(posedge clk_sys)
 	if (ioctl_wr && ioctl_index == 16'd254 && !ioctl_addr[24:1]) sw[ioctl_addr[0]] <= ioctl_dout;
 wire [15:0] dsw = { sw[0], sw[1] };
+`ifdef GX_T34
+assign one_scr = sw[0][3];             // DIP SW1:4, Number of Screens: 1
+`endif
 
 ///////////////////////   THE BOARD   ////////////////////////////
 
@@ -721,6 +776,8 @@ gx_main u_board (
 	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
 	.esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .t4_cfg(t4), .ps_oy_cfg(ps_oy),
+	.t1_cfg(t1), .vis_y0, .obj_vadj, .an_steer, .an_gas,
+	.t1m_cs, .t1m_addr, .t1m_ok, .t1m_data, .t1m_inval, .t1w_req, .t1w_addr, .t1w_data, .t1w_we16, .t1w_busy,
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .vid_sub,
 	.psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
 	.pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
@@ -904,6 +961,12 @@ issp_probe #(.INSTANCE_ID("T"), .PROBE_W(204), .SOURCE_W(8)) u_issp_line (
 
 wire [23:0] rgb_x;
 `ifdef GX_T34
+`define GX_NO_GUNS
+`endif
+`ifdef GX_T1
+`define GX_NO_GUNS
+`endif
+`ifdef GX_NO_GUNS
 // no gun sets on these boards: not built, for room
 assign gun_h = 32'd0; assign gun_v = 32'd0; assign gun_trig = 2'b00; assign rgb_x = rgb;
 `else
@@ -943,6 +1006,9 @@ gx_crt_chain u_crt (
 	.hs_out(crt_hs), .vs_out(crt_vs), .hb_out(crt_hb), .vb_out(crt_vb)
 );
 
+// arcade_video's colour: the HDMI framebuffer's input; the analog output's
+// in the Type 3/4 build after gx_t34_crt (below)
+wire [7:0] av_r, av_g, av_b;
 arcade_video #(.WIDTH(384), .DW(24), .GAMMA(1)) arcade_video
 (
 	.clk_video(clk_vid),
@@ -954,7 +1020,7 @@ arcade_video #(.WIDTH(384), .DW(24), .GAMMA(1)) arcade_video
 	.VSync(crt_vs),
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
-	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_R(av_r), .VGA_G(av_g), .VGA_B(av_b),
 	.VGA_HS(VGA_HS), .VGA_VS(VGA_VS),
 	.VGA_DE(VGA_DE),
 	.VGA_SL(VGA_SL),
@@ -975,10 +1041,34 @@ wire [28:0] rot_DDRAM_ADDR;
 wire [63:0] rot_DDRAM_DIN;
 
 `ifdef GX_T34
+wire        fb_DDRAM_WE, fb_DDRAM_RD, crt_DDRAM_WE, crt_DDRAM_RD;
+wire  [7:0] fb_DDRAM_BURSTCNT, fb_DDRAM_BE, crt_DDRAM_BURSTCNT, crt_DDRAM_BE;
+wire [28:0] fb_DDRAM_ADDR, crt_DDRAM_ADDR;
+wire [63:0] fb_DDRAM_DIN, crt_DDRAM_DIN;
+gx_t34_crt u_t34crt (
+	.CLK_VIDEO(CLK_VIDEO),
+	.CE_PIXEL(CE_PIXEL),
+	.VGA_R(av_r), .VGA_G(av_g), .VGA_B(av_b),
+	.VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
+	.vid_sub(vid_sub), .en_in(crt_hold), .mon_in(crt_mon),
+	.R_OUT(VGA_R), .G_OUT(VGA_G), .B_OUT(VGA_B),
+	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy | ss_own), .other_we(fb_DDRAM_WE),
+	.DDRAM_BURSTCNT(crt_DDRAM_BURSTCNT), .DDRAM_ADDR(crt_DDRAM_ADDR), .DDRAM_DIN(crt_DDRAM_DIN),
+	.DDRAM_BE(crt_DDRAM_BE), .DDRAM_WE(crt_DDRAM_WE), .DDRAM_RD(crt_DDRAM_RD),
+	.DDRAM_DOUT(DDRAM_DOUT), .DDRAM_DOUT_READY(DDRAM_DOUT_READY & ~ldr_busy & ~ss_own)
+);
+// the port: gx_t34_fb's writes, which do not wait, or gx_t34_crt's, which
+// asks only on a clock without one
+assign rot_DDRAM_WE       = fb_DDRAM_WE | crt_DDRAM_WE;
+assign rot_DDRAM_RD       = crt_DDRAM_RD;
+assign rot_DDRAM_BURSTCNT = fb_DDRAM_WE ? fb_DDRAM_BURSTCNT : crt_DDRAM_BURSTCNT;
+assign rot_DDRAM_ADDR     = fb_DDRAM_WE ? fb_DDRAM_ADDR     : crt_DDRAM_ADDR;
+assign rot_DDRAM_DIN      = fb_DDRAM_WE ? fb_DDRAM_DIN      : crt_DDRAM_DIN;
+assign rot_DDRAM_BE       = fb_DDRAM_WE ? fb_DDRAM_BE       : crt_DDRAM_BE;
 gx_t34_fb u_t34fb (
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),
-	.VGA_R(VGA_R), .VGA_G(VGA_G), .VGA_B(VGA_B),
+	.VGA_R(av_r), .VGA_G(av_g), .VGA_B(av_b),
 	.VGA_VS(VGA_VS), .VGA_DE(VGA_DE),
 	.vid_sub(vid_sub), .mode_in(scr_mode),
 	.FB_EN(FB_EN), .FB_FORMAT(FB_FORMAT),
@@ -987,14 +1077,15 @@ gx_t34_fb u_t34fb (
 	.FB_VBL(FB_VBL),
 	.DDRAM_CLK(rot_DDRAM_CLK),
 	.DDRAM_BUSY(DDRAM_BUSY | ldr_busy | ss_own),
-	.DDRAM_BURSTCNT(rot_DDRAM_BURSTCNT),
-	.DDRAM_ADDR(rot_DDRAM_ADDR),
-	.DDRAM_DIN(rot_DDRAM_DIN),
-	.DDRAM_BE(rot_DDRAM_BE),
-	.DDRAM_WE(rot_DDRAM_WE),
-	.DDRAM_RD(rot_DDRAM_RD)
+	.DDRAM_BURSTCNT(fb_DDRAM_BURSTCNT),
+	.DDRAM_ADDR(fb_DDRAM_ADDR),
+	.DDRAM_DIN(fb_DDRAM_DIN),
+	.DDRAM_BE(fb_DDRAM_BE),
+	.DDRAM_WE(fb_DDRAM_WE),
+	.DDRAM_RD(fb_DDRAM_RD)
 );
 `else
+assign VGA_R = av_r; assign VGA_G = av_g; assign VGA_B = av_b;
 screen_rotate_two u_rotate (
 	.CLK_VIDEO(CLK_VIDEO),
 	.CE_PIXEL(CE_PIXEL),

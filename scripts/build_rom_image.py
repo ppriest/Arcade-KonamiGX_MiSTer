@@ -134,6 +134,8 @@ FORMS = {
     "TILE_WORDS2_ROM_LOAD": (4, 2, False),   # ROM_GROUPDWORD | ROM_SKIP(2)
     "TILE_BYTES2_ROM_LOAD": (2, 4, False),   # ROM_GROUPWORD  | ROM_SKIP(4)
     "_48_WORD_ROM_LOAD":    (2, 4, False),   # ROM_GROUPWORD  | ROM_SKIP(4)
+    "T1_PSAC6_ROM_LOAD":    (1, 2, False),   # ROM_GROUPBYTE  | ROM_SKIP(2): Type 1's CROM/HROM, 3 lanes
+    "T1_PSAC8_ROM_LOAD":    (1, 3, False),   # ROM_GROUPBYTE  | ROM_SKIP(3): 4 lanes
 }
 
 

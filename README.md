@@ -31,6 +31,11 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGXT34_20261011**
+  * Analog output (CRT): Fix CRT output for a single display - before it was outputting both displays on alternate frames and the DIP had no effect.
+    * New OSD option *Screen (CRT)*: First (default), Second, or Alternate (in theory could be split to support two displays)
+    * HDMI behaves as before and ignores the DIP and has way more options...
+
 * **Arcade-KonamiGX_20261010** / **Arcade-KonamiGXT34_20261010** (new RBF)
   * **Beta**
   * The Type 3 and Type 4 twin-monitor boards: Soccer Superstars, Run and Gun 2 / Slam Dunk 2,
@@ -143,8 +148,11 @@ A second bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md),
 
 The board draws the two monitors on alternate frames. On HDMI the OSD's *Screen (HDMI)* shows the
 first monitor, the second, both side by side, or both turned 90 degrees and stacked for a panel
-on its side (*Stacked CCW* for a panel turned clockwise, *Stacked CW* the other way). The analog
-output carries the alternating frames as the board sends them.
+on its side (*Stacked CCW* for a panel turned clockwise, *Stacked CW* the other way). On the analog
+output *Screen (CRT)* holds the first or second monitor's picture, as the cabinet's demux board did,
+or passes the alternating frames as the board sends them (*Alternate*: one CRT flickers between
+the two); it defaults to the first. With the game's DIP *Number of Screens* at 1 the analog output
+holds the first monitor; HDMI follows *Screen (HDMI)* whatever the DIP says.
 
 Graphics are as good, and as wrong, as MAME 0.289's, which marks every one of these sets
 `MACHINE_IMPERFECT_GRAPHICS` (Versus Net Soccer also `MACHINE_IMPERFECT_SOUND`). The core follows
@@ -361,14 +369,14 @@ To run a development build:
 
 ### Resource usage
 
-The release builds (commit `e997bb3`, fitter seed 5) on the DE10-nano's Cyclone V 5CSEBA6,
-speed grade 7, timing met on every clock:
+The release builds on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, timing met on every
+clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2:
 
 | resource | `KonamiGX` | `KonamiGXT34` | available |
 | --- | --- | --- | --- |
-| Logic (ALMs) | 37,676 (90%) | 36,279 (87%) | 41,910 |
-| Block memory bits | 4,163,821 (74%) | 4,317,677 (76%) | 5,662,720 |
-| RAM blocks | 533 (96%) | 542 (98%) | 553 |
+| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 41,910 |
+| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 5,662,720 |
+| RAM blocks | 533 (96%) | 547 (99%) | 553 |
 | DSP blocks | 69 (62%) | 55 (49%) | 112 |
 | PLLs | 3 | 3 | 6 |
 

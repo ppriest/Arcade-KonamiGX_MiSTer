@@ -317,6 +317,40 @@ always @(posedge clk) begin
     end else sp_cnt <= sp_cnt + 4'd1;
 end
 
+// GX_T1: the K053936's map RAM (0xec0000, 128 KB), gx_sdram_top's T1_PSACRAM:
+// a granule read answers after sr_lat clocks; a write is busy for four
+// clocks, then lands (byte 0 of a granule in its low bits, as the SDRAM)
+wire        t1m_cs, t1m_inval, t1w_req, t1w_we16;
+wire [13:0] t1m_addr;
+reg         t1m_ok = 0;
+reg  [63:0] t1m_data;
+wire [16:0] t1w_addr;
+wire [15:0] t1w_data;
+reg         t1w_busy = 0;
+reg  [ 7:0] t1mem [0:131071];
+initial for (int i = 0; i < 131072; i++) t1mem[i] = 8'd0;
+reg  [3:0]  t1m_cnt = 0, t1w_cnt = 0;
+always @(posedge clk) begin
+    t1m_ok <= 1'b0;
+    if (!t1m_cs || t1m_ok) t1m_cnt <= 0;
+    else if (t1m_cnt == 4'd8) begin
+        for (int b = 0; b < 8; b++) t1m_data[8 * b +: 8] <= t1mem[{ t1m_addr, 3'(b) }];
+        t1m_ok  <= 1'b1;
+        t1m_cnt <= 0;
+    end else t1m_cnt <= t1m_cnt + 4'd1;
+    if (!t1w_busy && t1w_req) begin t1w_busy <= 1'b1; t1w_cnt <= 0; end
+    else if (t1w_busy) begin
+        t1w_cnt <= t1w_cnt + 4'd1;
+        if (t1w_cnt == 4'd3) begin
+            t1w_busy <= 1'b0;
+            if (t1w_we16) begin
+                t1mem[{ t1w_addr[16:1], 1'b0 }] <= t1w_data[7:0];
+                t1mem[{ t1w_addr[16:1], 1'b1 }] <= t1w_data[15:8];
+            end else t1mem[t1w_addr] <= t1w_data[7:0];
+        end
+    end
+end
+
 // GX_T34: the 68000's RAM (gx_sound's r_ port), at 0x490000 in this model
 wire        sr_cs, sr_inval;
 wire [12:0] sr_addr;
@@ -638,8 +672,10 @@ wire [15:0] cfg_esc_s10;
 wire [ 3:0] cfg_esc_s11n;
 wire [31:0] cfg_esc_xor;
 wire [63:0] cfg_esc_lanes;
-wire        cfg_t34, cfg_t4;
+wire        cfg_t34, cfg_t4, cfg_t1;
 wire  [2:0] cfg_ps_oy;
+wire  [4:0] cfg_vis_y0;
+wire  [9:0] cfg_obj_vadj;
 int esc_chip_on = 1;
 initial void'($value$plusargs("ESC_CHIP=%d", esc_chip_on));
 gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_size4(), .obj_size4(), .snd_pcm(),
@@ -649,7 +685,8 @@ gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_siz
                      .esc_count(cfg_esc_count), .esc_copy(cfg_esc_copy), .prot4(cfg_prot4),
                      .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma),
                      .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
-                     .t34(cfg_t34), .t4(cfg_t4), .ps_oy(cfg_ps_oy), .psac_base(), .psmap_base() );
+                     .t34(cfg_t34), .t4(cfg_t4), .ps_oy(cfg_ps_oy), .psac_base(), .psmap_base(),
+                     .t1(cfg_t1), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj) );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -761,6 +798,8 @@ gx_main dut (
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
     .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes), .t34(cfg_t34), .t4_cfg(cfg_t4), .ps_oy_cfg(cfg_ps_oy),
+    .t1_cfg(cfg_t1), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj), .an_steer(8'h80), .an_gas(8'hff),
+    .t1m_cs, .t1m_addr, .t1m_ok, .t1m_data, .t1m_inval, .t1w_req, .t1w_addr, .t1w_data, .t1w_we16, .t1w_busy,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(dbg_line), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),
     // the SDRAM layout's tile_base: where the packed CPU image ends. +ROM_TOP

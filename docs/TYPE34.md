@@ -61,11 +61,16 @@ both settings, and each monitor's picture changes at 30 Hz.
   is the main monitor's. MAME draws a frame at the next update, after its flag has turned, so
   MAME's pairing is one frame off from a raster's. Checked in `sim/gx_main_tb` from MAME's
   state after Start (below): team select, MAME's main screen, in the frames with `t3_frame` 0.
-- **Analog**: the board's interleaved frames as they are. Showing one monitor needs the demux
-  board's frame hold, which needs a frame store (in DDR3, read back for the analog output); without
-  one, blanking the other monitor's frames gives a 30 Hz flicker. **Open: the earlier decision
-  (use the DIP, no frame store) assumed 1 screen meant a 60 Hz single picture, which MAME does not
-  show.**
+- **Analog**: the demux board's frame hold (`rtl/video/gx_t34_crt.sv`): one monitor's frames go
+  out as they come and are stored in DDR3 (0x26000000); the other monitor's frames are replaced by
+  the stored picture, a line read into a line buffer in the blanking before it
+  (`sim/gx_t34_crt_tb`). The OSD's *Screen (CRT)*: First, Second, or Alternate (the board's frames
+  as they are, which one CRT shows as flicker and a double image wherever the two differ).
+- **DIP SW1:4, Number of Screens**: with 1, the board still alternates: in MAME (soccerss, frames
+  2400-2405) the main monitor has the game and the second a MONITOR SETTING notice, and the
+  game's picture changes every second frame. So the DIP does not remove the need for the hold;
+  set to 1, the analog output holds the main monitor whatever *Screen (CRT)* says. HDMI follows
+  *Screen (HDMI)* only.
 
 ## Video at 12 MHz
 

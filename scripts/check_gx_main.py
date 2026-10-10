@@ -103,15 +103,17 @@ def compare_shots(game, n, near, out):
         print(f"MAME frame {n}: no capture of that frame in debug/")
         return
     ref = rm.Capture(caps[0]).reference()
+    # the picture's size is MAME's: 288 x 224, or Racin' Force's 384 x 255
+    vh, vw = ref.shape[:2]
     best = None
     # shot_<frame>.hex; shot_frames.hex is the bench's input, not a picture
     pics = [f for f in out.glob("shot_*.hex") if f.stem[5:].isdigit()]
     for f in sorted(pics, key=lambda p: abs(int(p.stem[5:]) - near)):
         px = np.array([int(v, 16) for v in f.read_text().split()], dtype=np.int64)
-        if len(px) != rm.VIS_W * rm.VIS_H:
+        if len(px) != vw * vh:
             continue
         got = np.stack([px >> 16 & 0xff, px >> 8 & 0xff, px & 0xff], axis=-1)
-        got = got.reshape(rm.VIS_H, rm.VIS_W, 3).astype(np.uint8)
+        got = got.reshape(vh, vw, 3).astype(np.uint8)
         same = int(np.all(got == ref, axis=-1).sum())
         if best is None or same > best[0]:
             best = (same, int(f.stem[5:]), got)
@@ -121,7 +123,7 @@ def compare_shots(game, n, near, out):
         print(f"MAME frame {n}: no RTL frame recorded near {near}")
         return
     print(f"MAME frame {n} (RTL frame ~{near}): best RTL frame {best[1]}, "
-          f"{best[0]} of {rm.VIS_W * rm.VIS_H} pixels identical")
+          f"{best[0]} of {vw * vh} pixels identical")
     np.save(out / f"shot_best_f{n}.npy", best[2])
 
 
@@ -285,7 +287,9 @@ def main():
             cmd = (["scripts/run_verilator.sh", "gx_main_tb", f"--threads={a.threads}"]
                    + ([f"-GINSTANCE={a.instance}"] if a.instance else [])
                    # the Type 3/4 sets: the KonamiGXT34 bitstream's build (docs/TYPE34.md)
-                   + (["-DGX_T34=1"] if a.game in __import__("build_mra").T34 else []) + args)
+                   + (["-DGX_T34=1"] if a.game in __import__("build_mra").T34 else [])
+                   # the Type 1 sets: the KonamiGXT1 bitstream's (docs/TYPE1.md)
+                   + (["-DGX_T1=1"] if a.game in __import__("build_mra").T1 else []) + args)
         else:
             cmd = ["scripts/run_sim.sh", "gx_main_tb"] + args
         r = subprocess.run([check_gx_obj.GIT_BASH] + cmd, cwd=REPO, capture_output=True, text=True)

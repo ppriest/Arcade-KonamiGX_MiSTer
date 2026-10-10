@@ -21,7 +21,10 @@
 //           readout counter re-synchronises (daiskiss: 0x70 + p, and p -
 //           0x110 from p = 320, on a 384-dot line; dragoonj, 512 dots from
 //           bitmap column 40: 0x80 + p, which wraps in nine bits)
-//   vdump = 0x110 on the first visible line, +1 a line, 0x1FF -> 0xF8;
+//   vdump = 0x100 + vis_y0 on the first visible line (0x110 but for Racin'
+//           Force, whose K053252 offset y is 0 and 255 lines are visible),
+//           +1 a line, 0x1FF -> 0x200 - VC (0xF8 for 264 lines), so the
+//           last line of the blanking is the first visible one's less one;
 //           it steps when HS falls, and LVBL -- which changes at the start
 //           of horizontal blanking -- already says whether the next line is
 //           visible
@@ -108,6 +111,8 @@ module gx_video #(
     input             obj_bank,        // Type 3/4: the DMA copies the list from words 0x800-0xfff
     input       [1:0] obj_pri_raw,
     input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
+    input      [ 4:0] vis_y0,      // the visible window's first bitmap row (16, or 0)
+    input      [ 9:0] obj_vadj,    // the set's K055673 dy - (-23), signed
     input             obj_dma_trig, // start the sprite DMA now (gx_main)
     input             obj_dma_hold, // the ESC is writing the sprite list
     output    [111:0] dbg_mix,     // the mixer's registers, for the board's probe
@@ -202,6 +207,15 @@ always @(posedge clk) if( crtc_cs ) begin
     if( crtc_addr == 4'd1 ) hc_lo <= crtc_din;
 end
 wire [9:0] hc = { hc_hi, hc_lo } + 10'd1;
+// the frame's total, VC: registers 8 (bit 8) and 9, plus one (264 until written)
+reg        vc_hi = 1'b1;
+reg  [7:0] vc_lo = 8'h07;
+always @(posedge clk) if( crtc_cs ) begin
+    if( crtc_addr == 4'd8 ) vc_hi <= crtc_din[0];
+    if( crtc_addr == 4'd9 ) vc_lo <= crtc_din;
+end
+reg  [8:0] v_wrap = 9'h0F8;            // 0x200 - VC
+always @(posedge clk) v_wrap <= 9'h000 - { vc_hi, vc_lo } - 9'd1;
 
 // hdump and vdump, from the K053252's blanking (see the header)
 reg  [HW-1:0] pcnt, hdump;
@@ -217,7 +231,7 @@ always @(posedge clk) if( pxl_cen ) begin
     pcnt   <= ( lhbl && !lhbl_l ) ? { {(HW-1){1'b0}}, 1'b1 } : pcnt + 1'b1;
     if( !hs && hs_l ) begin
         lvbl_hsf <= lvbl;
-        vdump    <= ( lvbl && !lvbl_hsf ) ? 9'h110 : vdump == 9'h1FF ? 9'h0F8 : vdump + 9'd1;
+        vdump    <= ( lvbl && !lvbl_hsf ) ? 9'h100 + { 4'd0, vis_y0 } : vdump == 9'h1FF ? v_wrap : vdump + 9'd1;
     end
 end
 
@@ -385,7 +399,7 @@ wire [ 1:0] h_code;
 
 gx_obj #(.HOFFSET(HOFFSET), .HADJ(10'd0)) u_obj (
     .dbg_shd,
-    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump(10'(hdump)), .vdump, .voffset(VOFFSET), .hoff_adj(obj_hadj), .dma_trig(obj_dma_trig), .dma_hold(obj_dma_hold), .hs, .lvbl,
+    .rst, .clk, .pxl_cen, .pxl2_cen, .hdump(10'(hdump)), .vdump, .voffset(VOFFSET + obj_vadj), .hoff_adj(obj_hadj), .dma_trig(obj_dma_trig), .dma_hold(obj_dma_hold), .hs, .lvbl,
     .ram_cs(spr_ram_cs), .ram_we(spr_ram_we), .ram_addr(spr_ram_addr), .ram_din(spr_ram_din),
     .ram_dout(spr_ram_dout),
     .reg_cs(k46_cs), .mmr_we(k46_we), .mmr_addr(k46_addr), .mmr_din(k46_din), .mmr_dsn(k46_dsn),

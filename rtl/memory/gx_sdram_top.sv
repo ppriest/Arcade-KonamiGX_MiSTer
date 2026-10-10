@@ -136,6 +136,19 @@ module gx_sdram_top (
     // granules, four clients: gx_psac), on the graphics port; byte 0 in [63:56]
     input  wire [26:0] psac_base,
     input  wire [26:0] psmap_base,
+    // GX_T1: the K053936's map RAM (gx_main, 0xec0000, 128 KB) at T1_PSACRAM,
+    // on port 2 beside the CPU's ROM: reads a granule, writes a byte or word
+    // through the download's write path, which is idle while the game runs
+    input  wire        t1m_cs,
+    input  wire [13:0] t1m_addr,
+    output wire        t1m_ok,
+    output wire [63:0] t1m_data,
+    input  wire        t1m_inval,
+    input  wire        t1w_req,
+    input  wire [16:0] t1w_addr,
+    input  wire [15:0] t1w_data,
+    input  wire        t1w_we16,
+    output wire        t1w_busy,
     input  wire        psm_cs,
     input  wire [15:0] psm_addr,
     output wire        psm_ok,
@@ -478,19 +491,36 @@ assign obj_data  = { obj_g[7:0],  obj_g[15:8],  obj_g[23:16],  obj_g[31:24],
                       obj_g[39:32], obj_g[47:40], obj_g[55:48], obj_g[63:56] };
 
 // ------------------------------------------------------------ port 2: CPU, download
-wire [0:0]  arb2_req, arb2_valid;
-wire [26:0] arb2_addr;
+`ifdef GX_T1
+localparam int N2 = 2;
+// the top 128 KB of the 64 MB module (scripts/build_mra.py T1_PSACRAM)
+localparam [26:0] T1_PSACRAM = 27'h3FE0000;
+wire        dl2_req  = dl_req | t1w_req;
+wire [26:0] dl2_addr = dl_req ? dl_addr : T1_PSACRAM + { 10'd0, t1w_addr };
+wire [15:0] dl2_data = dl_req ? dl_data : t1w_data;
+wire        dl2_we16 = dl_req ? dl_we16 : t1w_we16;
+`else
+localparam int N2 = 1;
+wire        dl2_req = dl_req, dl2_we16 = dl_we16;
+wire [26:0] dl2_addr = dl_addr;
+wire [15:0] dl2_data = dl_data;
+`endif
+wire [N2-1:0]    arb2_req, arb2_valid;
+wire [27*N2-1:0] arb2_addr;
 wire [63:0] arb2_rdata;
+wire        dl2_busy;
+assign dl_busy  = dl2_busy;
+assign t1w_busy = dl2_busy;
 
-sdram_arbiter #(.N(1)) u_arb2 (
+sdram_arbiter #(.N(N2)) u_arb2 (
     .clk(clk_mem), .reset(reset),
     .port_addr(p_addr[2]), .port_wrl(p_wrl[2]), .port_wrh(p_wrh[2]),
     .port_din(p_din[2]), .port_dout(p_dout[2]),
     .port_req(p_req[2]), .port_ack(p_ack[2]),
     .c_req(arb2_req), .c_addr(arb2_addr),
     .c_valid(arb2_valid), .c_rdata(arb2_rdata),
-    .c_dbl(1'b0), .c_rdata2(), .port_dout2(64'd0), .port_dbl(),
-    .dl_req(dl_req), .dl_addr(dl_addr), .dl_data(dl_data), .dl_we16(dl_we16), .dl_busy(dl_busy)
+    .c_dbl('0), .c_rdata2(), .port_dout2(64'd0), .port_dbl(),
+    .dl_req(dl2_req), .dl_addr(dl2_addr), .dl_data(dl2_data), .dl_we16(dl2_we16), .dl_busy(dl2_busy)
 );
 
 gx_rom_port #(.AW(20)) u_cpu (
@@ -498,8 +528,21 @@ gx_rom_port #(.AW(20)) u_cpu (
     .cs(cpu_cs), .addr(cpu_addr), .ok(cpu_ok), .data(cpu_data),
     .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
     .base(BASE_MAINCPU),
-    .c_req(arb2_req[0]), .c_addr(arb2_addr), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata), .c_dbl(), .c_rdata2(64'd0)
+    .c_req(arb2_req[0]), .c_addr(arb2_addr[26:0]), .c_valid(arb2_valid[0]), .c_rdata(arb2_rdata), .c_dbl(), .c_rdata2(64'd0)
 );
+
+`ifdef GX_T1
+gx_rom_port #(.AW(14)) u_t1m (
+    .clk, .clk_mem, .rst(reset),
+    .cs(t1m_cs), .addr(t1m_addr), .ok(t1m_ok), .data(t1m_data),
+    .hint_cs(1'b0), .hint_addr(14'd0), .halfsel(1'b0), .inval(t1m_inval),
+    .base(T1_PSACRAM),
+    .c_req(arb2_req[1]), .c_addr(arb2_addr[53:27]), .c_valid(arb2_valid[1]), .c_rdata(arb2_rdata), .c_dbl(), .c_rdata2(64'd0)
+);
+`else
+assign t1m_ok = 1'b0;
+assign t1m_data = 64'd0;
+`endif
 
 endmodule
 

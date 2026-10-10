@@ -205,7 +205,9 @@ SETS = ["daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
         "soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu",
         # the Type 4 board, the same bitstream
         "rungun2", "slamdnk2", "rushhero",
-        "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"]
+        "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj",
+        # the Type 1 board (docs/TYPE1.md): the KonamiGXT1 bitstream
+        "racinfrc", "racinfrcu"]
 
 # The sets the second bitstream runs (Type 3 and 4 boards, docs/TYPE34.md):
 # their .mra names it, and their image may use the 128 MB module.
@@ -216,19 +218,28 @@ T34 = {"soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu", "rungun2
 T4 = {"rungun2", "slamdnk2", "rushhero", "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"}
 
 
+# The sets the third bitstream runs (the Type 1 board, docs/TYPE1.md): the
+# 64 MB module
+T1 = {"racinfrc", "racinfrcu"}
+
+# The sets with a K053936 whose tiles (gfx3) and map or height tiles (gfx4)
+# follow the sound board's RAMs (psac_base, psmap_base)
+PSAC = T34 | T1
+
+
 def rbf_of(set_name):
-    return "KonamiGXT34" if set_name in T34 else "KonamiGX"
+    return "KonamiGXT34" if set_name in T34 else "KonamiGXT1" if set_name in T1 else "KonamiGX"
 
 
 def sdram_limit(set_name):
-    return (128 if set_name in T34 else 32) * MB
+    return (128 if set_name in T34 else 64 if set_name in T1 else 32) * MB
 
 # K056832 row bytes per set (set_config's depth; render_model.TILE_BPP):
 # BPP_5 unless listed. gx_board_cfg's tile_bpp says the same to the core.
 TILE_BYTES = {"tokkae": 6, "tkmmpzdm": 6, "le2": 8, "winspike": 8, "winspikea": 8, "winspikej": 8,
               "salmndr2": 6, "salmndr2a": 6, "le2u": 8, "le2j": 8,
               "soccerss": 6, "soccerssa": 6, "soccerssj": 6, "soccerssja": 6, "soccerssu": 6,
-              "rungun2": 8, "slamdnk2": 8, "rushhero": 8,
+              "rungun2": 8, "slamdnk2": 8, "rushhero": 8, "racinfrc": 6, "racinfrcu": 6,
               **{k: 8 for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 
 # Program patches MAME applies at start-up, carried as .mra <patch>es:
@@ -282,6 +293,10 @@ BUTTON_NAMES = {
     "le2":       ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver EAA)
     "le2u":      ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver UAA)
     "le2j":      ["Trigger", "Reload"],  # Lethal Enforcers II: The Western (ver JAA)
+    # MAME: the gas an analogue pedal (AN1), Brake BUTTON2, Gear Shift BUTTON3
+    # (a toggle); the core takes the pedal as button 1 or the stick
+    "racinfrc":  ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver EAC)
+    "racinfrcu": ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver UAB)
 }
 
 
@@ -321,7 +336,7 @@ def game_lines():
     """setname -> (year, parent, input block, title, manufacturer) from GAME()."""
     src = bri.DRIVER.read_text(encoding="utf8", errors="replace")
     out = {}
-    for m in re.finditer(r'^GAME\(\s*(\d+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),[^,]*,[^,]*,\s*(?:ROT\d+|ORIENTATION_FLIP_[XY]),\s*"([^"]*)",\s*"([^"]*)"',
+    for m in re.finditer(r'^GAMEL?\(\s*(\d+),\s*(\w+),\s*(\w+),\s*(\w+),\s*(\w+),[^,]*,[^,]*,\s*(?:ROT\d+|ORIENTATION_FLIP_[XY]),\s*"([^"]*)",\s*"([^"]*)"',
                          src, re.M):
         out[m.group(2)] = dict(year=m.group(1), parent=m.group(3), machine=m.group(4),
                                inputs=m.group(5), manufacturer=m.group(6), title=m.group(7))
@@ -365,9 +380,10 @@ def layout(set_name, blocks):
     # lets its 16 MB of sprites fit; the rest have 4 MB)
     lo = dict(tile_base=tb, obj_base=ob, tile_size4=tr * 4, obj_size4=orow * 4, end=end,
               snd_pcm=up(ps))
-    if set_name in T34:
+    if set_name in PSAC:
         # the PSAC2's tiles (gfx3) and map (gfx4), as they come, after the
-        # sound board's RAMs (gx_sdram_top's psac_base, psmap_base)
+        # sound board's RAMs (gx_sdram_top's psac_base, psmap_base); on
+        # Type 1 the CROM (gfx3) and HROM (gfx4)
         g3, _ = bri.region_loads(blocks[set_name], "gfx3")
         g4 = 0 if set_name in T4 else bri.region_loads(blocks[set_name], "gfx4")[0]
         lo["psac_base"] = up(snd_ram_end(lo, set_name))
@@ -375,7 +391,14 @@ def layout(set_name, blocks):
         lo["end"] = lo["psmap_base"] + up(g4)
         if lo["end"] > sdram_limit(set_name):
             raise SystemExit(f"{set_name}: {lo['end'] / MB:.1f} MB does not fit the {sdram_limit(set_name) // MB} MB module")
+    if set_name in T1 and lo["end"] > T1_PSACRAM:
+        raise SystemExit(f"{set_name}: the image reaches the K053936's RAM at {T1_PSACRAM:#x}")
     return lo
+
+
+# Type 1: the K053936's map RAM (128 KB, 0xec0000), at the top of the 64 MB
+# module (gx_sdram_top's T1_PSACRAM)
+T1_PSACRAM = 64 * MB - 0x20000
 
 
 def cfg_arm(mod, set_name, lo):
@@ -544,7 +567,14 @@ def resolve_fields(fields):
 
 
 # MAME's switch names too long for the OSD's 28 columns, shortened
-DIP_SHORT = {"Left Monitor Flip Screen": "Left Flip Screen", "Right Monitor Flip Screen": "Right Flip Screen"}
+# Defaults that are not MAME's: { switch name: the MAME value (in the port's
+# bits) the .mra defaults to }. Number of Screens at 1: the game puts its
+# play on the main monitor alone (in MAME the second shows a MONITOR SETTING
+# notice), which is what one display wants (docs/TYPE34.md).
+DIP_DEFAULT = {"Number of Screens": 0x08000000}
+
+DIP_SHORT = {"Left Monitor Flip Screen": "Left Flip Screen", "Right Monitor Flip Screen": "Right Flip Screen",
+             "Car Number & Color": "Car"}
 
 
 def dips_of(inputs_block):
@@ -562,6 +592,7 @@ def dips_of(inputs_block):
     for name, mask, dflt, settings in fields:
         if mask & 0xffff:
             continue                                   # inputs, the EEPROM bit, the status bits
+        dflt = DIP_DEFAULT.get(name, dflt)
         for byte_index, shift in ((0, 24), (1, 16)):
             bm = (mask >> shift) & 0xff
             if not bm:
@@ -599,7 +630,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
     if arm != {k: lo[k] for k in arm or {}} or arm is None:
         raise SystemExit(f"{set_name}: rtl/gx_board_cfg.sv's arm 8'd{mod} is {arm}, the ROM_START "
                          f"gives {cfg_arm(mod, set_name, lo).strip()} -- paste --cfg's table in")
-    if set_name in T34:
+    if set_name in PSAC:
         arm = rtl_t34_arm(mod)
         if arm != {k: lo[k] for k in ("psac_base", "psmap_base")}:
             raise SystemExit(f"{set_name}: rtl/gx_board_cfg.sv's PSAC2 arm 8'd{mod} is {arm}, the ROM_START "
@@ -752,7 +783,7 @@ def build(set_name, mod, gl, games, blocks, check_only):
         st.lines.append(f"        <!-- {region}: MAME's region as it is -->")
         emit_loads(st, zips, set_name, loads, truth, 0, at, size)
         st.fill_to(at + pad)
-    if set_name in T34:
+    if set_name in PSAC:
         # the sound board's RAMs (zeros, written at runtime), then the PSAC2's
         # tiles and map, as they come
         for region, at in (("gfx3", lo["psac_base"]),) + ((("gfx4", lo["psmap_base"]),) if set_name not in T4 else ()):
@@ -870,9 +901,9 @@ def main():
     if a.cfg:
         for mod, s in enumerate(SETS):
             print(cfg_arm(mod, s, layout(s, blocks)))
-        print("        // ---- the PSAC2 regions (the Type 3/4 sets)")
+        print("        // ---- the PSAC2 regions (the Type 3/4 sets) and Type 1's CROM and HROM")
         for mod, s in enumerate(SETS):
-            if s in T34:
+            if s in PSAC:
                 print(t34_arm(mod, s, layout(s, blocks)))
         return
     for s in a.sets or SETS:

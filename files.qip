@@ -45,6 +45,7 @@ set_global_assignment -name VERILOG_FILE rtl/video/gx_mixer.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_video.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/screen_rotate_two.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_t34_fb.sv
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_t34_crt.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/video/gx_psac.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68k.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/cpu/fx68k/fx68kAlu.sv
@@ -77,6 +78,7 @@ set_global_assignment -name VERILOG_FILE rtl/video/k054338/jt054338.v
 
 # The main board and the MiSTer side of it.
 set_global_assignment -name VERILOG_FILE rtl/gx_eeprom93c46.v
+set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_adc0834.sv
 set_global_assignment -name VERILOG_FILE rtl/gx_esc.v
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/esc/k056734.sv
 set_global_assignment -name SYSTEMVERILOG_FILE rtl/gx_keyboard.sv

@@ -62,6 +62,15 @@
 // ---- not here yet: the K056832/K055673 ROM readback windows (0xd00000,
 // 0xd4a000), control_w's reset lines, the watchdog, coin counters.
 
+// The Type 3/4 and Type 1 bitstreams have no 056734 and no x byte in the
+// palette RAM
+`ifdef GX_T34
+`define GX_NO_K734
+`endif
+`ifdef GX_T1
+`define GX_NO_K734
+`endif
+
 module gx_main (
     input             rst,
     input             clk,                  // 48 MHz
@@ -136,6 +145,24 @@ module gx_main (
     input             t34,                  // a Type 3/4 set (gx_board_cfg; the KonamiGXT34 bitstream, docs/TYPE34.md)
     input             t4_cfg,               // a Type 4 set (gx_board_cfg, clk_sys)
     input      [ 2:0] ps_oy_cfg,            // its K053936 row offset, [2] map wrap
+    input             t1_cfg,               // a Type 1 set (gx_board_cfg, clk_sys; the KonamiGXT1 bitstream, docs/TYPE1.md)
+    input      [ 4:0] vis_y0,               // the visible window's first bitmap row
+    input      [ 9:0] obj_vadj,             // the set's K055673 dy - (-23), signed
+    input      [ 7:0] an_steer,             // Type 1: the ADC0834's channel 0 (steering)
+    input      [ 7:0] an_gas,               // and channel 1 (gas pedal)
+    // Type 1: the K053936's map RAM (0xec0000, 128 KB) in SDRAM: reads a
+    // granule through t1m_, writes a byte or word through t1w_ (t1w_addr the
+    // byte offset), the read port's granules dropped after each write
+    output reg        t1m_cs,
+    output reg [13:0] t1m_addr,
+    input             t1m_ok,
+    input      [63:0] t1m_data,
+    output reg        t1m_inval,
+    output reg        t1w_req,
+    output reg [16:0] t1w_addr,
+    output reg [15:0] t1w_data,
+    output reg        t1w_we16,
+    input             t1w_busy,
     input      [ 4:0] rom_uncached,         // clocks an instruction fetch takes while CACR's cache is off
     input             tile_rb66,            // the K056832 window is k_6bpp_rom_long_r (six-byte rows)
     input             guns,                 // le2: the light guns at 0xd44000, P2's trigger at 0xd5e002
@@ -366,11 +393,13 @@ reg  [12:0] pl_a;
 reg  [15:0] pl_d;
 wire [7:0]  pl_q [4];
 wire [23:0] pal_q;
-`ifndef GX_T34
+`ifndef GX_NO_K734
 gx_sdpram #(.AW(13), .DW(8)) u_pal_x ( .clk, .we(pl_we[3]), .wa(pl_a),
     .d(pl_d[15:8]), .ra(pl_a), .q(pl_q[3]) );                           // x: high byte
 `else
-assign pl_q[3] = 8'h00;     // soccerss's RAM test reads back bytes 2-0 of each long only
+// soccerss's RAM test reads back bytes 2-0 of each long only; Racin' Force
+// reads the byte as 0 for its sky's scroll (konamigx_palette_r)
+assign pl_q[3] = 8'h00;
 `endif
 assign pl_q[2] = pal_q[23:16];
 assign pl_q[1] = pal_q[15:8];
@@ -385,7 +414,8 @@ reg         t4_w;                           // Type 4: the palette access's word
 // take straight from clk_sys (-8.7 ns in KonamiGXT34)
 reg         t4 = 1'b0;
 reg  [ 2:0] ps_oy = 3'd0;
-always @(posedge clk) begin t4 <= t4_cfg; ps_oy <= ps_oy_cfg; end
+reg         t1 = 1'b0;
+always @(posedge clk) begin t4 <= t4_cfg; ps_oy <= ps_oy_cfg; t1 <= t1_cfg; end
 
 `ifdef GX_T34
 // ------------------------------------------------------------ Type 3/4 (docs/TYPE34.md)
@@ -448,6 +478,46 @@ assign pix_sub = 1'b0;
 `endif
 assign vid_sub = pix_sub;
 
+`ifdef GX_T1
+// ------------------------------------------------------------ Type 1 (docs/TYPE1.md)
+// konamigx.cpp gx_type1_map and racinfrc_map. The power-on test reads back
+// every RAM here (scripts/mame/t1_access.lua), so each is RAM:
+//   0xdc0000  the 056230's RAM, 8 KB (the LAN; no link here)
+//   0xe80000  the K053936's line control, 8 KB
+//   0xf80000  the 056540's line RAM, 4 KB
+//   0xfc0000  the palette lookup, 128 bytes a bank (the bank register's
+//             bits 15-12), bits 31-24 and 15-8 of each long
+// the K053936's map RAM (0xec0000, 128 KB) is in SDRAM (t1m_, t1w_).
+localparam [1:0] T1_LC = 0, T1_LR = 1, T1_LK = 2, T1_LAN = 3;
+reg  [1:0]  t1_sel;
+reg  [1:0]  t1_we;
+reg  [11:0] t1_a;
+reg  [15:0] t1_d;
+wire [15:0] t1_lc_q, t1_lr_q, t1_lan_q;
+wire [ 7:0] t1_lk_q;
+gx_tdpram #(.AW(12), .DW(8)) u_t1lc_h ( .clk, .we_a(t1_we[1] && t1_sel == T1_LC), .a(t1_a), .d(t1_d[15:8]), .qa(t1_lc_q[15:8]),
+                                         .b(12'd0), .qb() );
+gx_tdpram #(.AW(12), .DW(8)) u_t1lc_l ( .clk, .we_a(t1_we[0] && t1_sel == T1_LC), .a(t1_a), .d(t1_d[ 7:0]), .qa(t1_lc_q[ 7:0]),
+                                         .b(12'd0), .qb() );
+gx_tdpram #(.AW(11), .DW(8)) u_t1lr_h ( .clk, .we_a(t1_we[1] && t1_sel == T1_LR), .a(t1_a[10:0]), .d(t1_d[15:8]), .qa(t1_lr_q[15:8]),
+                                         .b(11'd0), .qb() );
+gx_tdpram #(.AW(11), .DW(8)) u_t1lr_l ( .clk, .we_a(t1_we[0] && t1_sel == T1_LR), .a(t1_a[10:0]), .d(t1_d[ 7:0]), .qa(t1_lr_q[ 7:0]),
+                                         .b(11'd0), .qb() );
+gx_tdpram #(.AW(11), .DW(8)) u_t1lk ( .clk, .we_a(t1_we[1] && t1_sel == T1_LK), .a(t1_a[10:0]), .d(t1_d[15:8]), .qa(t1_lk_q),
+                                       .b(11'd0), .qb() );
+gx_sdpram #(.AW(12), .DW(8)) u_t1lan_h ( .clk, .we(t1_we[1] && t1_sel == T1_LAN), .wa(t1_a), .d(t1_d[15:8]), .ra(t1_a), .q(t1_lan_q[15:8]) );
+gx_sdpram #(.AW(12), .DW(8)) u_t1lan_l ( .clk, .we(t1_we[0] && t1_sel == T1_LAN), .wa(t1_a), .d(t1_d[ 7:0]), .ra(t1_a), .q(t1_lan_q[ 7:0]) );
+wire [15:0] t1_q = t1_sel == T1_LC ? t1_lc_q : t1_sel == T1_LR ? t1_lr_q : t1_sel == T1_LK ? { t1_lk_q, 8'h00 } : t1_lan_q;
+reg  [15:0] t1_k936 [0:15];                  // the K053936's registers (0xe00000)
+reg  [15:0] t1_p4 [0:7];                     // the 056540's (0xe20000, write-only)
+reg  [15:0] t1_bank = 16'd0;                 // type1_bank_w: HBK, CBK, BRK
+reg         t1w_seen;
+reg         adc_we;
+reg  [ 2:0] adc_d;
+wire        adc_do;
+gx_adc0834 u_adc ( .clk, .rst, .we(adc_we), .d(adc_d), .ch0(an_steer), .ch1(an_gas), .dout(adc_do) );
+`endif
+
 // ------------------------------------------------------------ video
 reg         tm_reg_we, tbank_we, vram_we, vram_rd, spr_ram_cs, k46_cs, k55_we, crtc_cs;
 reg  [ 1:0] k47_we, k338_we;                // byte lanes: the game writes some of these bytes alone
@@ -485,7 +555,7 @@ gx_video u_video (
     .tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
-    .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj,
+    .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .vis_y0, .obj_vadj,
     .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip, .spr_mix_on,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .rmrd_addr, .tile_gfx_bank,
@@ -531,7 +601,12 @@ wire [15:0] esc_dout;
 // The Type 3/4 bitstream keeps only the type 4 commands: no set of its
 // generates sprites by ESC, runs Salamander 2's mode or Fantastic Journey's
 // DMA, and tied off here they are not built.
-`ifdef GX_T34
+`ifdef GX_T1
+// the Type 1 board has no ESC
+gx_esc u_escm (
+    .rst, .clk, .start(1'b0), .data(esc_data), .p4(1'b0), .fj(1'b0), .fj_mode, .fj_sz2, .fj_sa, .fj_da, .fj_db, .fj_x, .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
+    .gen_en(1'b0), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(1'b0), .gen_sal2(1'b0),
+`elsif GX_T34
 gx_esc u_escm (
     .rst, .clk, .start(esc_start && esc_p4), .data(esc_data), .p4(1'b1), .fj(1'b0), .fj_mode, .fj_sz2, .fj_sa, .fj_da, .fj_db, .fj_x, .busy(esc_busy), .irq(esc_irq), .dbg(esc_dbg),
     .gen_en(1'b0), .gen_src(esc_src), .gen_count(esc_count), .gen_copy(1'b0), .gen_sal2(1'b0),
@@ -554,7 +629,7 @@ wire        k734_irq, k734_req, k734_we, k734_ack;
 wire [23:1] k734_addr;
 wire [ 1:0] k734_be;
 wire [15:0] k734_dout;
-`ifndef GX_T34
+`ifndef GX_NO_K734
 k056734 u_esc734 (
     .clk, .rst(rst | ~esc_chip),
     .s10(esc_s10), .s11n(esc_s11n), .dxor(esc_xor), .dlanes(esc_lanes),
@@ -566,7 +641,7 @@ k056734 u_esc734 (
     .icount(), .pc_out(), .running()
 );
 `else
-// the Type 3/4 bitstream has no 056734 (none of its sets carries one)
+// the Type 3/4 and Type 1 bitstreams have no 056734 (none of their sets carries one)
 assign k734_irq = 1'b0; assign k734_req = 1'b0; assign k734_we = 1'b0;
 assign k734_addr = 23'd0; assign k734_be = 2'b00; assign k734_dout = 16'd0;
 assign ss_rd_k734 = 16'd0;
@@ -618,7 +693,7 @@ reg        esc_seen;
 // ------------------------------------------------------------ access unit
 // A request is { we, addr, be, data }; the unit answers with u_din and a
 // one-clock u_ack.
-localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5;
+localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5, U_T1R = 6, U_T1W = 7;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
 reg         u_ack, u_esc, u_k734, u_md, u_ss;   // whose access is in progress
@@ -628,7 +703,12 @@ reg         uwe_r;
 reg  [15:0] ud_r;
 reg  [ 3:0] usrc;                           // where the read data comes from
 
-localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6, R_REGS=7, R_T3=8;
+localparam [3:0] R_ZERO=0, R_WRAM=1, R_PAL=2, R_VRAM=3, R_SPR=4, R_IO=5, R_SND=6, R_REGS=7, R_T3=8, R_T1=9;
+
+// a word of an SDRAM granule, even byte high (gx_romcache's order)
+function [15:0] gr_word( input [63:0] gr, input [1:0] w );
+    gr_word = { gr[16*w +: 8], gr[16*w+8 +: 8] };
+endfunction
 
 reg  [15:0] io_q;
 
@@ -834,11 +914,19 @@ always @(posedge clk) begin
 `ifdef GX_T34
     t3_we <= 0; pm_we <= 0;
 `endif
+`ifdef GX_T1
+    t1_we <= 0; adc_we <= 0;
+`endif
+    t1m_inval <= 0;
     snd_wr <= 0; snd_rd <= 0;
     spr_ram_we <= 0;
     k734_mail_we <= 0;
     if( rst ) begin
         ust <= U_IDLE; cr_cs <= 0;
+        t1m_cs <= 0; t1w_req <= 0;
+`ifdef GX_T1
+        t1w_seen <= 0;
+`endif
         wrport1_0 <= 0; wrport1_1 <= 0; wrport2 <= 0; vram_bank <= 0;
         esc_start <= 0; esc_started <= 0;
         p4_op_v <= 0; p4_clk <= 0; esc_p4 <= 0; esc_fj <= 0;
@@ -1026,6 +1114,51 @@ always @(posedge clk) begin
                 io_q <= t3_frame ? 16'h0000 : 16'hffff;
                 usrc <= R_IO;
 `endif
+`ifdef GX_T1
+            end else if( t1 && ub >= 24'hec0000 && ub < 24'hee0000 ) begin
+                // the K053936's map RAM, in SDRAM
+                if( uwe ) begin
+                    t1w_req  <= 1'b1;
+                    t1w_addr <= { ua[16:1], ube == 2'b01 };
+                    t1w_we16 <= &ube;
+                    t1w_data <= &ube ? { ud[7:0], ud[15:8] } : ube[1] ? { 8'd0, ud[15:8] } : { 8'd0, ud[7:0] };
+                    ust <= U_T1W;
+                end else begin
+                    t1m_cs <= 1'b1; t1m_addr <= ua[16:3]; ust <= U_T1R;
+                end
+            end else if( t1 && ub >= 24'hdda000 && ub < 24'hddb000 ) begin
+                // ADC-WRPORT: bits 24-26 CLK, DI, CS
+                if( uwe && !ub[1] && ube[1] ) begin adc_we <= 1'b1; adc_d <= ud[10:8]; end
+            end else if( t1 && ub >= 24'hddc000 && ub < 24'hddd000 ) begin
+                // ADC-RDPORT: DO at bit 24, active low
+                io_q <= ub[1] ? 16'h0000 : { 7'd0, ~adc_do, 8'h00 };
+                usrc <= R_IO;
+            end else if( t1 && ub >= 24'he00000 && ub < 24'he00020 ) begin
+                io_q <= t1_k936[ua[4:1]];
+                usrc <= R_IO;
+                if( uwe ) begin
+                    if( ube[1] ) t1_k936[ua[4:1]][15:8] <= ud[15:8];
+                    if( ube[0] ) t1_k936[ua[4:1]][ 7:0] <= ud[ 7:0];
+                end
+            end else if( t1 && ub >= 24'he20000 && ub < 24'he20010 ) begin
+                if( uwe ) begin
+                    if( ube[1] ) t1_p4[ua[3:1]][15:8] <= ud[15:8];
+                    if( ube[0] ) t1_p4[ua[3:1]][ 7:0] <= ud[ 7:0];
+                end
+            end else if( t1 && ub >= 24'he40000 && ub < 24'he40004 ) begin
+                // a u16 handler on the 32-bit bus: either word is the register
+                if( uwe ) begin
+                    if( ube[1] ) t1_bank[15:8] <= ud[15:8];
+                    if( ube[0] ) t1_bank[ 7:0] <= ud[ 7:0];
+                end
+            end else if( t1 && ((ub >= 24'he80000 && ub < 24'he82000) || (ub >= 24'hf80000 && ub < 24'hf81000) ||
+                                (ub >= 24'hfc0000 && ub < 24'hfc0100) || (ub >= 24'hdc0000 && ub < 24'hdc2000)) ) begin
+                t1_sel <= ub[23:16] == 8'he8 ? T1_LC : ub[23:16] == 8'hf8 ? T1_LR : ub[23:16] == 8'hfc ? T1_LK : T1_LAN;
+                t1_a   <= ub[23:16] == 8'hfc ? { 1'b0, t1_bank[15:12], ua[7:1] } : ua[12:1];
+                t1_d   <= ud;
+                if( uwe ) t1_we <= ube;
+                usrc <= R_T1; ucnt <= 3'd2;
+`endif
             end else if( ub >= 24'hd90000 && ub < 24'hd98000 ) begin
                 pl_a <= ua[14:2]; pl_d <= ud;
                 if( uwe ) begin
@@ -1060,6 +1193,9 @@ always @(posedge clk) begin
 `ifdef GX_T34
                 R_T3:   u_din <= t3_q;
 `endif
+`ifdef GX_T1
+                R_T1:   u_din <= t1_q;
+`endif
                 default: u_din <= 16'h0000;
             endcase
             u_ack <= 1;
@@ -1077,6 +1213,21 @@ always @(posedge clk) begin
             u_din <= cr_ok ? cr_data : rom_q; u_ack <= 1; ust <= U_IDLE;
         end
     end
+`ifdef GX_T1
+    // the map RAM: a read waits for its granule; a write for the arbiter to
+    // take and finish it, then the read port's granules are dropped
+    U_T1R: if( t1m_ok ) begin
+        t1m_cs <= 1'b0;
+        u_din  <= gr_word( t1m_data, ua_r[2:1] );
+        u_ack  <= 1; ust <= U_IDLE;
+    end
+    U_T1W: if( !t1w_seen ) begin
+        if( t1w_busy ) begin t1w_req <= 1'b0; t1w_seen <= 1'b1; end
+    end else if( !t1w_busy ) begin
+        t1w_seen <= 1'b0; t1m_inval <= 1'b1;
+        u_ack <= 1; ust <= U_IDLE;
+    end
+`endif
     default: ust <= U_IDLE;
     endcase
     if( ss_commit )

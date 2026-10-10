@@ -22,6 +22,7 @@ rtl/video/gx_mixer.v
 rtl/video/gx_psac.sv
 rtl/video/gx_video.sv
 rtl/gx_eeprom93c46.v
+rtl/gx_adc0834.sv
 rtl/gx_esc.v
 rtl/esc/k056734.sv
 rtl/gx_snd_stub.sv
