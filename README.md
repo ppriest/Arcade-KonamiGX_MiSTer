@@ -9,10 +9,10 @@ DE10-nano.
 - [History](#history)
 - [Status](#status)
 - [Games](#games)
-  - [Supported](#supported)
+  - [Type 2](#type-2)
   - [Type 3 and Type 4 boards](#type-3-and-type-4-boards-work-in-progress)
   - [Type 1 board](#type-1-board-work-in-progress)
-  - [Out of scope for now](#out-of-scope-for-now)
+  - [Out of scope](#out-of-scope)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
   - [Keyboard](#keyboard)
@@ -20,11 +20,10 @@ DE10-nano.
   - [High scores](#high-scores)
   - [Cheats](#cheats)
   - [CRT Adjust](#crt-adjust)
+  - [Resource usage](#resource-usage)
   - [Floorplan](#floorplan)
 - [Screenshots](#screenshots)
 - [Installation](#installation)
-  - [Todo](#todo)
-  - [Resource usage](#resource-usage)
 - [AI Attestation](#ai-attestation)
 - [Verification](#verification)
 - [Acknowledgements](#acknowledgements)
@@ -92,31 +91,14 @@ DE10-nano.
 
 ## Status
 
-**Status**: All listed games run and are playable with sound. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity.
-
+**Status**: All listed games run and are playable with sound. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity. Also, the 
 Graphically, they're still WIP - but MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
 
 Known issues:
 * **Dragoon Might's and Gokujou Parodius's power-on memory check can fail 4F and 4H**, the sound
   DSP's RAM: the sound CPU stops waiting for the DSP's RAM test before it finishes. Resetting the
   core from the OSD passes it.
-* **EEPROM settings saves** (Dragoon Might's "EEPROM CHECKSUM ERROR", Gokujou Parodius's error
-  after a second save): fixed in Arcade-KonamiGX_20261004 on the bench (the vblank interrupt
-  dropped the EEPROM's chip select mid-save; docs/patches/mame-konamigx-syncen.md), not yet
-  confirmed on the board.
-
-Reported by players against the 20260928 release, compared with the original PCB:
-* Fantastic Journey and Gokujou Parodius:
-  * the big ship boss's flames: fixed (the additive layer's level is no longer inverted), checked
-    on the board in Fantastic Journey; Salamander 2's effects still to be checked with it;
-  * at the last stage's big dancer the background gradient is covered by a sprite: the OSD's
-    *Sprite blend* (Effect bits) shows it, as the PCB does; off by default until more games have
-    been played with it (docs/MAME_KLUDGES.md);
-  * stage 2's clouds flickering: not seen since the sprite line-time changes; sprite draw time
-    can still run short in busy scenes;
-  * some sound effects and parts of the music are too loud.
-* Twin Bee Yahhoo! / Magical Twin Bee: a bomb target marker drawn as ')(': fixed (a mirrored
-  sprite ignores its x flip, as MAME's rule), checked on the board.
+* Sounds effects and parts of the music are too loud. Still working on it...
 
 `docs/MAME_KLUDGES.md` lists what is taken from MAME as behaviour and what is known not to be right.
 `docs/ROADMAP.md` is the plan and its progress; `docs/LESSONS_LEARNED.md` is what it cost.
@@ -126,7 +108,7 @@ Reported by players against the 20260928 release, compared with the original PCB
 
 Initial goal is the Type 2 boards of `konamigx.cpp`
 
-### Supported
+### Type 2
 
 Every Type 2 set in `konamigx.cpp` except the bootleg.
 
@@ -146,8 +128,7 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 
 ### Type 3 and Type 4 boards (work in progress)
 
-A second bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md), released as
-`Arcade-KonamiGXT34_<date>.rbf`. Its `.mra`s name it. All of these boot and play on the board.
+A second bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md).
 
 | Name | Year | Board | SDRAM | Notes |
 |-|-|-|-|-|
@@ -187,8 +168,7 @@ Known issues:
 
 ### Type 1 board (work in progress)
 
-A third bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (docs/TYPE1.md). Its
-`.mra`s name it.
+A third bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (docs/TYPE1.md).
 
 | Name | Year | SDRAM | Notes |
 |-|-|-|-|
@@ -205,7 +185,7 @@ Known issues:
 * **The golf sets' terrain does not draw in time**: a golf frame is twice Racin' Force's work, and
   the far terrain is cut short. On alternate rows of the fairway its colours differ from MAME's.
 
-### Out of scope for now
+### Out of scope
 
 | MAME description | Why |
 |-|-|
@@ -294,6 +274,24 @@ need conditions or arithmetic are not converted. A cheat MAME applies once (the 
 cheats) is held while it is on here; turn it off once it has done its job. Cheats on during the
 power-on tests can make them fail.
 
+### Resource usage
+
+The release builds on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, timing met on every
+clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2;
+`KonamiGXT1` at commit `dd693b2`, seed 1:
+
+| resource | `KonamiGX` | `KonamiGXT34` | `KonamiGXT1` | available |
+| --- | --- | --- | --- | --- |
+| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 35,784 (85%) | 41,910 |
+| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 4,249,875 (75%) | 5,662,720 |
+| RAM blocks | 533 (96%) | 547 (99%) | 549 (99%) | 553 |
+| DSP blocks | 69 (62%) | 55 (49%) | 58 (52%) | 112 |
+| PLLs | 3 | 3 | 3 | 6 |
+
+The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
+reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust has no V-Size: its
+line ring's 30 blocks were freed for the 056734 (ESC) protection chip's local memory.
+
 ### Floorplan
 
 Where the logic sits on the Cyclone V, read from the compiled design with `scripts/floorplan.py` (blocks defined in `scripts/floorplan.json`). One cell per LAB, M10K or DSP site, coloured by the block owning most of it, brighter when fuller. The thin columns are M10K and DSP; the empty area at the top right is the HPS; grey is the MiSTer framework. LUT counts are combinational cells, two per ALM.
@@ -305,6 +303,10 @@ Revision `KonamiGX`, fitted 05 Oct 2026:
 Revision `KonamiGXT34` (the Type 3/4 boards, `fb8e5b4`), fitted 06 Oct 2026:
 
 ![Floorplan of KonamiGXT34](docs/floorplan/KonamiGXT34.png)
+
+Revision `KonamiGXT1` (the Type 1 board, `dd693b2`, the release), fitted 11 Oct 2026:
+
+![Floorplan of KonamiGXT1](docs/floorplan/KonamiGXT1.png)
 
 ## Screenshots
 
@@ -373,47 +375,9 @@ Revision `KonamiGXT34` (the Type 3/4 boards, `fb8e5b4`), fitted 06 Oct 2026:
 
 ## Installation
 
-The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`,
-`releases/Arcade-KonamiGXT34_<date>.rbf` as `KonamiGXT34.rbf` for the Type 3/4 sets,
-and `releases/Arcade-KonamiGXT1_<date>.rbf` as `KonamiGXT1.rbf` for the Type 1 sets,
+The release: copy `releases/Arcade-KonamiGX*_<date>.rbf` to `_Arcade/cores` as `KonamiGX*.rbf`,
 and the `.mra` files from `releases/` to `_Arcade` (clones in `_alternatives`), with the MAME
 merged ROM sets and `konamigx.zip` (the BIOS, which every set needs) in `games/mame`.
-
-To run a development build:
-
-* `python scripts/build_staged.py`, then `python scripts/deploy.py` with a `mister.env` (see
-  `scripts/deploy.py`): the core goes to `_Arcade/cores` as `KonamiGX_NNNNNNNN.rbf` (the name the
-  `.mra`'s `<rbf>` tag asks for -- a release is `Arcade-KonamiGX_<date>.rbf` and is renamed to
-  `KonamiGX.rbf` when copied there) and the
-  `.mra` files to `_Arcade/_Konami System GX`
-* Put the MAME merged ROM sets in `games/mame`, plus `konamigx.zip` (the BIOS, which every set
-  needs)
-
-### Todo
-
-- [ ] Dragoon Might's DSP RAM test on first boot
-- [ ] Dragoon Might's settings save: the EEPROM read-back check (and Gokujou Parodius's second save)
-- [ ] Fantastic Journey / Gokujou Parodius: the big ship's flames, the dancer stage's background
-- [ ] Sound mix levels against the PCB
-- [ ] The K055673 and K056832 ROM readback windows, screen flip
-
-### Resource usage
-
-The release builds on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, timing met on every
-clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2;
-`KonamiGXT1` at commit `dd693b2`, seed 1:
-
-| resource | `KonamiGX` | `KonamiGXT34` | `KonamiGXT1` | available |
-| --- | --- | --- | --- | --- |
-| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 35,784 (85%) | 41,910 |
-| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 4,249,875 (75%) | 5,662,720 |
-| RAM blocks | 533 (96%) | 547 (99%) | 549 (99%) | 553 |
-| DSP blocks | 69 (62%) | 55 (49%) | 58 (52%) | 112 |
-| PLLs | 3 | 3 | 3 | 6 |
-
-The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
-reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust has no V-Size: its
-line ring's 30 blocks were freed for the 056734 (ESC) protection chip's local memory.
 
 ## AI Attestation
 

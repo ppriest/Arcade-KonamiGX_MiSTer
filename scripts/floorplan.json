@@ -41,6 +41,11 @@
    "color": "#fabed4"
   },
   {
+   "name": "Terrain (PSAC4)",
+   "match": "u_board\\|u_video\\|u_t1($|\\|)",
+   "color": "#f032e6"
+  },
+  {
    "name": "Video other",
    "match": "u_board\\|u_video",
    "color": "#469990"
@@ -54,6 +59,11 @@
    "name": "EEPROM",
    "match": "u_board\\|u_ee",
    "color": "#dcbeff"
+  },
+  {
+   "name": "Type 1 RAMs",
+   "match": "u_board\\|u_t1(lc|lr|lk|lan)",
+   "color": "#aaffc3"
   },
   {
    "name": "Work RAM",
