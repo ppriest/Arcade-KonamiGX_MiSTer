@@ -146,8 +146,9 @@ module gx_main (
     input             t4_cfg,               // a Type 4 set (gx_board_cfg, clk_sys)
     input      [ 2:0] ps_oy_cfg,            // its K053936 row offset, [2] map wrap
     input             t1_cfg,               // a Type 1 set (gx_board_cfg, clk_sys; the KonamiGXT1 bitstream, docs/TYPE1.md)
+    input             t1g_cfg,              // a Type 1 golf set (gx_board_cfg, clk_sys)
     input      [ 4:0] vis_y0,               // the visible window's first bitmap row
-    input      [ 9:0] obj_vadj,             // the set's K055673 dy - (-23), signed
+    input      [ 9:0] obj_vadj,             // -23 less the set's K055673 dy, signed (gx_board_cfg)
     input      [ 7:0] an_steer,             // Type 1: the ADC0834's channel 0 (steering)
     input      [ 7:0] an_gas,               // and channel 1 (gas pedal)
     // Type 1: the K053936's map RAM (0xec0000, 128 KB) in SDRAM: reads a
@@ -184,6 +185,17 @@ module gx_main (
     output     [71:0] pst_addr,
     input      [ 3:0] pst_ok,
     input     [255:0] pst_data,
+    // Type 1's terrain frame store (gx_t1_psac4): DDR3
+    input             t1_ddr_busy,
+    output     [ 7:0] t1_ddr_burstcnt,
+    output     [28:0] t1_ddr_addr,
+    output     [63:0] t1_ddr_din,
+    output     [ 7:0] t1_ddr_be,
+    output            t1_ddr_we,
+    output            t1_ddr_rd,
+    input      [63:0] t1_ddr_dout,
+    input             t1_ddr_dout_ready,
+    output     [31:0] t1_dbg,
     output            pxl_cen_o,            // the dot clock enable, for the video output
     output     [ 3:0] pxl_div_o,            // clk a pixel: 8, 6, 4 or 3 (CRT Adjust)
     output            unsupported,
@@ -414,8 +426,8 @@ reg         t4_w;                           // Type 4: the palette access's word
 // take straight from clk_sys (-8.7 ns in KonamiGXT34)
 reg         t4 = 1'b0;
 reg  [ 2:0] ps_oy = 3'd0;
-reg         t1 = 1'b0;
-always @(posedge clk) begin t4 <= t4_cfg; ps_oy <= ps_oy_cfg; t1 <= t1_cfg; end
+reg         t1 = 1'b0, t1g = 1'b0;
+always @(posedge clk) begin t4 <= t4_cfg; ps_oy <= ps_oy_cfg; t1 <= t1_cfg; t1g <= t1g_cfg; end
 
 `ifdef GX_T34
 // ------------------------------------------------------------ Type 3/4 (docs/TYPE34.md)
@@ -495,27 +507,36 @@ reg  [11:0] t1_a;
 reg  [15:0] t1_d;
 wire [15:0] t1_lc_q, t1_lr_q, t1_lan_q;
 wire [ 7:0] t1_lk_q;
+// the second ports are the terrain renderer's (gx_t1_psac4)
 gx_tdpram #(.AW(12), .DW(8)) u_t1lc_h ( .clk, .we_a(t1_we[1] && t1_sel == T1_LC), .a(t1_a), .d(t1_d[15:8]), .qa(t1_lc_q[15:8]),
-                                         .b(12'd0), .qb() );
+                                         .b(t1v_lc_a), .qb(t1v_lc_q[15:8]) );
 gx_tdpram #(.AW(12), .DW(8)) u_t1lc_l ( .clk, .we_a(t1_we[0] && t1_sel == T1_LC), .a(t1_a), .d(t1_d[ 7:0]), .qa(t1_lc_q[ 7:0]),
-                                         .b(12'd0), .qb() );
+                                         .b(t1v_lc_a), .qb(t1v_lc_q[ 7:0]) );
 gx_tdpram #(.AW(11), .DW(8)) u_t1lr_h ( .clk, .we_a(t1_we[1] && t1_sel == T1_LR), .a(t1_a[10:0]), .d(t1_d[15:8]), .qa(t1_lr_q[15:8]),
-                                         .b(11'd0), .qb() );
+                                         .b(t1v_lr_a), .qb(t1v_lr_q[15:8]) );
 gx_tdpram #(.AW(11), .DW(8)) u_t1lr_l ( .clk, .we_a(t1_we[0] && t1_sel == T1_LR), .a(t1_a[10:0]), .d(t1_d[ 7:0]), .qa(t1_lr_q[ 7:0]),
-                                         .b(11'd0), .qb() );
+                                         .b(t1v_lr_a), .qb(t1v_lr_q[ 7:0]) );
 gx_tdpram #(.AW(11), .DW(8)) u_t1lk ( .clk, .we_a(t1_we[1] && t1_sel == T1_LK), .a(t1_a[10:0]), .d(t1_d[15:8]), .qa(t1_lk_q),
-                                       .b(11'd0), .qb() );
+                                       .b(t1v_lk_a), .qb(t1v_lk_q) );
 gx_sdpram #(.AW(12), .DW(8)) u_t1lan_h ( .clk, .we(t1_we[1] && t1_sel == T1_LAN), .wa(t1_a), .d(t1_d[15:8]), .ra(t1_a), .q(t1_lan_q[15:8]) );
 gx_sdpram #(.AW(12), .DW(8)) u_t1lan_l ( .clk, .we(t1_we[0] && t1_sel == T1_LAN), .wa(t1_a), .d(t1_d[ 7:0]), .ra(t1_a), .q(t1_lan_q[ 7:0]) );
 wire [15:0] t1_q = t1_sel == T1_LC ? t1_lc_q : t1_sel == T1_LR ? t1_lr_q : t1_sel == T1_LK ? { t1_lk_q, 8'h00 } : t1_lan_q;
 reg  [15:0] t1_k936 [0:15];                  // the K053936's registers (0xe00000)
 reg  [15:0] t1_p4 [0:7];                     // the 056540's (0xe20000, write-only)
 reg  [15:0] t1_bank = 16'd0;                 // type1_bank_w: HBK, CBK, BRK
+assign t1v_k0 = t1_k936[0]; assign t1v_k1 = t1_k936[1]; assign t1v_k6 = t1_k936[6]; assign t1v_k7 = t1_k936[7];
+assign t1v_k14 = t1_k936[14];
+assign t1v_p4h = t1_p4[0]; assign t1v_p4l = t1_p4[1];
+assign t1v_brk = t1_bank[15:12];
 reg         t1w_seen;
 reg         adc_we;
 reg  [ 2:0] adc_d;
 wire        adc_do;
 gx_adc0834 u_adc ( .clk, .rst, .we(adc_we), .d(adc_d), .ch0(an_steer), .ch1(an_gas), .dout(adc_do) );
+`else
+assign t1v_k0 = 16'd0; assign t1v_k1 = 16'd0; assign t1v_k6 = 16'd0; assign t1v_k7 = 16'd0; assign t1v_k14 = 16'd0;
+assign t1v_p4h = 16'd0; assign t1v_p4l = 16'd0; assign t1v_brk = 4'd0;
+assign t1v_lr_q = 16'd0; assign t1v_lc_q = 16'd0; assign t1v_lk_q = 8'd0;
 `endif
 
 // ------------------------------------------------------------ video
@@ -539,6 +560,15 @@ wire        obj_bank = 1'b0;
 `endif
 reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
 wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
+
+// Type 1's terrain (gx_t1_psac4 in gx_video): the registers it reads and
+// the second ports of the RAMs it reads (declared before gx_video)
+wire [15:0] t1v_k0, t1v_k1, t1v_k6, t1v_k7, t1v_k14, t1v_p4h, t1v_p4l;
+wire [ 3:0] t1v_brk;
+wire [10:0] t1v_lr_a, t1v_lk_a;
+wire [11:0] t1v_lc_a;
+wire [15:0] t1v_lr_q, t1v_lc_q;
+wire [ 7:0] t1v_lk_q;
 
 // the tile ROM readback's address and bank (declared before gx_video, which
 // drives them; used by the readback windows below)
@@ -570,6 +600,12 @@ gx_video u_video (
     .psac_regs(256'd0), .psac_alt(1'b0), .psac_lc_addr(), .psac_lc_q(16'd0), .psac_pm_addr(), .psac_pm_q(16'd0),
 `endif
     .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
+    .t1(t1), .t1g, .t1_ctrl0(t1v_k0), .t1_ctrl1(t1v_k1), .t1_ctrl6(t1v_k6), .t1_ctrl7(t1v_k7), .t1_ctrl14(t1v_k14),
+    .t1_p4_hi(t1v_p4h), .t1_p4_lo(t1v_p4l), .t1_brk(t1v_brk),
+    .t1_lr_addr(t1v_lr_a), .t1_lr_q(t1v_lr_q), .t1_lc_addr(t1v_lc_a), .t1_lc_q(t1v_lc_q),
+    .t1_lk_addr(t1v_lk_a), .t1_lk_q(t1v_lk_q),
+    .t1_ddr_busy, .t1_ddr_burstcnt, .t1_ddr_addr, .t1_ddr_din, .t1_ddr_be, .t1_ddr_we, .t1_ddr_rd,
+    .t1_ddr_dout, .t1_ddr_dout_ready, .t1_dbg,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short,
     .ss_vpos, .ss_hpos
 );

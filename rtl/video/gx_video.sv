@@ -112,7 +112,7 @@ module gx_video #(
     input       [1:0] obj_pri_raw,
     input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
     input      [ 4:0] vis_y0,      // the visible window's first bitmap row (16, or 0)
-    input      [ 9:0] obj_vadj,    // the set's K055673 dy - (-23), signed
+    input      [ 9:0] obj_vadj,    // -23 less the set's K055673 dy, signed (gx_board_cfg)
     input             obj_dma_trig, // start the sprite DMA now (gx_main)
     input             obj_dma_hold, // the ESC is writing the sprite list
     output    [111:0] dbg_mix,     // the mixer's registers, for the board's probe
@@ -163,6 +163,31 @@ module gx_video #(
     output     [71:0] pst_addr,
     input      [ 3:0] pst_ok,
     input     [255:0] pst_data,
+    // ---- Type 1's terrain (gx_t1_psac4, GX_T1): the CPU's state, and the
+    // DDR3 frame store. Its SDRAM clients are on psm_ (the map RAM's entries)
+    // and pst_ clients 0 and 1 (CROM, HROM), whose 20-bit addresses carry
+    // bits 19-18 in client 3's field (pst_addr[71:70] CROM's, [69:68] HROM's).
+    input             t1,
+    input             t1g,              // a golf set (gx_board_cfg)
+    input      [15:0] t1_ctrl0, t1_ctrl1, t1_ctrl6, t1_ctrl7, t1_ctrl14,
+    input      [15:0] t1_p4_hi, t1_p4_lo,
+    input      [ 3:0] t1_brk,
+    output     [10:0] t1_lr_addr,
+    input      [15:0] t1_lr_q,
+    output     [11:0] t1_lc_addr,
+    input      [15:0] t1_lc_q,
+    output     [10:0] t1_lk_addr,
+    input      [ 7:0] t1_lk_q,
+    input             t1_ddr_busy,
+    output     [ 7:0] t1_ddr_burstcnt,
+    output     [28:0] t1_ddr_addr,
+    output     [63:0] t1_ddr_din,
+    output     [ 7:0] t1_ddr_be,
+    output            t1_ddr_we,
+    output            t1_ddr_rd,
+    input      [63:0] t1_ddr_dout,
+    input             t1_ddr_dout_ready,
+    output     [31:0] t1_dbg,
 
     // ---- video out: rgb and the K053252's blanking and syncs, aligned
     output     [23:0] rgb,
@@ -337,7 +362,9 @@ wire [13:0] tm_pix [4];
 always @(posedge clk) begin
     line_start <= 1'b0;
     if( pxl_cen && 10'(p) == hc - 10'd65 ) begin   // before hdump's jump: render the row after next
+`ifndef GX_SIM_NO_RENDER    // a bench that needs only the CPUs and sound: no rows rendered
         line_start <= 1'b1;
+`endif
         line_y     <= { 1'b0, vdump } - 10'h100 + 10'd2;
     end
 end
@@ -381,6 +408,11 @@ gx_psac u_psac (
     .tile_cs(pst_cs), .tile_addr(ps_taddr), .tile_ok(pst_ok), .tile_data(ps_tdata),
     .rd_x(t4 && !vis_w[9] ? bx[8:0] : bx[9:1]), .rd_pix(ps_pix)
 );
+`elsif GX_T1
+assign ps_busy = 1'b0;
+assign ps_pix = 10'd0;
+assign psac_lc_addr = 11'd0;
+assign psac_pm_addr = 14'd0;
 `else
 assign ps_busy = 1'b0;
 assign ps_pix = 10'd0;
@@ -388,6 +420,38 @@ assign psac_lc_addr = 11'd0;
 assign psac_pm_addr = 14'd0;
 assign psm_cs = 1'b0; assign psm_addr = 16'd0;
 assign pst_cs = 4'd0; assign pst_addr = 72'd0;
+`endif
+
+// ------------------------------------------------------------ Type 1's terrain
+wire        t1_valid;
+wire [11:0] t1_pen;
+wire [ 7:0] t1_pri;
+`ifdef GX_T1
+wire [13:0] t1m_a;
+wire [19:0] t1c_a, t1h_a;
+assign psm_addr = { 2'b00, t1m_a };
+assign pst_cs[3:2] = 2'b00;
+assign pst_addr = { t1c_a[19:18], t1h_a[19:18], 32'd0, t1h_a[17:0], t1c_a[17:0] };
+gx_t1_psac4 u_t1 (
+    .clk, .rst, .golf(t1g), .vis_x0, .vis_y0, .lvbl, .by(by[8:0]), .rd_x(bx),
+    .t_valid(t1_valid), .t_pen(t1_pen), .t_pri(t1_pri),
+    .ctrl0(t1_ctrl0), .ctrl1(t1_ctrl1), .ctrl6(t1_ctrl6), .ctrl7(t1_ctrl7), .ctrl14(t1_ctrl14),
+    .p4_hi(t1_p4_hi), .p4_lo(t1_p4_lo), .brk(t1_brk),
+    .lr_addr(t1_lr_addr), .lr_q(t1_lr_q), .lc_addr(t1_lc_addr), .lc_q(t1_lc_q),
+    .lk_addr(t1_lk_addr), .lk_q(t1_lk_q),
+    .m_cs(psm_cs), .m_addr(t1m_a), .m_ok(psm_ok), .m_data(psm_data),
+    .c_cs(pst_cs[0]), .c_addr(t1c_a), .c_ok(pst_ok[0]), .c_data(pst_data[63:0]),
+    .h_cs(pst_cs[1]), .h_addr(t1h_a), .h_ok(pst_ok[1]), .h_data(pst_data[127:64]),
+    .DDRAM_BUSY(t1_ddr_busy), .DDRAM_BURSTCNT(t1_ddr_burstcnt), .DDRAM_ADDR(t1_ddr_addr),
+    .DDRAM_DIN(t1_ddr_din), .DDRAM_BE(t1_ddr_be), .DDRAM_WE(t1_ddr_we), .DDRAM_RD(t1_ddr_rd),
+    .DDRAM_DOUT(t1_ddr_dout), .DDRAM_DOUT_READY(t1_ddr_dout_ready), .dbg(t1_dbg)
+);
+`else
+assign t1_valid = 1'b0; assign t1_pen = 12'd0; assign t1_pri = 8'd0;
+assign t1_lr_addr = 11'd0; assign t1_lc_addr = 12'd0; assign t1_lk_addr = 11'd0;
+assign t1_ddr_burstcnt = 8'd1; assign t1_ddr_addr = 29'd0; assign t1_ddr_din = 64'd0;
+assign t1_ddr_be = 8'd0; assign t1_ddr_we = 1'b0; assign t1_ddr_rd = 1'b0;
+assign t1_dbg = 32'd0;
 `endif
 
 // ------------------------------------------------------------ sprites
@@ -420,6 +484,7 @@ gx_mixer u_mix (
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din, .bg_grad,
     .pri_c_le2(primode == 4'hf),
     .pal_we, .pal_addr, .pal_din, .pal_q, .pal3_we, .pal3_sub, .pal3_din, .pal3_q, .t4, .pix_sub,
+    .type1(t1), .t1_valid, .t1_pen, .t1_pri,
     .bx, .by,
     .lyr_a(tm_pix[0]), .lyr_b(tm_pix[1]), .lyr_c(tm_pix[2]), .lyr_d(tm_pix[3]), .sub2(ps_pix),
     .spr_valid(s_valid), .spr_pen(s_pen), .spr_pri(s_pri), .spr_z(s_z), .spr_idx(s_idx), .spr_mix(s_mix), .spr_mix_on,

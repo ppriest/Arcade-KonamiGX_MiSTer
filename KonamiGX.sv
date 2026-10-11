@@ -74,6 +74,13 @@ wire       crt_mon    = !one_scr && status[127:126] == 2'd1;
 wire       rotate_en  = 1'b0;
 wire       rotate_ccw = 1'b0;
 wire       flip_180   = 1'b0;
+`elsif GX_T1
+// no HDMI rotation: the DDR3 port is the terrain's frame store (gx_t1_psac4),
+// and no Type 1 set is vertical
+wire       rotate_en  = 1'b0;
+wire       rotate_ccw = 1'b0;
+wire       flip_180   = 1'b0;
+wire [2:0] scr_mode   = 3'd0;
 `else
 wire [1:0] rot_sel    = status[64:63];
 wire       rotate_en  = rot_sel != 2'd0;
@@ -113,6 +120,7 @@ localparam CONF_STR = {
 	// it, or the board's alternate frames as they come (one CRT flickers
 	// between the two). DIP Number of Screens 1 holds the first.
 	"O[127:126],Screen (CRT),First,Second,Alternate;",
+`elsif GX_T1
 `else
 	"O[64:63],Rotation,Off,CW,CCW;",
 	"O[65],Flip 180,Off,On;",
@@ -342,7 +350,7 @@ ddram_phy u_ddram (
 	.busy(ldr_ddr_busy), .valid(ldr_ddr_valid), .rdata(ldr_ddr_rdata)
 );
 // gx_board_cfg's (below): the loader's length for a Type 3/4 or Type 1 set
-wire        t34, t4, t1;
+wire        t34, t4, t1, t1g;
 wire  [4:0] vis_y0;
 wire  [9:0] obj_vadj;
 wire  [2:0] ps_oy;
@@ -385,7 +393,7 @@ wire  [8:0] esc_count;
 gx_board_cfg u_cfg ( .clk(clk_sys), .game(mod_byte), .tile_base, .obj_base, .tile_size4, .obj_size4, .snd_pcm, .offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w,
                      .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66, .guns, .orient_fy, .fj_dma,
                      .esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .t4, .ps_oy, .psac_base, .psmap_base,
-                     .t1, .vis_y0, .obj_vadj );
+                     .t1, .t1g, .vis_y0, .obj_vadj );
 
 wire        rom_cs, rom_ok, tile_rom_cs, tile_rom_ok, obj_rom_cs, obj_rom_ok;
 wire [19:0] rom_addr;
@@ -494,7 +502,16 @@ always @(posedge clk_sys) begin
 	gear_b <= { gear_b[0], joystick_0[6] };
 	if( gear_b == 2'b01 ) gear <= ~gear;
 end
-wire [31:0] inputs  = { 4'hf, ~joystick_0[5], ~gear, 6'h3f, 20'hfffff };
+// the golf sets: opengolf's four players have one button each (bit 4 of
+// their byte, as player()); ggreats2's two have Advice, Direction, Club and
+// Stance, each pair left/right: Direction on the stick's left/right, Club on
+// up/down, Stance on buttons 2 and 3, Advice on button 1 (MAME's port)
+function [7:0] ggreats2_p( input [31:0] j );
+	ggreats2_p = ~{ j[10], j[4], j[6], j[5], j[2], j[3], j[0], j[1] };
+endfunction
+wire [31:0] inputs  = !t1g ? { 4'hf, ~joystick_0[5], ~gear, 6'h3f, 20'hfffff } :
+                      mod_byte == 8'd39 ? { ggreats2_p(joystick_0), ggreats2_p(joystick_1), 16'hffff } :
+                      { player(joystick_0), player(joystick_1), player(joystick_2), player(joystick_3) };
 // the steering (AN0, 0x38-0xc8, centre 0x80, reversed: right is lower) from
 // the left stick's x, or the d-pad at full lock; the gas pedal (AN1, 0xff
 // up, 0x90 down) from button 1, or the stick pushed up
@@ -763,6 +780,11 @@ hiscore #(
 );
 `endif
 
+wire        t1_DDRAM_WE, t1_DDRAM_RD;
+wire  [7:0] t1_DDRAM_BURSTCNT, t1_DDRAM_BE;
+wire [28:0] t1_DDRAM_ADDR;
+wire [63:0] t1_DDRAM_DIN;
+wire [31:0] t1_dbg;
 gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
@@ -776,10 +798,15 @@ gx_main u_board (
 	.offs_x, .offs_y, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .esc_gen, .esc_src, .esc_count, .esc_copy, .prot4, .esc_sal2, .tile_rb66,
 	.guns, .gun_h, .gun_v, .gun_trig2(guns & gun_trig[1]), .orient_fy, .fj_dma, .rom_uncached(5'd6),
 	.esc_chip, .esc_s10, .esc_s11n, .esc_xor, .esc_lanes, .t34, .t4_cfg(t4), .ps_oy_cfg(ps_oy),
-	.t1_cfg(t1), .vis_y0, .obj_vadj, .an_steer, .an_gas,
+	.t1_cfg(t1), .t1g_cfg(t1g), .vis_y0, .obj_vadj, .an_steer, .an_gas,
 	.t1m_cs, .t1m_addr, .t1m_ok, .t1m_data, .t1m_inval, .t1w_req, .t1w_addr, .t1w_data, .t1w_we16, .t1w_busy,
 	.rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .vid_sub,
 	.psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data,
+	// Type 1's terrain frame store: the DDR3 port, held off it as the rotator is
+	.t1_ddr_busy(DDRAM_BUSY | ldr_busy | ss_own), .t1_ddr_burstcnt(t1_DDRAM_BURSTCNT),
+	.t1_ddr_addr(t1_DDRAM_ADDR), .t1_ddr_din(t1_DDRAM_DIN), .t1_ddr_be(t1_DDRAM_BE),
+	.t1_ddr_we(t1_DDRAM_WE), .t1_ddr_rd(t1_DDRAM_RD),
+	.t1_ddr_dout(DDRAM_DOUT), .t1_ddr_dout_ready(DDRAM_DOUT_READY & ~ldr_busy & ~ss_own), .t1_dbg(t1_dbg),
 	.pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
 	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .spr_mix_on(1'b1), .dbg_rom(dbg_rom),
@@ -1084,6 +1111,17 @@ gx_t34_fb u_t34fb (
 	.DDRAM_WE(fb_DDRAM_WE),
 	.DDRAM_RD(fb_DDRAM_RD)
 );
+`elsif GX_T1
+assign VGA_R = av_r; assign VGA_G = av_g; assign VGA_B = av_b;
+assign FB_EN = 1'b0; assign FB_FORMAT = 5'd0; assign FB_WIDTH = 12'd0; assign FB_HEIGHT = 12'd0;
+assign FB_BASE = 32'd0; assign FB_STRIDE = 14'd0;
+assign rot_DDRAM_CLK      = clk_vid;
+assign rot_DDRAM_BURSTCNT = t1_DDRAM_BURSTCNT;
+assign rot_DDRAM_ADDR     = t1_DDRAM_ADDR;
+assign rot_DDRAM_DIN      = t1_DDRAM_DIN;
+assign rot_DDRAM_BE       = t1_DDRAM_BE;
+assign rot_DDRAM_WE       = t1_DDRAM_WE;
+assign rot_DDRAM_RD       = t1_DDRAM_RD;
 `else
 assign VGA_R = av_r; assign VGA_G = av_g; assign VGA_B = av_b;
 screen_rotate_two u_rotate (

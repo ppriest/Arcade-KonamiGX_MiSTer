@@ -589,7 +589,20 @@ end
 wire        coin_on  = coin_at  >= 0 && frame >= coin_at  && frame < coin_at + 8;
 wire        start_on = start_at >= 0 && frame >= start_at && frame < start_at + 8;
 wire        b1_on    = b1_at    >= 0 && frame >= b1_at    && frame < b1_at + 8;
-wire [31:0] tb_inputs = { !start_on, 2'b11, !b1_on, 28'hFFF_FFFF };
+// +RIGHT_AT=f +RIGHT_EVERY=n +RIGHT_N=k: a direction of player 1's, held
+// eight frames, k times n frames apart (a selection screen's cursor);
+// +RIGHT_BIT=b picks it (inputs bit: 24 left, 25 right, 26 up, 27 down)
+int right_at = -1, right_every = 60, right_n = 1, right_bit = 25;
+initial begin
+    void'($value$plusargs("RIGHT_AT=%d", right_at));
+    void'($value$plusargs("RIGHT_EVERY=%d", right_every));
+    void'($value$plusargs("RIGHT_N=%d", right_n));
+    void'($value$plusargs("RIGHT_BIT=%d", right_bit));
+end
+wire        right_on = right_at >= 0 && frame >= right_at && frame < right_at + right_every * right_n
+                    && (frame - right_at) % right_every < 8;
+wire [ 3:0] dir_n = ~(right_on ? 4'(1 << (right_bit - 24)) : 4'd0);
+wire [31:0] tb_inputs = { !start_on, 2'b11, !b1_on, dir_n, 24'hFF_FFFF };
 wire [ 7:0] tb_coins  = { 7'h3F, !coin_on };
 
 wire [7:0]  snd_din_mux = snd_real != 0 ? k8_host : snd_stub != 0 ? stub_dout : snd_din;
@@ -672,7 +685,7 @@ wire [15:0] cfg_esc_s10;
 wire [ 3:0] cfg_esc_s11n;
 wire [31:0] cfg_esc_xor;
 wire [63:0] cfg_esc_lanes;
-wire        cfg_t34, cfg_t4, cfg_t1;
+wire        cfg_t34, cfg_t4, cfg_t1, cfg_t1g;
 wire  [2:0] cfg_ps_oy;
 wire  [4:0] cfg_vis_y0;
 wire  [9:0] cfg_obj_vadj;
@@ -686,7 +699,7 @@ gx_board_cfg u_cfg ( .clk, .game(8'(game)), .tile_base(), .obj_base(), .tile_siz
                      .esc_sal2(cfg_esc_sal2), .tile_rb66(cfg_tile_rb66), .guns(cfg_guns), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma),
                      .esc_chip(cfg_esc_chip), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes),
                      .t34(cfg_t34), .t4(cfg_t4), .ps_oy(cfg_ps_oy), .psac_base(), .psmap_base(),
-                     .t1(cfg_t1), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj) );
+                     .t1(cfg_t1), .t1g(cfg_t1g), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj) );
 wire [23:0] rgb, dbg_addr;
 wire        vid_lhbl, vid_lvbl, vid_hs, vid_vs, unsupported, dbg_access, dbg_we;
 wire [ 1:0] dbg_be;
@@ -783,6 +796,9 @@ gx_main dut (
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .tile_rom2_addr, .tile_rom2_cs, .tile_rom2_ok, .tile_rom2_data,
     .psm_cs, .psm_addr, .psm_ok, .psm_data, .pst_cs, .pst_addr, .pst_ok, .pst_data, .vid_sub,
+    // Type 1's terrain frame store: no DDR3 model here (the terrain stalls)
+    .t1_ddr_busy(1'b0), .t1_ddr_burstcnt(), .t1_ddr_addr(), .t1_ddr_din(), .t1_ddr_be(), .t1_ddr_we(), .t1_ddr_rd(),
+    .t1_ddr_dout(64'd0), .t1_ddr_dout_ready(1'b0), .t1_dbg(),
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     // the ROM readback windows: the bench answers with zero, which is what
     // the board did before they existed
@@ -798,7 +814,7 @@ gx_main dut (
     // MAME's guns at rest (LIGHT*_X/Y default 0x80): X 165, Y 112
     .guns(cfg_guns), .gun_h({ 16'd165, 16'd165 }), .gun_v({ 16'd112, 16'd112 }), .gun_trig2(1'b0), .orient_fy(cfg_orient_fy), .fj_dma(cfg_fj_dma), .rom_uncached(5'(rom_uncached)),
     .esc_chip(cfg_esc_chip && esc_chip_on != 0), .esc_s10(cfg_esc_s10), .esc_s11n(cfg_esc_s11n), .esc_xor(cfg_esc_xor), .esc_lanes(cfg_esc_lanes), .t34(cfg_t34), .t4_cfg(cfg_t4), .ps_oy_cfg(cfg_ps_oy),
-    .t1_cfg(cfg_t1), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj), .an_steer(8'h80), .an_gas(8'hff),
+    .t1_cfg(cfg_t1), .t1g_cfg(cfg_t1g), .vis_y0(cfg_vis_y0), .obj_vadj(cfg_obj_vadj), .an_steer(8'h80), .an_gas(8'hff),
     .t1m_cs, .t1m_addr, .t1m_ok, .t1m_data, .t1m_inval, .t1w_req, .t1w_addr, .t1w_data, .t1w_we16, .t1w_busy,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .pxl_cen_o(), .unsupported,
     .dbg_addr, .dbg_access, .dbg_we, .dbg_be, .dbg_data, .dbg_ee(), .dbg_rom_hits, .dbg_rom_misses, .dbg_irq(), .dbg_esc(), .dbg_esc_st(), .dbg_obj(), .dbg_mix(), .dbg_line(dbg_line), .tm_blank_skip(1'b1), .spr_mix_on(spr_mix_sel != 0), .dbg_rom(), .peek_t(1'b0), .peek_addr(20'd0),

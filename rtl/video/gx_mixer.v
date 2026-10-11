@@ -84,6 +84,12 @@ module gx_mixer (
     // pixel[7:0] }; pen 0x1000 + that (gfx_type3), pixel 0 not drawn, no
     // blending (gx_draw_basic_extended_tilemaps_2). 0 where there is none.
     input      [ 9:0] sub2,
+    // Type 1 (gx_t1_psac4): the terrain in SUB2's place, a pixel with its
+    // own priority (the LRAM parameter) and a mix bit (pen bit 11)
+    input             type1,
+    input             t1_valid,
+    input      [11:0] t1_pen,
+    input      [ 7:0] t1_pri,
     input             spr_valid,        // solid plane of gx_obj
     input      [12:0] spr_pen,
     input      [ 7:0] spr_pri,
@@ -155,6 +161,9 @@ endfunction
 reg  [ 9:0] bx_r, by_r;
 reg  [13:0] lyr [0:3];
 reg  [ 9:0] sub2_r;
+reg         t1_valid_r;
+reg  [11:0] t1_pen_r;
+reg  [ 7:0] t1_pri_r;
 reg         spr_valid_r, shd_valid_r;
 reg  [12:0] spr_pen_r;
 reg  [ 7:0] spr_pri_r, spr_z_r, spr_idx_r, shd_pri_r, shd_z_r, shd_idx_r;
@@ -164,6 +173,7 @@ reg  [ 1:0] shd_code_r;
 always @(posedge clk) if( pxl_cen ) begin
     bx_r <= bx; by_r <= by;
     lyr[0] <= lyr_a; lyr[1] <= lyr_b; lyr[2] <= lyr_c; lyr[3] <= lyr_d; sub2_r <= sub2;
+    t1_valid_r <= t1_valid; t1_pen_r <= t1_pen; t1_pri_r <= t1_pri;
     spr_valid_r <= spr_valid; spr_pen_r <= spr_pen; spr_pri_r <= spr_pri;
     spr_z_r <= spr_z; spr_idx_r <= spr_idx; spr_mix_r <= spr_mix;
     shd_valid_r <= shd_valid; shd_code_r <= shd_code; shd_pri_r <= shd_pri;
@@ -181,6 +191,8 @@ reg  [  12:0] pen [0:5];
 reg  [   8:0] lpal [0:3];
 reg  [   9:0] alpha [0:3];      // { add, on, level }
 reg  [   9:0] alpha4;           // the sprite's
+reg  [   9:0] alpha5;           // Type 1's terrain
+reg  [   1:0] code5;
 // Type 4's SUB1 (the K053936): its blend level, from the mix code in
 // OSBLEND_ENABLES as the K054338 levels the tiles' (not additive)
 wire [ 1:0] s1_code  = k55[35][3:2];
@@ -242,6 +254,20 @@ always @* begin
     key[5]  = { lpri5, 1'b0, 8'd0, 8'd4, 1'b0 };
     cand[5] = (t4 || disp[6]) && sub2_r[7:0] != 8'd0 && !(s1_blend && s1_lv == 8'd0);
     pen[5]  = (t4 ? 13'h1800 : 13'h1000) | { 3'd0, sub2_r };
+    // Type 1 (konamigx_mixer, type1_mix_terrain): each pixel's priority is
+    // its parameter with the bits S2 INPRI ON (reg 21) selects taken from
+    // PRIINP_10, and it loses a tie to everything ("OBJ wins a priority tie
+    // against SUB2"); pen & 0x7ff in the main palette; the mix code is pen
+    // bit 11 with the bits OSBLEND_ON[5:4] select taken from
+    // OSBLEND_ENABLES[5:4], always a plain blend at the K054338's level, and
+    // level 0 is not drawn
+    code5   = ({ 1'b0, t1_pen_r[11] } & ~k55[36][5:4]) | (k55[35][5:4] & k55[36][5:4]);
+    alpha5  = alpha_of( code5, k338[13], k338[14] );
+    if( type1 ) begin
+        key[5]  = { (t1_pri_r & ~k55[21]) | (lpri5 & k55[21]), 1'b1, 8'hff, 8'hff, 1'b1 };
+        cand[5] = disp[6] && t1_valid_r && !(code5 != 2'd0 && alpha5[7:0] == 8'd0);
+        pen[5]  = { 2'b00, t1_pen_r[10:0] };
+    end
     shkey   = { shd_pri_r, 1'b1, shd_z_r, shd_idx_r, 1'b1 };
 
     // top and second by smallest key; the background is behind everything
@@ -293,7 +319,7 @@ always @* begin
     case( top_src )
         3'd0, 3'd1, 3'd2, 3'd3: top_pri = k55[40][top_src[1:0]] ? lpri[top_src[1:0]] : 8'hff;
         3'd4:                   top_pri = spr_pri_r;
-        3'd5:                   top_pri = lpri5;
+        3'd5:                   top_pri = type1 ? key[5][KW-1 -: 8] : lpri5;
         default:                top_pri = 8'hff;
     endcase
 end
@@ -423,9 +449,12 @@ always @(posedge clk) begin
                 en   <= disp != 8'd0 && (kill || t4);   // Type 4: MAME's rushingheroes_hack skips K338_CTL_KILL
                 t1   <= t;
                 s1   <= s;
-                a1   <= t < 3'd4 ? alpha[t][7:0] : t == 3'd4 ? alpha4[7:0] : t == 3'd5 && s1_blend ? s1_lv : 8'd255;
+                a1   <= t < 3'd4 ? alpha[t][7:0] : t == 3'd4 ? alpha4[7:0] : t == 3'd5 && type1 ? alpha5[7:0] :
+                        t == 3'd5 && s1_blend ? s1_lv : 8'd255;
                 add1 <= t < 3'd4 ? alpha[t][9] : t == 3'd4 && alpha4[9];
-                alpha_top <= t < 3'd4 ? alpha[t][8] : t == 3'd4 ? alpha4[8] : t == 3'd5 && s1_blend && s1_lv != 8'd255;
+                alpha_top <= t < 3'd4 ? alpha[t][8] : t == 3'd4 ? alpha4[8] :
+                             t == 3'd5 && type1 ? code5 != 2'd0 && alpha5[7:0] != 8'd255 :
+                             t == 3'd5 && s1_blend && s1_lv != 8'd255;
                 code1     <= shd_code_r;
                 if( shd_defer ) begin
                     // MAME 5c75784 gx_draw_deferred_shadows: over everything,

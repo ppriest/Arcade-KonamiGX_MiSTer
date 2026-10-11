@@ -337,7 +337,12 @@ reg  [QW-1:0] q_out;                    // the tile the drawer was given, held f
 reg           q_flag [0:QD-1];          // probe: the tile dbg_shd follows
 reg           qf_out, shd_arm, lvbl_d;
 reg           q_draw, draw_l;
+`ifdef GX_SIM_NO_RENDER
+// the benches that need only the CPUs and sound: the scan runs, nothing is drawn
+wire          q_push = 1'b0;
+`else
 wire          q_push = draw && !draw_l; // dr_start is high for a cen2 period
+`endif
 // Each queued sprite's effect bits (attribute 9:8), by its index, which the
 // line buffer carries with every pixel: the mix code the mixer may take for
 // the sprite (gx_mixer spr_mix_on). The line buffer has no room for them; a

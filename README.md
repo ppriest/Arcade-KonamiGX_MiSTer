@@ -10,6 +10,8 @@ DE10-nano.
 - [Status](#status)
 - [Games](#games)
   - [Supported](#supported)
+  - [Type 3 and Type 4 boards](#type-3-and-type-4-boards-work-in-progress)
+  - [Type 1 board](#type-1-board-work-in-progress)
   - [Out of scope for now](#out-of-scope-for-now)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
@@ -30,6 +32,14 @@ DE10-nano.
 - [License](#license)
 
 ## History
+
+* **Arcade-KonamiGXT1_20261011** (new RBF)
+  * **Beta**
+  * The Type 1 board: Racin' Force (ver EAC, UAB), with its road and terrain (the 056540
+    "PSAC4" and the K053936)
+  * Needs the 64 MB SDRAM module
+  * Open Golf Championship and Golfing Greats 2 in `releases/_Unsupported`: they load, but their
+    terrain does not draw in time
 
 * **Arcade-KonamiGXT34_20261011**
   * Analog output (CRT): Fix CRT output for a single display - before it was outputting both displays on alternate frames and the DIP had no effect.
@@ -175,11 +185,30 @@ Known issues:
 * No hiscore, light guns or cheats in this bitstream (no set of it has the first two; the space
   went to the K053936).
 
+### Type 1 board (work in progress)
+
+A third bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (docs/TYPE1.md). Its
+`.mra`s name it.
+
+| Name | Year | SDRAM | Notes |
+|-|-|-|-|
+| Racin' Force | 1994 | 64 MB | Plays on the board; steering and gas through the ADC0834 |
+| Konami's Open Golf Championship / Golfing Greats 2 | 1994 | 64 MB | In `releases/_Unsupported`; `MACHINE_NOT_WORKING` in MAME |
+
+The road and terrain are MAME's renderer (`type1_draw_terrain`, which MAME calls an
+approximation), drawn into a DDR3 frame store over the frame after the game sets it up and shown
+the frame after that: one frame later than MAME (docs/MAME_KLUDGES.md). This bitstream has no HDMI
+rotation (its DDR3 port is the frame store's; no Type 1 set is vertical), and no link play (the
+056230 LAN is RAM only, as in MAME).
+
+Known issues:
+* **The golf sets' terrain does not draw in time**: a golf frame is twice Racin' Force's work, and
+  the far terrain is cut short. On alternate rows of the fairway its colours differ from MAME's.
+
 ### Out of scope for now
 
 | MAME description | Why |
 |-|-|
-| Type 1: Racin' Force, Konami's Open Golf Championship, Golfing Greats 2 | `MACHINE_NOT_WORKING` in MAME; K053936 road plane, ADC0834, a LAN device MAME lacks; Open Golf is 33 MB |
 | Sexy Parodius (bootleg) | Two OKI6295s for sound, `MACHINE_NOT_WORKING` |
 
 ## Hardware
@@ -345,7 +374,8 @@ Revision `KonamiGXT34` (the Type 3/4 boards, `fb8e5b4`), fitted 06 Oct 2026:
 ## Installation
 
 The release: copy `releases/Arcade-KonamiGX_<date>.rbf` to `_Arcade/cores` as `KonamiGX.rbf`,
-and `releases/Arcade-KonamiGXT34_<date>.rbf` as `KonamiGXT34.rbf` for the Type 3/4 sets,
+`releases/Arcade-KonamiGXT34_<date>.rbf` as `KonamiGXT34.rbf` for the Type 3/4 sets,
+and `releases/Arcade-KonamiGXT1_<date>.rbf` as `KonamiGXT1.rbf` for the Type 1 sets,
 and the `.mra` files from `releases/` to `_Arcade` (clones in `_alternatives`), with the MAME
 merged ROM sets and `konamigx.zip` (the BIOS, which every set needs) in `games/mame`.
 
@@ -370,15 +400,16 @@ To run a development build:
 ### Resource usage
 
 The release builds on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, timing met on every
-clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2:
+clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2;
+`KonamiGXT1` at commit `dd693b2`, seed 1:
 
-| resource | `KonamiGX` | `KonamiGXT34` | available |
-| --- | --- | --- | --- |
-| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 41,910 |
-| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 5,662,720 |
-| RAM blocks | 533 (96%) | 547 (99%) | 553 |
-| DSP blocks | 69 (62%) | 55 (49%) | 112 |
-| PLLs | 3 | 3 | 6 |
+| resource | `KonamiGX` | `KonamiGXT34` | `KonamiGXT1` | available |
+| --- | --- | --- | --- | --- |
+| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 35,784 (85%) | 41,910 |
+| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 4,249,875 (75%) | 5,662,720 |
+| RAM blocks | 533 (96%) | 547 (99%) | 549 (99%) | 553 |
+| DSP blocks | 69 (62%) | 55 (49%) | 58 (52%) | 112 |
+| PLLs | 3 | 3 | 3 | 6 |
 
 The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that
 reason, the palette's colour bytes are kept once (in the mixer), and CRT Adjust has no V-Size: its

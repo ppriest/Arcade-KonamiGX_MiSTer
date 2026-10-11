@@ -207,7 +207,9 @@ SETS = ["daiskiss", "crzcross", "puzldama", "fantjour", "fantjoura", "gokuparo",
         "rungun2", "slamdnk2", "rushhero",
         "vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj",
         # the Type 1 board (docs/TYPE1.md): the KonamiGXT1 bitstream
-        "racinfrc", "racinfrcu"]
+        "racinfrc", "racinfrcu",
+        # the Type 1 golf games (MAME: NOT_WORKING)
+        "opengolf", "opengolf2", "ggreats2"]
 
 # The sets the second bitstream runs (Type 3 and 4 boards, docs/TYPE34.md):
 # their .mra names it, and their image may use the 128 MB module.
@@ -220,7 +222,10 @@ T4 = {"rungun2", "slamdnk2", "rushhero", "vsnetscr", "vsnetscreb", "vsnetscru", 
 
 # The sets the third bitstream runs (the Type 1 board, docs/TYPE1.md): the
 # 64 MB module
-T1 = {"racinfrc", "racinfrcu"}
+T1 = {"racinfrc", "racinfrcu", "opengolf", "opengolf2", "ggreats2"}
+
+# Sets whose .mra goes in releases/_Unsupported: built, not yet playable
+UNSUPPORTED = {"opengolf", "opengolf2", "ggreats2"}
 
 # The sets with a K053936 whose tiles (gfx3) and map or height tiles (gfx4)
 # follow the sound board's RAMs (psac_base, psmap_base)
@@ -258,6 +263,7 @@ OBJ_LAYOUT = {"le2": "LE2", "dragoona": "RNG", "dragoonj": "RNG",
               "salmndr2": "GX6", "salmndr2a": "GX6", "le2u": "LE2", "le2j": "LE2",
               "soccerss": "GX6", "soccerssa": "GX6", "soccerssj": "GX6", "soccerssja": "GX6", "soccerssu": "GX6",
               "rungun2": "GX6", "slamdnk2": "GX6", "rushhero": "GX6",
+              "opengolf": "GX6", "opengolf2": "GX6", "ggreats2": "GX6",
               **{k: "GX6" for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 
 # The game buttons each set's .mra names, in order: KonamiGX.sv reads buttons
@@ -297,6 +303,11 @@ BUTTON_NAMES = {
     # (a toggle); the core takes the pedal as button 1 or the stick
     "racinfrc":  ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver EAC)
     "racinfrcu": ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver UAB)
+    # MAME names these; four players, one button each
+    "opengolf":  ["Shoot"],  # Konami's Open Golf Championship (ver EAE)
+    "opengolf2": ["Shoot"],  # Konami's Open Golf Championship (ver EAD)
+    # MAME's names; Direction and Club left/right are on the stick (KonamiGX.sv)
+    "ggreats2":  ["Advice", "Stance Left", "Stance Right"],  # Golfing Greats 2 (ver JAC)
 }
 
 
@@ -864,7 +875,8 @@ def build(set_name, mod, gl, games, blocks, check_only):
         '',
     ])
     parent = games.get(set_name)
-    folder = (OUT_DIR if parent in (None, "0", "konamigx")
+    folder = (OUT_DIR / "_Unsupported" if set_name in UNSUPPORTED
+              else OUT_DIR if parent in (None, "0", "konamigx")
               else OUT_DIR / "_alternatives" / ("_" + mra_filename(gl[parent]["title"])[:-4]))
     out = folder / mra_filename(title)
     folder.mkdir(parents=True, exist_ok=True)

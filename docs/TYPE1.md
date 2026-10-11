@@ -247,46 +247,37 @@ Both need the 64 MB module (or 128). Neither fits 32 MB, even raw for golf.
 | RAM | release builds: KonamiGX 533/553 M10K, KonamiGXT34 542/553 (README) | New RAMs: psacram 128 KB (about 128 M10K), K053936 linectrl 8 KB, LRAM 4 KB, lookup 2 KB, LAN 8 KB. Does not fit either build as is |
 | SDRAM | Type 2 assumes 32 MB | 64 MB (section 5) |
 
-## 8. PSAC4 work estimate (not measured)
+## 8. PSAC4 in the core
 
-Clocks: clk_vid 48 MHz (KonamiGX.sv:7-9), clk_sys 96 MHz for SDRAM.
-- An 8 MHz line is 512 dots x 6 = 3,072 clk_vid (a 6 MHz line of 384 dots is the same).
-- A frame is 264 lines = 811,008 clk_vid.
-- Vblank is 40 lines = 122,880 clk_vid.
-- Which dot clock racinfrc programs into the CCU is unverified. MAME's raw screen is 8 MHz for
-  both.
+`rtl/video/gx_t1_psac4.sv`, MAME's renderer as written (section 2), checked against
+`scripts/t1_psac4_model.py` by `sim/gx_t1_psac4_tb` (`scripts/check_t1_psac4.py`), from vblanks of
+MAME 352a5fbb8bb dumped by `scripts/mame/t1_dump.lua`. The model differs from MAME's pictures only
+where sprites, text or the mixer's blend cover the terrain; the RTL is identical to the model on all
+five dumps (title, attract race, play).
 
-Work per frame, only visible columns (racinfrc 288 x 255 LRAM lines, golf 384 x 480):
-- **Samples:** 73,440 for racinfrc, 184,320 for golf. MAME computes 512 columns
-  (130,560 / 245,760). Each sample needs:
-  - one CROM pixel (from a 3- or 4-byte group);
-  - one HROM pixel (3-byte group);
-  - the VRAM entry (2 longs, shared across a 16-texel run);
-  - one 8x16 multiply (level*scale), a shift, compares against ground/limit[x].
-- **Per line:** 1 LRAM long, 4 K053936 line-control words, 1 lookup byte, and the K053936 start
-  (2 adds).
-- **Writes:** at most one per screen pixel, since the spans in a column never overlap (limit only
-  falls), plus scale==0 points. That is at most 64,512 (288x224) or 86,016 (384x224) writes of
-  {pen 12 bits, priority 8 bits}.
-- **Not raster order:** each column is filled front to back across all LRAM lines. A pixel's
-  value is the first line l with top_l(x) <= y, so it cannot be produced at scan time without
-  every line's top. That means a frame store:
-  - double-buffered, 20 bits a pixel: 2.58 Mbit (racinfrc) or 3.44 Mbit (golf), about 260-345
-    M10K. That is beyond block RAM, so DDR3 or SDRAM.
-  - The board's 12x M514256 DRAM (gx.cpp:3779-3797 layout) is consistent with this. MAME
-    leaves "the DRAM pipeline" unemulated.
-- **Clock budget:** rendering over a whole frame gives about 11 clk_vid a sample for racinfrc
-  and about 4.4 for golf. Within vblank only, it is 1.7 or 0.67, which is not feasible.
-  - MAME renders from the state at vblank start, so rendering during the frame needs psacram,
-    LRAM, lookup and regs snapshotted or double-buffered, or it reads newer CPU data.
-  - Which one the board does is unknown.
-- **ROM bandwidth:**
-  - Near lines are magnified (many samples per 8-byte granule). Far lines are minified: up to one
-    CROM and one HROM granule miss per sample, plus a VRAM entry once the step passes 16 texels.
-  - Worst case is 2 SDRAM fetches a sample: about 147k/frame (racinfrc) or 369k (golf).
-  - gx_psac's 4-port pipeline does 216 fetches a 288-column line in at most 4,341 clocks at
-    12 clk/fetch (docs/TYPE34.md), roughly 3-12 clk a fetch with overlap.
-  - Taking about 3 clk: racinfrc worst ≈ 440k clk (fits a frame), golf worst ≈ 1.1M (does not,
-    unless the cache hit rate passes about 30%).
-  - These numbers are guesses. A Python model of type1_draw_terrain on dumped frames (as
-    psac2_model.py did for Type 3) would give real fetch counts per line.
+Open Golf takes the golf mode (`t1g`): 8 bpp CROM, 480 LRAM lines, the second y origin for lines
+past 224 (latched by K053936 register 14 bit 7 at vblank end), 8 fractional bits in the projection,
+CROM's PL bits dropped. Against MAME's pictures of opengolf the model's terrain has the same shapes;
+on alternate rows of the fairway its colours differ, not yet looked at. The RTL matches the model on
+Open Golf where it finishes (below). The golf sets' .mra files are in `releases/_Unsupported`.
+
+- **When.** The game writes the terrain's state at lines 248-272 after vblank start
+  (`scripts/mame/t1_sweep.lua`, play and attract). The frame is drawn from vblank start, from the
+  registers, lookup bank and y origin taken then and the RAMs as they are, and shown the frame
+  after: a frame later than MAME (MAME_KLUDGES.md).
+- **Where.** A DDR3 frame store at 0x26000000, two buffers of 256 rows x 384 pixels, 16 bits a
+  pixel: the drawing line's parameter and its CROM colour (0: nothing). The parameter's lookup
+  nibble is a table per buffer, applied as the pixel is shown. A row is read into a line buffer
+  while the row before is shown, and cleared in the store as it is read. The DDR3 port is the HDMI
+  rotator's in the other builds; KonamiGXT1 has no rotation.
+- **How.** Per LRAM line, 384 columns through a four-stage pipeline: the column's texel and map
+  entry, the CROM and HROM groups, the projection and the column fill (a queue to the store's
+  writer, a pixel a write). Caches: 256 map entries (emptied each frame: the map is RAM), 512 CROM
+  and 512 HROM granules in two banks by parity, so a group straddling two granules is read at once.
+  A stage waits only for its own misses, and the map and texture fetches run together.
+- **Time.** At 14 clocks of SDRAM latency (the bench), the slowest of the five dumps takes 545k
+  clocks of the 760k between vblank start and the game's writes; misses about 19k a frame.
+  On the board the latency is longer and port 0 is shared with the tiles and sprites (first).
+  `dbg` gives the last frame's clocks / 32 and misses (0xffff: it did not finish).
+  A golf frame is 480 lines: in the bench one of three Open Golf dumps finished, in 785k clocks;
+  the other two ran out of frame, their farthest lines missing.
