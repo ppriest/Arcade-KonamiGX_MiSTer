@@ -215,7 +215,15 @@ reg  [ 1:0] fflip;
 reg  [63:0] frow;
 wire [11:0] fnext = {fmx[11:3], 3'd0} + 12'd8;
 
+// Two tile rows in flight on two ROM clients: the Type 3/4 build's 576
+// columns, and Type 1, whose terrain shares the graphics port
 `ifdef GX_T34
+`define GX_TM2
+`elsif GX_T1
+`define GX_TM2
+`endif
+
+`ifdef GX_TM2
 // At 12 MHz dots a line is 576 columns: 4 x 73 tiles in 3,072 clocks, where a
 // tile row from SDRAM takes about ten (sim/gx_tilemap_tb: 3,050 a line at a
 // 10-clock ROM with one fetch at a time, 3,394 at 14). So the VRAM reads go on
@@ -363,7 +371,7 @@ always @(posedge clk) begin
         fleft       <= 6'd0;
         unsupported <= 1'b0;
         rom2_cs     <= 1'b0;
-`ifdef GX_T34
+`ifdef GX_TM2
         s_busy      <= 2'b00;
         s_done      <= 2'b00;
         s_iss       <= 1'b0;
@@ -421,7 +429,7 @@ always @(posedge clk) begin
         end
         RUN: begin
             // ---- fetcher
-`ifndef GX_T34
+`ifndef GX_TM2
             case (fst)
                 F_IDLE: if (scan_rd) fst <= F_VWAIT;
                 F_VWAIT: begin
@@ -549,7 +557,7 @@ end
 
 `ifdef SIMULATION
 // every tile fetched for a layer must have been emitted when it ends
-`ifdef GX_T34
+`ifdef GX_TM2
 always @(posedge clk) if (st == RUN && last_px && (fleft != 0 || nb_valid || fst != F_IDLE || s_busy != 0))
 `else
 always @(posedge clk) if (st == RUN && last_px && (fleft != 0 || nb_valid || fst != F_IDLE))
@@ -558,3 +566,5 @@ always @(posedge clk) if (st == RUN && last_px && (fleft != 0 || nb_valid || fst
 `endif
 
 endmodule
+
+`undef GX_TM2

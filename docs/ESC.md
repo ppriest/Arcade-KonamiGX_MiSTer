@@ -54,8 +54,13 @@ back, and the remaining packets must still match the model (Sexy Parodius, k = 5
 
 Running the real programs, the sprite lists differ from MAME's in two ways for the titles whose
 program builds the list from object records (Daisu-Kiss, Twin Bee Yahhoo!, Sexy Parodius): word 0
-carries the output index where MAME puts the priority, and x is 20 (`0x14`) larger. Otherwise the
+carries the output index where MAME puts the priority, and x is larger: by 20 (`0x14`) for
+Daisu-Kiss and Twin Bee Yahhoo!, by 4 for Sexy Parodius (its intro and attract). Otherwise the
 entries match. Dragoon Might's and Tokimeki Memorial's lists are identical to MAME's.
+
+Salamander 2 (MAME's sal2 C, not the generic list builder): the colour word carries a depth code
+at bit 6 where MAME's hand-filled table puts it at bit 9 (`0x0058` against `0x0218`), so its
+sprites take the standard priority decode, not `salmndr2_sprite_callback` (gx_board_cfg).
 
 ## Checking
 

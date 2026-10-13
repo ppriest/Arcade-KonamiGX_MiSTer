@@ -50,6 +50,7 @@ licence terms rather than comments to tidy away.
 | `TG68KdotC_Kernel.vhd` | `MOVEC Rn,ISP` writes the supervisor A7 — see below |
 | `TG68KdotC_Kernel.vhd` | `FlagsSR_out`: the status register's high byte (T.S.0III) as an output, for the board's ISSP probe; no logic changes |
 | `TG68KdotC_Kernel.vhd` | `stop_out`: the kernel's `stop` (a STOP waiting for an interrupt) as an output, for the save-state engine; no logic changes |
+| `TG68KdotC_Kernel.vhd` | `DIVL_Wait`: a 32-bit `DIVS.L`/`DIVU.L` holds the kernel for that many cycles before it runs (default 0) — see below |
 | `TG68K_Pack.vhd`, `TG68K.vhd` | none; verbatim |
 
 ### Explicit zero initializers
@@ -98,6 +99,23 @@ no other register write). Quartus still infers the register file as RAM, and Fma
 unchanged (`../../synth_check/tg68k/README.md`: 49.16 MHz, 2,926 ALMs, 2 M10K). `MOVEC` to MSP stays a no-op, which with M = 0 is what
 MAME does to the active stack. `MOVEC ISP,Rn` and `MSP,Rn` still read 0; no GX code found reads
 them (a search of `daiskiss`'s program ROM for `4E7A x803/x804`).
+
+### `DIVL_Wait`
+
+The kernel divides a bit a cycle: a 32-bit `DIVS.L` takes about 34 cycles, where a 68020 takes about
+90 and MAME's loop below about 140 a pass. Racin' Force's power-on test releases the sound CPU, waits
+113 x 4400 passes of `divs.l d3,d2; subq.w #1,d1; bne` (0x201db2), then sends the sound board its
+self-test command. On the board that wait took 1.35 s where MAME's takes 2.95 s (probe R, and
+`debug/racinfrc_post/latch/latch.lua` against MAME), the command arrived while the sound CPU was
+still starting (it resets its command queue at 0x143c), and every sound-board chip read BAD on the
+first boot.
+
+`DIVL_Wait` holds the whole kernel (an internal `clkena_cpu` = `clkena_in` less the hold, used where
+`clkena_in` was) for that many `clkena_in` cycles as a 32-bit divide enters `div1`, as wait states
+would; the divide then runs unchanged. Holding inside `div1` alone gave wrong quotients: the ALU's
+operands move on in the cycles after it. `sim/gx_boot_tb` with a test program of twelve signed and
+unsigned `DIV*L.L`, quotient and remainder, gives all twelve right at 0 and at 75, and the 1000-pass
+loop 39 and 114 kernel cycles a pass. gx_main sets 75, making the loop MAME's.
 
 ## Integration notes carried from `Arcade-Psikyo_MiSTer`
 

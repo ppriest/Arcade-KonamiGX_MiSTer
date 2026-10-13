@@ -165,8 +165,9 @@ module gx_video #(
     input     [255:0] pst_data,
     // ---- Type 1's terrain (gx_t1_psac4, GX_T1): the CPU's state, and the
     // DDR3 frame store. Its SDRAM clients are on psm_ (the map RAM's entries)
-    // and pst_ clients 0 and 1 (CROM, HROM), whose 20-bit addresses carry
-    // bits 19-18 in client 3's field (pst_addr[71:70] CROM's, [69:68] HROM's).
+    // and pst_ clients 0, 1 and 2 (CROM, HROM, HROM's prefetch), whose 20-bit
+    // addresses carry bits 19-18 in client 3's field (pst_addr[71:70] CROM's,
+    // [69:68] HROM's, [67:66] the prefetch's).
     input             t1,
     input             t1g,              // a golf set (gx_board_cfg)
     input      [15:0] t1_ctrl0, t1_ctrl1, t1_ctrl6, t1_ctrl7, t1_ctrl14,
@@ -187,7 +188,9 @@ module gx_video #(
     output            t1_ddr_rd,
     input      [63:0] t1_ddr_dout,
     input             t1_ddr_dout_ready,
-    output     [31:0] t1_dbg,
+    output    [159:0] t1_dbg,
+    input      [  7:0] t1_ctl,
+    output            t1_snap,              // the terrain is copying the LRAM and line control
 
     // ---- video out: rgb and the K053252's blanking and syncs, aligned
     output     [23:0] rgb,
@@ -199,6 +202,7 @@ module gx_video #(
     output            obj_dma_busy,
     output            obj_ln_short,       // the sprite scan did not finish a line (probe)
     output     [ 8:0] ss_vpos,            // the raster, for the save-state engine: vdump
+    output     [ 8:0] vct,                // the K053252's vertical count, as the CPU reads it (0x0e, 0x0f)
     output     [ 9:0] ss_hpos,            // ...and the pixel since LHBL rose
     input             tm_blank_skip,      // gx_tilemap's blank-row skip on
     input             spr_mix_on,         // gx_mixer: a sprite's effect bits are its mix code
@@ -261,6 +265,12 @@ always @(posedge clk) if( pxl_cen ) begin
 end
 
 assign ss_vpos = vdump;
+
+// k053252_device::read 0x0e/0x0f: (vpos - VC) & 0x1ff, vpos the screen line
+// from the top of the bitmap: vdump - 0x100, or past the bitmap's last row
+// (vdump below 0x100, the wrap at v_wrap = 0x200 - VC) that plus VC. Open
+// Golf waits on it for a line in the window.
+assign vct = vdump >= 9'h100 ? vdump + v_wrap + 9'h100 : vdump + 9'h100;
 assign ss_hpos = 10'(pcnt);
 
 wire [9:0] hd0 = 10'h058 + vis_x0 + 10'(p);
@@ -428,10 +438,10 @@ wire [11:0] t1_pen;
 wire [ 7:0] t1_pri;
 `ifdef GX_T1
 wire [13:0] t1m_a;
-wire [19:0] t1c_a, t1h_a;
+wire [19:0] t1c_a, t1h_a, t1p_a;
 assign psm_addr = { 2'b00, t1m_a };
-assign pst_cs[3:2] = 2'b00;
-assign pst_addr = { t1c_a[19:18], t1h_a[19:18], 32'd0, t1h_a[17:0], t1c_a[17:0] };
+assign pst_cs[3] = 1'b0;
+assign pst_addr = { t1c_a[19:18], t1h_a[19:18], t1p_a[19:18], 12'd0, t1p_a[17:0], t1h_a[17:0], t1c_a[17:0] };
 gx_t1_psac4 u_t1 (
     .clk, .rst, .golf(t1g), .vis_x0, .vis_y0, .lvbl, .by(by[8:0]), .rd_x(bx),
     .t_valid(t1_valid), .t_pen(t1_pen), .t_pri(t1_pri),
@@ -442,16 +452,17 @@ gx_t1_psac4 u_t1 (
     .m_cs(psm_cs), .m_addr(t1m_a), .m_ok(psm_ok), .m_data(psm_data),
     .c_cs(pst_cs[0]), .c_addr(t1c_a), .c_ok(pst_ok[0]), .c_data(pst_data[63:0]),
     .h_cs(pst_cs[1]), .h_addr(t1h_a), .h_ok(pst_ok[1]), .h_data(pst_data[127:64]),
+    .p_cs(pst_cs[2]), .p_addr(t1p_a), .p_ok(pst_ok[2]), .p_data(pst_data[191:128]),
     .DDRAM_BUSY(t1_ddr_busy), .DDRAM_BURSTCNT(t1_ddr_burstcnt), .DDRAM_ADDR(t1_ddr_addr),
     .DDRAM_DIN(t1_ddr_din), .DDRAM_BE(t1_ddr_be), .DDRAM_WE(t1_ddr_we), .DDRAM_RD(t1_ddr_rd),
-    .DDRAM_DOUT(t1_ddr_dout), .DDRAM_DOUT_READY(t1_ddr_dout_ready), .dbg(t1_dbg)
+    .DDRAM_DOUT(t1_ddr_dout), .DDRAM_DOUT_READY(t1_ddr_dout_ready), .snap(t1_snap), .ctl(t1_ctl), .dbg(t1_dbg)
 );
 `else
 assign t1_valid = 1'b0; assign t1_pen = 12'd0; assign t1_pri = 8'd0;
 assign t1_lr_addr = 11'd0; assign t1_lc_addr = 12'd0; assign t1_lk_addr = 11'd0;
 assign t1_ddr_burstcnt = 8'd1; assign t1_ddr_addr = 29'd0; assign t1_ddr_din = 64'd0;
 assign t1_ddr_be = 8'd0; assign t1_ddr_we = 1'b0; assign t1_ddr_rd = 1'b0;
-assign t1_dbg = 32'd0;
+assign t1_dbg = 160'd0; assign t1_snap = 1'b0;
 `endif
 
 // ------------------------------------------------------------ sprites

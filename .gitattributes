@@ -46,3 +46,4 @@ rtl/hiscore/*.v* -text
 
 # Patches for other repositories apply byte-for-byte (git am / patch).
 docs/patches/*.patch -text
+scripts/hooks/* text eol=lf

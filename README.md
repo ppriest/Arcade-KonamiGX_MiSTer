@@ -9,9 +9,9 @@ DE10-nano.
 - [History](#history)
 - [Status](#status)
 - [Games](#games)
-  - [Type 2](#type-2)
-  - [Type 3 and Type 4 boards](#type-3-and-type-4-boards-work-in-progress)
-  - [Type 1 board](#type-1-board-work-in-progress)
+  - [Type 1 board](#type-1-board)
+  - [Type 2 board](#type-2-board)
+  - [Type 3 and Type 4 boards](#type-3-and-type-4-boards)
   - [Out of scope](#out-of-scope)
 - [Hardware](#hardware)
   - [Video timing](#video-timing)
@@ -31,6 +31,20 @@ DE10-nano.
 - [License](#license)
 
 ## History
+
+* **Arcade-KonamiGX_20261013** / **Arcade-KonamiGXT1_20261013** (new RBF)
+  * Golf promoted to working: Konami's Open Golf Championship and Golfing Greats 2
+    * The lakes and their reflections show: a column's fill stops at its own ground row
+  * Fix: Racin' Force: the sound board passes its power-on test on the first boot (32-bit divides
+    take the time MAME gives them)
+  * Fix: Sexy Parodius: intro sprites 16 pixels right
+  * Fix: Salamander 2: the first stage's enemies are solid, and the large one goes behind the near
+    clouds
+  * Fix: Dragoon Might: the logo and TIME box are solid in the snow stage; the stages' highlight
+    sprites (the castle's halo, the cage's spotlights) are drawn, where MAME hides them
+    ([docs/MAME_KLUDGES.md](docs/MAME_KLUDGES.md))
+  * Vblank interrupts re-arm only once the K053252 has acknowledged the last, as in
+    mamedev/mame#16401
 
 * **Arcade-KonamiGXT1_20261011** (new RBF)
   * **Beta**
@@ -91,8 +105,8 @@ DE10-nano.
 
 ## Status
 
-**Status**: All listed games run and are playable with sound. The zoomed sprite rendering is arguably more accurate than MAME, using a single acculator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity. Also, the 
-Graphically, they're still WIP - but MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
+**Status**: All listed games run and are playable with sound. The zoomed sprite rendering is arguably more accurate than MAME, using a single accumulator for pixels when crossing multiple tiles in a sprite, versus MAME's whole pixel granularity. Also, the 056734 (ESC) protection chip runs the games' own programs, where MAME substitutes C written per game ([docs/ESC.md](docs/ESC.md)).
+Graphically, MAME has seen some great improvements in the past couple of weeks (targeted for MAME 0.290) thanks to R.Belmont, and that's reflected here too.
 
 Known issues:
 * **Dragoon Might's and Gokujou Parodius's power-on memory check can fail 4F and 4H**, the sound
@@ -108,7 +122,25 @@ Known issues:
 
 Initial goal is the Type 2 boards of `konamigx.cpp`
 
-### Type 2
+### Type 1 board
+
+Its own bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (docs/TYPE1.md).
+
+| Name | Year | SDRAM | Notes |
+|-|-|-|-|
+| Racin' Force | 1994 | 64 MB | Plays on the board; steering and gas through the ADC0834 |
+| Konami's Open Golf Championship / Golfing Greats 2 | 1994 | 64 MB | Plays on the board (`MACHINE_NOT_WORKING` in MAME) |
+
+The road and terrain are MAME's renderer (`type1_draw_terrain`, which MAME calls an
+approximation), drawn into a DDR3 frame store over the frame after the game sets it up and shown
+the frame after that: one frame later than MAME (docs/MAME_KLUDGES.md). This bitstream has no HDMI
+rotation (its DDR3 port is the frame store's; no Type 1 set is vertical), and no link play (the
+056230 LAN is RAM only, as in MAME).
+
+Known issues:
+* On alternate rows of golf's fairway the colours differ from MAME's.
+
+### Type 2 board
 
 Every Type 2 set in `konamigx.cpp` except the bootleg.
 
@@ -126,9 +158,9 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 | Salamander 2 | 1996 | 6bpp | 6bpp | ESC (056734) |
 | Lethal Enforcers II | 1994 | 8bpp | 8bpp | Light guns: stick, d-pad or mouse, button 2 reloads, crosshair option; UAA and JAA flip their own screen |
 
-### Type 3 and Type 4 boards (work in progress)
+### Type 3 and Type 4 boards
 
-A second bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md).
+Its own bitstream, `KonamiGXT34`, for the twin-monitor boards (docs/TYPE34.md).
 
 | Name | Year | Board | SDRAM | Notes |
 |-|-|-|-|-|
@@ -165,25 +197,6 @@ Known issues:
   check; resetting passes it.
 * No hiscore, light guns or cheats in this bitstream (no set of it has the first two; the space
   went to the K053936).
-
-### Type 1 board (work in progress)
-
-A third bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (docs/TYPE1.md).
-
-| Name | Year | SDRAM | Notes |
-|-|-|-|-|
-| Racin' Force | 1994 | 64 MB | Plays on the board; steering and gas through the ADC0834 |
-| Konami's Open Golf Championship / Golfing Greats 2 | 1994 | 64 MB | In `releases/_Unsupported`; `MACHINE_NOT_WORKING` in MAME |
-
-The road and terrain are MAME's renderer (`type1_draw_terrain`, which MAME calls an
-approximation), drawn into a DDR3 frame store over the frame after the game sets it up and shown
-the frame after that: one frame later than MAME (docs/MAME_KLUDGES.md). This bitstream has no HDMI
-rotation (its DDR3 port is the frame store's; no Type 1 set is vertical), and no link play (the
-056230 LAN is RAM only, as in MAME).
-
-Known issues:
-* **The golf sets' terrain does not draw in time**: a golf frame is twice Racin' Force's work, and
-  the far terrain is cut short. On alternate rows of the fairway its colours differ from MAME's.
 
 ### Out of scope
 
@@ -232,7 +245,7 @@ MAME's default keys, alongside the pads:
 
 F2 is the service (test) switch, 9 and 0 the service coins, P pause.
 
-The OSD's *Invert P1/P2* swaps the two players' controls: pads, keys and sticks.
+The OSD's *Invert P1/P2* (Type 2 boards only) swaps the two players' controls: pads, keys and sticks.
 
 The OSD's *Audio mix* blends the two channels for a mono setup: Stereo (the default), 25%, 50%
 or Mono.
@@ -277,15 +290,15 @@ power-on tests can make them fail.
 ### Resource usage
 
 The release builds on the DE10-nano's Cyclone V 5CSEBA6, speed grade 7, timing met on every
-clock: `KonamiGX` at commit `e997bb3`, fitter seed 5; `KonamiGXT34` at commit `dc02503`, seed 2;
-`KonamiGXT1` at commit `dd693b2`, seed 1:
+clock: `KonamiGX` at commit `ab28134`, default seed; `KonamiGXT34` at commit `dc02503`, seed 2;
+`KonamiGXT1` at commit `bf5deb5`, seed 2:
 
 | resource | `KonamiGX` | `KonamiGXT34` | `KonamiGXT1` | available |
 | --- | --- | --- | --- | --- |
-| Logic (ALMs) | 37,676 (90%) | 36,523 (87%) | 35,784 (85%) | 41,910 |
-| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 4,249,875 (75%) | 5,662,720 |
-| RAM blocks | 533 (96%) | 547 (99%) | 549 (99%) | 553 |
-| DSP blocks | 69 (62%) | 55 (49%) | 58 (52%) | 112 |
+| Logic (ALMs) | 37,953 (91%) | 36,523 (87%) | 37,485 (89%) | 41,910 |
+| Block memory bits | 4,163,821 (74%) | 4,342,521 (77%) | 4,250,667 (75%) | 5,662,720 |
+| RAM blocks | 533 (96%) | 547 (99%) | 551 (100%) | 553 |
+| DSP blocks | 69 (62%) | 55 (49%) | 59 (53%) | 112 |
 | PLLs | 3 | 3 | 3 | 6 |
 
 The RAM block count is the one to watch: the K054539s' and the DSP's RAMs are in SDRAM for that

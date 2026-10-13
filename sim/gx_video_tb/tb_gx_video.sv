@@ -20,7 +20,7 @@ module tb_gx_video;
 int spr_mix_sel = 1;
 initial void'($value$plusargs("SPR_MIX=%d", spr_mix_sel));
 // +OBJ_HADJ=n: the set's K055673 dx less daiskiss's -26 (gx_board_cfg obj_hadj)
-int obj_hadj = 0, tile_bpp = 0, obj_layout = 0, obj_pri_raw = 0, vis_x0 = 24, vis_w = 288, vmirror = 0;
+int obj_hadj = 0, tile_bpp = 0, obj_layout = 0, obj_pri_raw = 0, vis_x0 = 24, vis_w = 288, vmirror = 0, vis_y0 = 16;
 initial void'($value$plusargs("VMIRROR=%d", vmirror));
 initial void'($value$plusargs("OBJ_HADJ=%d", obj_hadj));
 initial void'($value$plusargs("BPP=%d", tile_bpp));
@@ -28,6 +28,7 @@ initial void'($value$plusargs("LAYOUT=%d", obj_layout));
 initial void'($value$plusargs("PRI_RAW=%d", obj_pri_raw));
 initial void'($value$plusargs("VIS_X0=%d", vis_x0));
 initial void'($value$plusargs("VIS_W=%d", vis_w));
+initial void'($value$plusargs("VIS_Y0=%d", vis_y0));
 
 localparam string TD = "debug/gx_tilemap_tb/";
 localparam string OD = "debug/gx_obj_tb/";
@@ -97,7 +98,7 @@ gx_video dut (
     .tm_reg_we, .tm_reg_addr, .tm_reg_din, .tm_reg_be(2'b11),
     .tbank_we, .tbank_addr, .tbank_din,
     .vram_we, .vram_rd(1'b0), .vram_addr, .vram_din, .vram_be(2'b11), .vram_dout(),
-    .offs_x, .offs_y, .vis_x0(10'(vis_x0)), .vis_w(10'(vis_w)),
+    .offs_x, .offs_y, .vis_x0(10'(vis_x0)), .vis_w(10'(vis_w)), .vis_y0(5'(vis_y0)),
     .tile_rom_addr, .tile_rom_cs, .tile_rom_ok, .tile_rom_data,
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din, .spr_ram_dout(),
     .k46_cs, .k46_we, .k46_addr, .k46_din, .k46_dsn,

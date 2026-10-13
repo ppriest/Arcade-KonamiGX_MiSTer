@@ -249,17 +249,24 @@ Both need the 64 MB module (or 128). Neither fits 32 MB, even raw for golf.
 
 ## 8. PSAC4 in the core
 
-`rtl/video/gx_t1_psac4.sv`, MAME's renderer as written (section 2), checked against
+`rtl/video/gx_t1_psac4.sv`, MAME's renderer (section 2) with one change, checked against
 `scripts/t1_psac4_model.py` by `sim/gx_t1_psac4_tb` (`scripts/check_t1_psac4.py`), from vblanks of
 MAME 352a5fbb8bb dumped by `scripts/mame/t1_dump.lua`. The model differs from MAME's pictures only
 where sprites, text or the mixer's blend cover the terrain; the RTL is identical to the model on all
 five dumps (title, attract race, play).
 
+The change: a column's face ends at its own line's ground row, not at what nearer lines left
+(`limit[x]`). Open Golf's water lines are transparent, so with MAME's rule the far shore's faces
+fill down over the lake and hide its reflection, which is a layer behind the terrain; with this
+one the lake and its reflection show (opengolf attract on the board, and MAME with the same change,
+`konamigx_v.cpp`). It changes no pixel of the five Racin' Force dumps or the opengolf dumps above.
+The probe build's instance P source bit 1 restores MAME's fill.
+
 Open Golf takes the golf mode (`t1g`): 8 bpp CROM, 480 LRAM lines, the second y origin for lines
 past 224 (latched by K053936 register 14 bit 7 at vblank end), 8 fractional bits in the projection,
 CROM's PL bits dropped. Against MAME's pictures of opengolf the model's terrain has the same shapes;
 on alternate rows of the fairway its colours differ, not yet looked at. The RTL matches the model on
-Open Golf where it finishes (below). The golf sets' .mra files are in `releases/_Unsupported`.
+Open Golf (below).
 
 - **When.** The game writes the terrain's state at lines 248-272 after vblank start
   (`scripts/mame/t1_sweep.lua`, play and attract). The frame is drawn from vblank start, from the

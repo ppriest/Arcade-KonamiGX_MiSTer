@@ -107,6 +107,39 @@ set fields_T {
     {ps_late_total  192 203 dec}
 }
 
+# INSTANCE P, 160 bits: the Type 1 terrain's last frame (gx_t1_psac4 dbg,
+# KonamiGXT1_stp). clk32 0xffff: the frame did not finish (ovr_line: the line
+# the last unfinished frame had reached). Stalls and the fetch wait are
+# clocks of 48 MHz.
+set fields_P {
+    {clk32             0  15 dec}
+    {map_fetches      16  33 dec}
+    {crom_fetches     34  51 dec}
+    {hrom_fetches     52  69 dec}
+    {p1_map_stall     70  93 dec}
+    {tex_stall        94 117 dec}
+    {tex_fetch_busy  118 141 dec}
+    {ovr_line        142 150 dec}
+    {overruns        151 157 dec}
+}
+
+# INSTANCE R, 160 bits: the power-on test's sound handshake (KonamiGX.sv),
+# times in units of 2^20 clk_vid (21.8 ms) since the core's reset; first
+# occurrences, the commands' last too
+set fields_R {
+    {t_snd_c0          0  15 dec}
+    {t_snd_result     16  31 dec}
+    {snd_result       32  39 hex}
+    {t_main_rd0       40  55 dec}
+    {t_main_rd1       56  71 dec}
+    {main_rd1_value   72  79 hex}
+    {t_cmd_first      80  95 dec}
+    {t_cmd_last       96 111 dec}
+    {n_cmd           112 119 dec}
+    {cmd_last        120 127 hex}
+    {now             128 143 dec}
+}
+
 # INSTANCE B, 264 bits: the SDRAM's use in the last frame (gx_sdram_top
 # dbg_bw), clk_mem cycles (96 MHz: 1,621,962 a 59.19 Hz frame).
 set fields_B {
@@ -298,6 +331,8 @@ switch -- $inst_id {
     D       { set fields $fields_D }
     T       { set fields $fields_T }
     B       { set fields $fields_B }
+    P       { set fields $fields_P }
+    R       { set fields $fields_R }
     default {
         puts "instance id '$inst_id' has no field table -- add one before reading it"
         exit 1
@@ -306,6 +341,14 @@ switch -- $inst_id {
 puts "decoding instance $inst_id"
 
 start_insystem_source_probe -device_name $dev -hardware_name $hw
+# set <hex>: write the instance's source first (instance P: the terrain's ctl)
+set sp [lsearch -exact $argv "set"]
+if {$sp >= 0} {
+    scan [lindex $argv [expr {$sp + 1}]] %x sv
+    write_source_data -instance_index $idx -value [format %X $sv] -value_in_hex
+    puts "source <- [format %X $sv]"
+    after 200
+}
 set raw [read_probe_data -instance_index $idx]
 puts "raw ([string length $raw] bits): $raw"
 puts ""

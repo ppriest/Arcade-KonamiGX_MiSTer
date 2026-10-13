@@ -99,7 +99,8 @@ module gx_obj #(parameter
     input             bank,        // Type 3/4 (type3_bank_w bit 0): the list is words 0x800-0xfff
     input      [ 2:0] shd_defer,   // shadow codes SHD PRI SEL defers (gx_mixer): the line buffer keeps others first
     input      [ 1:0] obj_pri_raw, // 1 dragoonj_sprite_callback: pri = attr bit 9 ? 4 : attr[7:4];
-                                   // 2 salmndr2_sprite_callback: pri = attr[9:4]
+                                   // 2 salmndr2_sprite_callback: pri = attr[9:4];
+                                   // 3 the standard decode, without the mix code
 
     // sprite ROM
     output     [22:0] rom_addr,
@@ -346,9 +347,11 @@ wire          q_push = draw && !draw_l; // dr_start is high for a cen2 period
 // Each queued sprite's effect bits (attribute 9:8), by its index, which the
 // line buffer carries with every pixel: the mix code the mixer may take for
 // the sprite (gx_mixer spr_mix_on). The line buffer has no room for them; a
-// sprite's attribute rarely changes within a frame.
+// sprite's attribute rarely changes within a frame. Dragoon Might's and
+// Salamander 2's sprites have no mix code (obj_pri_raw): taken as one, most
+// of their sprites blended.
 reg  [1:0] mixtbl [0:255];
-always @(posedge clk) if( q_push ) mixtbl[obj_idx] <= attr_full[9:8];
+always @(posedge clk) if( q_push ) mixtbl[obj_idx] <= obj_pri_raw == 2'd0 ? attr_full[9:8] : 2'd0;
 assign pxl_mix = mixtbl[pxl_idx];
 assign q_full  = q_n >= QD - 1;         // room for one more push in flight
 assign q_empty = q_n == 0;

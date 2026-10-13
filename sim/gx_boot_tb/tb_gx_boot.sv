@@ -58,6 +58,8 @@ module tb_gx_boot;
     always #5 clk = ~clk;
 
     // ---- ROM: the region image exactly as MAME holds it (big-endian bytes) ----
+    // gx_main's DIVL_Wait is 75; -GDIVL_WAIT=<n> to vary it
+    parameter int DIVL_WAIT = 75;
     localparam int ROM_BYTES = 8 * 1024 * 1024;
     byte unsigned rom [0:ROM_BYTES-1];
 
@@ -80,7 +82,7 @@ module tb_gx_boot;
     TG68KdotC_Kernel #(
         .SR_Read(2), .VBR_Stackframe(2), .extAddr_Mode(2),
         .MUL_Mode(2), .DIV_Mode(2), .BitField(2),
-        .BarrelShifter(0), .MUL_Hardware(1)
+        .BarrelShifter(0), .MUL_Hardware(1), .DIVL_Wait(DIVL_WAIT)
     ) u_cpu (
         .clk(clk),
         .nReset(~reset),
@@ -150,6 +152,8 @@ module tb_gx_boot;
     task automatic log_access(input string rw, input [23:0] a, input [31:0] m, input [31:0] d);
         seq = seq + 1;
         $fdisplay(fd_trace, "%0d\t%s\t%06X\t%08X\t%08X", seq, rw, a, m, d);
+        if (rw == "w" && (a == 24'hFF0000 || a == 24'hFF0004))
+            $display("TMARK %06X steps=%0d stalls=%0d", a, steps, stalls);
         if (rw == "w" && a == mark_addr && m == mark_mask) begin
             mark_n = mark_n + 1;
             if (mark_n == mark_a || mark_n == mark_b)

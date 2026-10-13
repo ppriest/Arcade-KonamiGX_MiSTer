@@ -366,7 +366,10 @@ assign sram_data = 64'd0;
 `ifdef GX_T34
 localparam int N0 = 8;              // the second tile client, the K053936's map and four tile clients
 `elsif GX_T1
-localparam int N0 = 5;              // Type 1's terrain: the map RAM's entries, CROM, HROM
+// Type 1: the second tile client, then the terrain's map RAM entries, CROM,
+// HROM and HROM's prefetch; 7 idle, as the round robin's % N0 is slow at
+// 96 MHz when N0 is not a power of two (-1.2 ns with 6)
+localparam int N0 = 8;
 `else
 localparam int N0 = 2;
 `endif
@@ -387,8 +390,8 @@ wire        bw_tw = arb0_req[0] | arb0_req[2];      // the tilemap's two clients
 wire        bw_pw = |arb0_req[N0-1:3];              // the K053936's map and tiles
 wire        bw_srr = arb1_req[4];                   // the sound 68000's RAM (SDRAM in this build)
 `elsif GX_T1
-wire        bw_tw = arb0_req[0];
-wire        bw_pw = |arb0_req[4:2];             // the terrain's map and tiles
+wire        bw_tw = arb0_req[0] | arb0_req[2];
+wire        bw_pw = |arb0_req[6:3];             // the terrain's map and tiles
 wire        bw_srr = 1'b0;
 `else
 wire        bw_tw = arb0_req[0];
@@ -420,6 +423,8 @@ end
 // in flight each; the K053936's clients take what they leave
 `ifdef GX_T34
 localparam int HI0 = 3;             // the tiles (two clients) and the sprites
+`elsif GX_T1
+localparam int HI0 = 3;
 `else
 localparam int HI0 = 2;
 `endif
@@ -485,33 +490,50 @@ generate for( gk = 0; gk < 4; gk++ ) begin : g_pst
     assign pst_data[64*gk +: 64] = bswap(pst_g[gk]);
 end endgenerate
 `elsif GX_T1
+wire [63:0] tile2_g;
+gx_rom_port #(.AW(21)) u_tile2 (
+    .clk, .clk_mem, .rst(reset),
+    .cs(tile2_cs), .addr(tile2_addr), .ok(tile2_ok), .data(tile2_g),
+    .hint_cs(1'b0), .hint_addr(21'd0), .halfsel(1'b0), .inval(1'b0),
+    .base(tile_base),
+    .c_req(arb0_req[2]), .c_addr(arb0_addr[80:54]), .c_valid(arb0_valid[2]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[2]), .c_rdata2(arb0_rdata2)
+);
+assign tile2_data = { tile2_g[7:0], tile2_g[15:8], tile2_g[23:16], tile2_g[31:24],
+                      tile2_g[39:32], tile2_g[47:40], tile2_g[55:48], tile2_g[63:56] };
 // Type 1's terrain (gx_t1_psac4): the K053936's map RAM (the CPU writes it
 // through port 2, so a write empties what is held here) and the CROM and
 // HROM as they come, after the sound board's RAMs. CROM and HROM addresses
 // are 20 bits, the top two in pst_ client 3's field (gx_video).
-gx_rom_port #(.AW(14)) u_t1pm (
+gx_rom_port #(.AW(14), .DBL(1)) u_t1pm (
     .clk, .clk_mem, .rst(reset),
     .cs(psm_cs), .addr(psm_addr[13:0]), .ok(psm_ok), .data(psm_data),
     .hint_cs(1'b0), .hint_addr(14'd0), .halfsel(1'b0), .inval(t1m_inval),
     .base(27'h3FE0000),             // T1_PSACRAM, below
-    .c_req(arb0_req[2]), .c_addr(arb0_addr[80:54]), .c_valid(arb0_valid[2]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[2]), .c_rdata2(arb0_rdata2)
+    .c_req(arb0_req[3]), .c_addr(arb0_addr[107:81]), .c_valid(arb0_valid[3]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[3]), .c_rdata2(arb0_rdata2)
 );
-gx_rom_port #(.AW(20)) u_t1c (
+gx_rom_port #(.AW(20), .DBL(1)) u_t1c (
     .clk, .clk_mem, .rst(reset),
     .cs(pst_cs[0]), .addr({ pst_addr[71:70], pst_addr[17:0] }), .ok(pst_ok[0]), .data(pst_data[63:0]),
     .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
     .base(psac_base),
-    .c_req(arb0_req[3]), .c_addr(arb0_addr[107:81]), .c_valid(arb0_valid[3]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[3]), .c_rdata2(arb0_rdata2)
+    .c_req(arb0_req[4]), .c_addr(arb0_addr[134:108]), .c_valid(arb0_valid[4]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[4]), .c_rdata2(arb0_rdata2)
 );
-gx_rom_port #(.AW(20)) u_t1h (
+gx_rom_port #(.AW(20), .DBL(1)) u_t1h (
     .clk, .clk_mem, .rst(reset),
     .cs(pst_cs[1]), .addr({ pst_addr[69:68], pst_addr[35:18] }), .ok(pst_ok[1]), .data(pst_data[127:64]),
     .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
     .base(psmap_base),
-    .c_req(arb0_req[4]), .c_addr(arb0_addr[134:108]), .c_valid(arb0_valid[4]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[4]), .c_rdata2(arb0_rdata2)
+    .c_req(arb0_req[5]), .c_addr(arb0_addr[161:135]), .c_valid(arb0_valid[5]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[5]), .c_rdata2(arb0_rdata2)
 );
-assign pst_ok[3:2] = 2'd0; assign pst_data[255:128] = 128'd0;
-assign tile2_ok = 1'b0; assign tile2_data = 64'd0;
+gx_rom_port #(.AW(20), .DBL(1)) u_t1hp (
+    .clk, .clk_mem, .rst(reset),
+    .cs(pst_cs[2]), .addr({ pst_addr[67:66], pst_addr[53:36] }), .ok(pst_ok[2]), .data(pst_data[191:128]),
+    .hint_cs(1'b0), .hint_addr(20'd0), .halfsel(1'b0), .inval(1'b0),
+    .base(psmap_base),
+    .c_req(arb0_req[6]), .c_addr(arb0_addr[188:162]), .c_valid(arb0_valid[6]), .c_rdata(arb0_rdata), .c_dbl(arb0_dbl[6]), .c_rdata2(arb0_rdata2)
+);
+assign pst_ok[3] = 1'b0; assign pst_data[255:192] = 64'd0;
+assign arb0_req[7] = 1'b0; assign arb0_addr[215:189] = 27'd0; assign arb0_dbl[7] = 1'b0;
 `else
 assign psm_ok = 1'b0;   assign psm_data = 64'd0;
 assign tile2_ok = 1'b0; assign tile2_data = 64'd0;

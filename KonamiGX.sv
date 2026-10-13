@@ -140,7 +140,12 @@ localparam CONF_STR = {
 	"H1O[70:69],P1 stick,Auto,Aim,D-pad;",
 	"H1O[72:71],P2 stick,Auto,Aim,D-pad;",
 	"H1O[74:73],Mouse aims,P1,P2,Off;",
+	// the Type 2 boards only: the Type 1 and 3/4 bitstreams leave it out
+`ifndef GX_T34
+`ifndef GX_T1
 	"O[104],Invert P1/P2,Off,On;",
+`endif
+`endif
 	"-;",
 	// save states (docs/SAVESTATES.md): the slot, and save/restore it
 	"O[100:99],Save state slot,1,2,3,4;",
@@ -233,8 +238,14 @@ hps_io #(.CONF_STR(CONF_STR)) hps_io
 wire [31:0] key_0, key_1;
 wire  [1:0] svc_coin;
 gx_keyboard u_keys (.clk(clk_sys), .ps2_key, .key0(key_0), .key1(key_1), .svc_coin);
-// Invert P1/P2: each player's pad, keys and stick become the other's
+// Invert P1/P2 (Type 2 only): each player's pad, keys and stick become the other's
+`ifdef GX_T34
+wire p_swap = 1'b0;
+`elsif GX_T1
+wire p_swap = 1'b0;
+`else
 wire p_swap = status[104];
+`endif
 assign joystick_0 = p_swap ? joy_pad_1 | key_1 : joy_pad_0 | key_0;
 assign joystick_1 = p_swap ? joy_pad_0 | key_0 : joy_pad_1 | key_1;
 wire [15:0] stick_0 = p_swap ? joystick_l_analog_1 : joystick_l_analog_0;
@@ -362,7 +373,8 @@ gx_rom_loader u_ldr (
 	// 0x400000 (build_mra's SND_CPU and SND_PCM); a Type 3 set's goes on to
 	// the K053936's map, 512 KB at psmap_base (gfx4)
 	.length(t34 ? { 1'b0, psmap_base } + 28'h0080000
-	      : t1  ? { 1'b0, psmap_base } + 28'h0300000          // Type 1: the HROM (gfx4), 3 MB
+	      : t1g ? { 1'b0, psmap_base } + 28'h0600000          // Type 1 golf: the HROM (gfx4), 6 MB
+	      : t1  ? { 1'b0, psmap_base } + 28'h0300000          // Racin' Force: the HROM, 3 MB
 	            : { 1'd0, 27'(obj_base) + { obj_size4, 1'b0 } + 27'h040000 + { 3'd0, snd_pcm } }),
 	.start(ldr_start), .busy(ldr_busy),
 	.ddr_req(ldr_ddr_req), .ddr_addr(ldr_ddr_addr), .ddr_busy(ldr_ddr_busy),
@@ -784,7 +796,8 @@ wire        t1_DDRAM_WE, t1_DDRAM_RD;
 wire  [7:0] t1_DDRAM_BURSTCNT, t1_DDRAM_BE;
 wire [28:0] t1_DDRAM_ADDR;
 wire [63:0] t1_DDRAM_DIN;
-wire [31:0] t1_dbg;
+wire [159:0] t1_dbg;
+wire [  7:0] t1_ctl;                 // probe P's source: bit 0 stops the terrain's SDRAM fetches
 gx_main u_board (
 	.rst(rst_vid), .clk(clk_vid), .clk_cpu(clk_cpu),
 	.rom_cs, .rom_addr, .rom_ok, .rom_data,
@@ -806,7 +819,7 @@ gx_main u_board (
 	.t1_ddr_busy(DDRAM_BUSY | ldr_busy | ss_own), .t1_ddr_burstcnt(t1_DDRAM_BURSTCNT),
 	.t1_ddr_addr(t1_DDRAM_ADDR), .t1_ddr_din(t1_DDRAM_DIN), .t1_ddr_be(t1_DDRAM_BE),
 	.t1_ddr_we(t1_DDRAM_WE), .t1_ddr_rd(t1_DDRAM_RD),
-	.t1_ddr_dout(DDRAM_DOUT), .t1_ddr_dout_ready(DDRAM_DOUT_READY & ~ldr_busy & ~ss_own), .t1_dbg(t1_dbg),
+	.t1_ddr_dout(DDRAM_DOUT), .t1_ddr_dout_ready(DDRAM_DOUT_READY & ~ldr_busy & ~ss_own), .t1_dbg(t1_dbg), .t1_ctl(t1_ctl),
 	.pxl_cen_o(pxl_cen), .pxl_div_o(pxl_div), .unsupported,
 	.dbg_addr(dbg_addr), .dbg_access(dbg_access), .dbg_we(), .dbg_be(), .dbg_data(),
 	.dbg_ee(dbg_ee), .dbg_rom_hits(dbg_rom_hits), .dbg_rom_misses(dbg_rom_misses), .dbg_irq(dbg_irq), .dbg_esc(dbg_esc), .dbg_esc_st(dbg_esc_st), .dbg_obj(dbg_obj), .dbg_k338(dbg_k338), .dbg_shd(dbg_shd), .dbg_mix(dbg_mix), .dbg_line(dbg_line), .tm_blank_skip(!line_src[0]), .spr_mix_on(1'b1), .dbg_rom(dbg_rom),
@@ -982,6 +995,47 @@ issp_probe #(.INSTANCE_ID("B"), .PROBE_W(264), .SOURCE_W(8)) u_issp_bw (
 issp_probe #(.INSTANCE_ID("T"), .PROBE_W(204), .SOURCE_W(8)) u_issp_line (
 	.clk(clk_vid), .probe(dbg_line), .source(line_src)
 );
+`ifdef GX_T1
+// Instance P, 160 bits: the Type 1 terrain's last frame (gx_t1_psac4 dbg; fields_P)
+issp_probe #(.INSTANCE_ID("P"), .PROBE_W(160), .SOURCE_W(8)) u_issp_t1 (
+	.clk(clk_vid), .probe(t1_dbg), .source(t1_ctl)
+);
+// Instance R, 160 bits: the power-on test's sound handshake (fields_R), in
+// units of 2^20 clk_vid (21.8 ms) since the core's reset. The 68000 sets
+// snd_to_host 0 to 0xc0 as its self-test starts and writes its result to 1;
+// the main CPU reads 0, then 1. First occurrences, and the main CPU's
+// commands (host_to_snd writes).
+reg  [35:0] hs_clk;
+reg  [15:0] hs_t_c0, hs_t_s1, hs_t_h0, hs_t_h1, hs_t_hw, hs_t_hw_l;
+reg  [ 7:0] hs_v_s1, hs_v_h1, hs_n_hw, hs_v_hw;
+reg         hs_c0, hs_s1, hs_h0, hs_h1, hs_hw;
+wire [15:0] hs_now = hs_clk[35:20];
+always @(posedge clk_vid) begin
+	if (rst_vid) begin
+		hs_clk <= 36'd0; { hs_c0, hs_s1, hs_h0, hs_h1, hs_hw } <= 5'd0; hs_n_hw <= 8'd0;
+		hs_t_c0 <= 16'd0; hs_t_s1 <= 16'd0; hs_t_h0 <= 16'd0; hs_t_h1 <= 16'd0; hs_t_hw <= 16'd0; hs_t_hw_l <= 16'd0;
+		hs_v_s1 <= 8'd0; hs_v_h1 <= 8'd0; hs_v_hw <= 8'd0;
+	end else begin
+		hs_clk <= hs_clk + 36'd1;
+		if (k8_wr && k8_addr == 3'd0 && k8_din == 8'hc0 && !hs_c0) begin hs_c0 <= 1'b1; hs_t_c0 <= hs_now; end
+		if (k8_wr && k8_addr == 3'd1 && hs_c0 && !hs_s1) begin hs_s1 <= 1'b1; hs_t_s1 <= hs_now; hs_v_s1 <= k8_din; end
+		if (snd_rd && snd_addr[2:0] == 3'd0 && !hs_h0) begin hs_h0 <= 1'b1; hs_t_h0 <= hs_now; end
+		if (snd_rd && snd_addr[2:0] == 3'd1 && !hs_h1) begin hs_h1 <= 1'b1; hs_t_h1 <= hs_now; hs_v_h1 <= k8_dbg[9:2]; end
+		if (snd_wr && snd_addr[2] == 1'b0) begin
+			if (!hs_hw) begin hs_hw <= 1'b1; hs_t_hw <= hs_now; end
+			hs_t_hw_l <= hs_now; hs_v_hw <= snd_dout;
+			if (hs_n_hw != 8'hff) hs_n_hw <= hs_n_hw + 8'd1;
+		end
+	end
+end
+issp_probe #(.INSTANCE_ID("R"), .PROBE_W(160), .SOURCE_W(8)) u_issp_hs (
+	.clk(clk_vid), .probe({ hs_now, hs_v_hw, hs_n_hw, hs_t_hw_l, hs_t_hw, hs_v_h1, hs_t_h1, hs_t_h0, hs_v_s1, hs_t_s1, hs_t_c0 }), .source()
+);
+`else
+assign t1_ctl = 8'd0;
+`endif
+`else
+assign t1_ctl = 8'd0;
 `endif
 
 ///////////////////////   VIDEO   ////////////////////////////////

@@ -30,7 +30,7 @@ module gx_board_cfg_c (
     output reg  [3:0] primode,
     output reg  [1:0] tile_bpp,     // K056832 set_config depth: 0 BPP_5, 1 BPP_6, 2 BPP_8
     output reg  [1:0] obj_layout,   // K055673 set_config layout: 0 GX, 1 RNG, 2 GX6, 3 LE2
-    output reg  [1:0] obj_pri_raw,  // the priority from the raw attribute: 1 dragoonj_, 2 salmndr2_sprite_callback
+    output reg  [1:0] obj_pri_raw,  // the priority from the raw attribute: 1 dragoonj_, 2 salmndr2_sprite_callback; 3 standard, no mix code
     output reg  [9:0] vis_x0,       // K053252 set_offsets x: the window's first bitmap column
     output reg  [9:0] vis_w,        // the visible width (MAME's from the CRTC: 288, 384, or 576)
     output reg  [9:0] obj_hadj,     // K055673 set_config dx less daiskiss's -26, signed
@@ -84,13 +84,13 @@ always @* begin
     prot4 = 1'b0; esc_sal2 = 1'b0; tile_rb66 = 1'b0; guns = 1'b0; orient_fy = 1'b0; fj_dma = 1'b0;
     // the K055673's x offset: konamigx() -26 (daiskiss, tbyahhoo, mtwinbee),
     // gokuparo() -46 (gokuparo, fantjour, fantjoura, crzcross, puzldama),
-    // sexyparo() -42. The 056734's sprite programs put x 20 further right than
-    // MAME's C (docs/ESC.md), so the sets whose program builds the list take
-    // 20 less: daiskiss, tbyahhoo and mtwinbee land on gokuparo()'s -46.
+    // sexyparo() -42. The 056734's sprite programs put x further right than
+    // MAME's C (docs/ESC.md): 20 for daiskiss, tbyahhoo and mtwinbee, 4 for
+    // sexyparo. Taking that off, they all land on gokuparo()'s -46.
     case( game )
         8'd0, 8'd6, 8'd7,
         8'd1, 8'd2, 8'd3, 8'd4, 8'd5, 8'd10, 8'd11, 8'd12, 8'd20, 8'd21: obj_hadj = -10'sd20;   // + tokkae, tkmmpzdm (konamigx_6bpp: -46), le2 (-46)
-        8'd8, 8'd9:                   obj_hadj = -10'sd36;
+        8'd8, 8'd9:                   obj_hadj = -10'sd20;
         8'd13, 8'd14,                                         // dragoonj(): -53
         8'd15, 8'd16, 8'd17:          obj_hadj = -10'sd27;   // winspike(): -53
         8'd18, 8'd19:                 obj_hadj = -10'sd22;   // salmndr2(): -48
@@ -217,15 +217,19 @@ always @* begin
         // le2: K056832 BPP_8, K055673 LAYOUT_LE2, konamigx_mixer_primode(-1)
         8'd12:        begin primode = 4'hf; tile_bpp = 2'd2; obj_layout = 2'd3; guns = 1'b1; end
         8'd20, 8'd21: begin primode = 4'hf; tile_bpp = 2'd2; obj_layout = 2'd3; guns = 1'b1; orient_fy = 1'b1; end  // le2u, le2j
-        // dragoona/j: K055673 LAYOUT_RNG and dragoonj_sprite_callback, the
-        // K053252 at offset 24 + 16 and 384 wide (8 MHz dots), every layer
-        // one right (VIDEO_START dragoonj)
-        8'd13, 8'd14: begin obj_layout = 2'd1; obj_pri_raw = 2'd1; vis_x0 = 10'd40; vis_w = 10'd384;
+        // dragoona/j: K055673 LAYOUT_RNG, the K053252 at offset 24 + 16 and 384
+        // wide (8 MHz dots), every layer one right (VIDEO_START dragoonj). The
+        // standard priority decode, not dragoonj_sprite_callback, which hides the
+        // stages' highlight sprites behind the background (MAME_KLUDGES)
+        8'd13, 8'd14: begin obj_layout = 2'd1; obj_pri_raw = 2'd3; vis_x0 = 10'd40; vis_w = 10'd384;
                             offs_x = '{ -8'sd1, 8'sd1, 8'sd3, 8'sd4 }; end
         // winspike(a/j): BPP_8, LAYOUT_LE2, the K053252 at 24 + 15, 384 wide
         8'd15, 8'd16, 8'd17: begin tile_bpp = 2'd2; obj_layout = 2'd3; vis_x0 = 10'd39; vis_w = 10'd384; end
-        // salmndr2(a): BPP_6, LAYOUT_GX6, salmndr2_sprite_callback, readback BPP66
-        8'd18, 8'd19: begin tile_bpp = 2'd1; obj_layout = 2'd2; obj_pri_raw = 2'd2; tile_rb66 = 1'b1; end
+        // salmndr2(a): BPP_6, LAYOUT_GX6, readback BPP66. Not salmndr2_sprite_callback:
+        // it reads attr[9:4], where MAME's sal2 ESC C puts a hand-filled depth code at
+        // bit 9; the 056734's program puts it at bit 6, which the standard decode's
+        // OPSET shift takes into the priority (docs/ESC.md)
+        8'd18, 8'd19: begin tile_bpp = 2'd1; obj_layout = 2'd2; obj_pri_raw = 2'd3; tile_rb66 = 1'b1; end
         // soccerss and clones, gxtype3 / VIDEO_START konamigx_type3: BPP_6,
         // LAYOUT_GX6 at -132 (106 left of -26), the K053252 at offset 0 + 16,
         // the layers at -52, -48, -48, -48. MAME's values: the bench checks them

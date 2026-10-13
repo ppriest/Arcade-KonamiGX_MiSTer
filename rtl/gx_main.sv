@@ -195,7 +195,8 @@ module gx_main (
     output            t1_ddr_rd,
     input      [63:0] t1_ddr_dout,
     input             t1_ddr_dout_ready,
-    output     [31:0] t1_dbg,
+    output    [159:0] t1_dbg,
+    input      [  7:0] t1_ctl,              // the terrain's debug control (gx_t1_psac4 ctl)
     output            pxl_cen_o,            // the dot clock enable, for the video output
     output     [ 3:0] pxl_div_o,            // clk a pixel: 8, 6, 4 or 3 (CRT Adjust)
     output            unsupported,
@@ -338,7 +339,12 @@ wire        cpu_take   = cpu_cen && !pause_cpu;
 TG68KdotC_Kernel #(
     .SR_Read(2), .VBR_Stackframe(2), .extAddr_Mode(2),
     .MUL_Mode(2), .DIV_Mode(2), .BitField(2),
-    .BarrelShifter(0), .MUL_Hardware(1)
+    .BarrelShifter(0), .MUL_Hardware(1),
+    // Racin' Force's power-on test times the sound board's start-up with a
+    // DIVS.L delay loop (0x201db2); at the kernel's 34-cycle divide it sent
+    // the self-test command 1.6 s early, before the sound CPU could queue it,
+    // and every sound-board chip read BAD. 75 makes the loop MAME's (rtl/cpu/tg68k/PROVENANCE.md)
+    .DIVL_Wait(75)
 ) u_cpu (
     .clk(clk_cpu), .nReset(~rst), .clkena_in(cpu_clkena),
     .data_in(ss_hit ? ss_din : fast_rdy ? u_din : cpu_din), .IPL(ipl_n), .IPL_autovector(1'b1), .berr(1'b0),
@@ -572,6 +578,7 @@ wire [ 7:0] t1v_lk_q;
 
 // the tile ROM readback's address and bank (declared before gx_video, which
 // drives them; used by the readback windows below)
+wire [ 8:0] vct;                             // the K053252's vertical count (gx_video)
 wire [22:1] rmrd_addr;
 wire [31:0] tile_gfx_bank;
 gx_video u_video (
@@ -603,11 +610,11 @@ gx_video u_video (
     .t1(t1), .t1g, .t1_ctrl0(t1v_k0), .t1_ctrl1(t1v_k1), .t1_ctrl6(t1v_k6), .t1_ctrl7(t1v_k7), .t1_ctrl14(t1v_k14),
     .t1_p4_hi(t1v_p4h), .t1_p4_lo(t1v_p4l), .t1_brk(t1v_brk),
     .t1_lr_addr(t1v_lr_a), .t1_lr_q(t1v_lr_q), .t1_lc_addr(t1v_lc_a), .t1_lc_q(t1v_lc_q),
-    .t1_lk_addr(t1v_lk_a), .t1_lk_q(t1v_lk_q),
+    .t1_lk_addr(t1v_lk_a), .t1_lk_q(t1v_lk_q), .t1_snap(t1v_snap),
     .t1_ddr_busy, .t1_ddr_burstcnt, .t1_ddr_addr, .t1_ddr_din, .t1_ddr_be, .t1_ddr_we, .t1_ddr_rd,
-    .t1_ddr_dout, .t1_ddr_dout_ready, .t1_dbg,
+    .t1_ddr_dout, .t1_ddr_dout_ready, .t1_dbg, .t1_ctl,
     .rgb, .vid_lhbl, .vid_lvbl, .vid_hs, .vid_vs, .unsupported, .obj_dma_busy, .obj_ln_short,
-    .ss_vpos, .ss_hpos
+    .ss_vpos, .ss_hpos, .vct
 );
 assign ss_esc_busy = esc_busy;
 assign ss_dma_busy = obj_dma_busy;
@@ -730,6 +737,9 @@ reg        esc_seen;
 // A request is { we, addr, be, data }; the unit answers with u_din and a
 // one-clock u_ack.
 localparam [2:0] U_IDLE = 0, U_WAIT = 1, U_ROM = 2, U_TB2 = 3, U_SND = 4, U_GFX = 5, U_T1R = 6, U_T1W = 7;
+// Type 1: a write to the LRAM or line control waits while the terrain copies them
+wire        t1v_snap;
+reg         t1_wpend = 1'b0;
 reg  [2:0]  ust;
 reg  [2:0]  ucnt;
 reg         u_ack, u_esc, u_k734, u_md, u_ss;   // whose access is in progress
@@ -958,7 +968,7 @@ always @(posedge clk) begin
     spr_ram_we <= 0;
     k734_mail_we <= 0;
     if( rst ) begin
-        ust <= U_IDLE; cr_cs <= 0;
+        ust <= U_IDLE; cr_cs <= 0; t1_wpend <= 1'b0;
         t1m_cs <= 0; t1w_req <= 0;
 `ifdef GX_T1
         t1w_seen <= 0;
@@ -1087,6 +1097,12 @@ always @(posedge clk) begin
                 if( uwe ) begin k47_we <= ube; k47_addr <= ua[3:1]; end
             end else if( ub >= 24'hd4c000 && ub < 24'hd4c020 ) begin
                 if( uwe && ube[1] ) begin crtc_cs <= 1; crtc_addr <= ua[4:1]; crtc_din <= ud[15:8]; end
+                // the vertical count, registers 0x0e (bit 8) and 0x0f, read in
+                // the high byte; the others read 0, as before
+                if( !uwe && ua[4:2] == 3'b111 ) begin
+                    io_q <= { ua[1] ? vct[7:0] : { 7'd0, vct[8] }, 8'h00 };
+                    usrc <= R_IO;
+                end
             end else if( ub >= 24'hd50000 && ub < 24'hd50100 ) begin
                 if( uwe && ube[1] ) begin k55_we <= 1; k55_addr <= ua[6:1]; k55_din <= ud[15:8]; end
             end else if( ub >= 24'hd52000 && ub < 24'hd52020 ) begin
@@ -1192,7 +1208,10 @@ always @(posedge clk) begin
                 t1_sel <= ub[23:16] == 8'he8 ? T1_LC : ub[23:16] == 8'hf8 ? T1_LR : ub[23:16] == 8'hfc ? T1_LK : T1_LAN;
                 t1_a   <= ub[23:16] == 8'hfc ? { 1'b0, t1_bank[15:12], ua[7:1] } : ua[12:1];
                 t1_d   <= ud;
-                if( uwe ) t1_we <= ube;
+                if( uwe ) begin
+                    if( t1v_snap && (ub[23:16] == 8'he8 || ub[23:16] == 8'hf8) ) t1_wpend <= 1'b1;
+                    else t1_we <= ube;
+                end
                 usrc <= R_T1; ucnt <= 3'd2;
 `endif
             end else if( ub >= 24'hd90000 && ub < 24'hd98000 ) begin
@@ -1212,7 +1231,11 @@ always @(posedge clk) begin
             end
         end
     end
-    U_WAIT: if( ucnt != 0 ) begin
+    U_WAIT: if( t1_wpend ) begin
+`ifdef GX_T1
+        if( !t1v_snap ) begin t1_we <= ube_r; t1_wpend <= 1'b0; end
+`endif
+    end else if( ucnt != 0 ) begin
         esc_start <= 0;
         ucnt <= ucnt - 3'd1;
         if( ucnt == 3'd1 ) begin
@@ -1354,18 +1377,16 @@ always @(posedge clk) begin
         lvbl_l <= vid_lvbl;
         int1_l <= int1; int2_l <= int2;
         // eeprom_w: syncen makes each IRQ fire at least once after it is enabled,
-        // except that a write from that level's own handler (the CPU's mask
-        // at that level) does not arm it: Gokujou Parodius's vblank handler
-        // writes 90 then 91 every frame, and its EEPROM save writes 90 to
-        // stop the handler, whose d56000 write drops the 93C46's CS. With the
-        // handler's 91 arming syncen the interrupt kept coming and writes
-        // were lost. Twin Bee arms it from its main program (d1, mask 0).
+        // except that a write arms level 1 or 2 only while the K053252 has had
+        // that interrupt acknowledged (INT1/INT2 low; mamedev/mame#16401). The
+        // vblank handlers write the register before they acknowledge, the main
+        // program after: Gokujou Parodius's handler writes 90 then 91 every
+        // frame and its EEPROM save writes 90 to stop it, whose d56000 write
+        // drops the 93C46's CS; Twin Bee and Salamander 2 arm it from the main
+        // program (d1) and clear the enable before the vblank they wait for.
         if( take && uwe && ub >= 24'hd56000 && ub < 24'hd56004
             && !ub[1] && ube[0] && ud[7] )
-            syncen <= syncen | { 3'b000, ud[4:3],
-                                 ud[2] && cpu_sr[2:0] != 3'd3,
-                                 ud[1] && cpu_sr[2:0] != 3'd2,
-                                 ud[0] && cpu_sr[2:0] != 3'd1 };
+            syncen <= syncen | { 3'b000, ud[4:2], ud[1] && !int2, ud[0] && !int1 };
         // dmastart_callback at vblank, dmaend_callback dma_len later
         if( !vid_lvbl && lvbl_l ) begin
             rdport1_3 <= rdport1_3 | 8'h02;

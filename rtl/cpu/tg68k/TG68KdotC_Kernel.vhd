@@ -119,6 +119,9 @@
 -- output for the board's debug probe. Lines marked [GX].                   --
 -- Modified 2026-10-01: stop_out, high while STOP waits for an interrupt, --
 -- for the save-state engine. Lines marked [GX].                          --
+-- Modified 2026-10-11: DIVL_Wait, cycles the kernel is held (as by wait  --
+-- states) as a 32-bit DIVS.L/DIVU.L starts; default 0, upstream timing.    --
+-- Lines marked [GX].                                                       --
 ------------------------------------------------------------------------------
 
 library ieee;
@@ -136,7 +139,8 @@ entity TG68KdotC_Kernel is
 		BitField : integer := 2;			--0=>no,			1=>yes,				2=>switchable with CPU(1) 
 		
 		BarrelShifter : integer := 1;		--0=>no,			1=>yes,				2=>switchable with CPU(1)  
-		MUL_Hardware : integer := 1		--0=>no,			1=>yes,  
+		MUL_Hardware : integer := 1;		--0=>no,			1=>yes,  
+		DIVL_Wait : integer := 0			-- [GX] extra cycles for a 32-bit DIVS.L/DIVU.L
 		);
 	port(clk						: in std_logic;
 		nReset					: in std_logic;			--low active
@@ -389,6 +393,11 @@ architecture logic of TG68KdotC_Kernel is
 	signal exec					: bit_vector(lastOpcBit downto 0);
 
 	signal micro_state		: micro_states;
+
+	SIGNAL div_wait            : integer range 0 to 255 := 0;  -- [GX] DIVL_Wait's count
+	SIGNAL divl_done           : std_logic := '0';              -- [GX] this divide has waited
+	SIGNAL divl_hold           : std_logic := '0';              -- [GX] holding the kernel
+	SIGNAL clkena_cpu          : std_logic := '0';              -- [GX] clkena_in less divl_hold
 	signal next_micro_state	: micro_states;
 	
 
@@ -473,7 +482,32 @@ ALU: TG68K_ALU
 	memmaskmux <= memmask when addr(0) = '1' else memmask(4 downto 0) & '1';
 	nUDS <= memmaskmux(5);
 	nLDS <= memmaskmux(4);
-	clkena_lw <= '1' WHEN clkena_in='1' AND memmaskmux(3)='1' ELSE '0';
+	clkena_lw <= '1' WHEN clkena_cpu='1' AND memmaskmux(3)='1' ELSE '0';	-- [GX] clkena_cpu
+
+-- [GX] DIVL_Wait: a 32-bit divide holds the kernel in div1 for DIVL_Wait
+-- of clkena_in's cycles before it runs, as wait states would
+	divl_hold <= '1' WHEN DIVL_Wait/=0 AND micro_state=div1 AND opcode(15)='0' AND DIV_Mode/=0 AND divl_done='0' ELSE '0';
+	clkena_cpu <= clkena_in AND NOT divl_hold;
+PROCESS (clk)
+	BEGIN
+		IF rising_edge(clk) THEN
+			IF Reset='1' THEN
+				div_wait <= 0;
+				divl_done <= '0';
+			ELSIF clkena_in='1' THEN
+				IF divl_hold='1' THEN
+					IF div_wait=DIVL_Wait-1 THEN
+						div_wait <= 0;
+						divl_done <= '1';
+					ELSE
+						div_wait <= div_wait+1;
+					END IF;
+				ELSIF micro_state/=div1 THEN
+					divl_done <= '0';
+				END IF;
+			END IF;
+		END IF;
+	END PROCESS;
 	clr_berr <= '1' WHEN setopcode='1' AND trap_berr='1' ELSE '0';
 	
 	PROCESS (clk, nReset)
@@ -482,7 +516,7 @@ ALU: TG68K_ALU
 			syncReset <= "0000";
 			Reset <= '1'; 
 	  	ELSIF rising_edge(clk) THEN
-			IF clkena_in='1' THEN
+			IF clkena_cpu='1' THEN	-- [GX] clkena_cpu
 				syncReset <= syncReset(2 downto 0)&'1';
 				Reset <= NOT syncReset(3);	
 			END IF;
@@ -517,7 +551,7 @@ PROCESS (clk, long_done, last_data_in, data_in, addr, long_start, memmaskmux, me
 			END IF;	
 			IF Reset='1' THEN
 				last_data_read <= (OTHERS => '0');
-			ELSIF clkena_in='1' THEN
+			ELSIF clkena_cpu='1' THEN	-- [GX] clkena_cpu
 				IF state="00" OR exec(update_ld)='1' THEN 
 					last_data_read <= data_read;
 					IF state(1)='0' AND memmask(1)='0' THEN
@@ -975,7 +1009,7 @@ PROCESS (clk, setdisp, memaddr_a, briefdata, memaddr_delta, setdispbyte, datatyp
 		END IF;	 
 		
 		IF rising_edge(clk) THEN
-			IF clkena_in='1' THEN
+			IF clkena_cpu='1' THEN	-- [GX] clkena_cpu
 				IF exec(get_2ndOPC)='1' OR (state="10" AND memread(0)='1') THEN
 					tmp_TG68_PC <= addr;
 				END IF;
@@ -1114,7 +1148,7 @@ PROCESS (clk, IPL, setstate, addrvalue, state, exec_write_back, set_direct_data,
 				exec_write_back <= '0';
 			ELSE
 --				IPL_nr <= NOT IPL;
-				IF clkena_in='1' THEN
+				IF clkena_cpu='1' THEN	-- [GX] clkena_cpu
 					memmask <= memmask(3 downto 0)&"11";
 					memread <= memread(1 downto 0)&memmaskmux(5 downto 4);
 --					IF wbmemmask(5 downto 4)="11" THEN	

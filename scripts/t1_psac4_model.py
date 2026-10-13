@@ -131,7 +131,7 @@ def roz_rows(st, rows, tiles_c, tiles_h):
     return col, hgt
 
 
-def render(st, tiles_c, tiles_h):
+def render(st, tiles_c, tiles_h, mame_fill=False):
     """type1_draw_terrain: pen (0xffff = nothing) and parameter, 512x512 by
     screen-bitmap (y, x)."""
     pen = np.full((512, 512), 0xffff, dtype=np.uint16)
@@ -170,9 +170,12 @@ def render(st, tiles_c, tiles_h):
             continue
         for xx in np.nonzero(on)[0]:
             t, lim = top[xx], limit[xx]
-            if t < lim:
-                pen[t:lim, xx] = pv[xx]
-                par[t:lim, xx] = p
+            # a column's face ends at its own ground row; MAME's fills on
+            # down to what nearer lines left, over Open Golf's water
+            b = lim if mame_fill else min(lim, ground + 1)
+            if t < b:
+                pen[t:b, xx] = pv[xx]
+                par[t:b, xx] = p
             limit[xx] = min(lim, t)
     return pen, par
 

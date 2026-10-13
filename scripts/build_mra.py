@@ -225,7 +225,7 @@ T4 = {"rungun2", "slamdnk2", "rushhero", "vsnetscr", "vsnetscreb", "vsnetscru", 
 T1 = {"racinfrc", "racinfrcu", "opengolf", "opengolf2", "ggreats2"}
 
 # Sets whose .mra goes in releases/_Unsupported: built, not yet playable
-UNSUPPORTED = {"opengolf", "opengolf2", "ggreats2"}
+UNSUPPORTED = set()
 
 # The sets with a K053936 whose tiles (gfx3) and map or height tiles (gfx4)
 # follow the sound board's RAMs (psac_base, psmap_base)
