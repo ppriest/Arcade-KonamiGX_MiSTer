@@ -12,8 +12,6 @@
 // Sound: the sound board (gx_sound): the 68000 running the game's sound
 // program, two K054539s and the TMS57002, behind the K056800 mailbox.
 //
-// Not yet: EEPROM persistence (the 93C46 starts blank and the game
-// initialises it).
 //
 // The instrumented revision (KonamiGX_stp, DEBUG_ISSP) carries one ISSP
 // probe, read by scripts/read_issp.py: the layout is in the instance below
