@@ -288,26 +288,28 @@ BUTTON_NAMES = {
     "sexyparoa": ["Power Up", "Shot", "Missile"],  # Sexy Parodius (ver AAA)
     "tokkae":    ["Swap Ball", "Line Up"],  # Taisen Tokkae-dama (ver JAA)
     "tkmmpzdm":  ["Rotate Right", "Rotate Left"],  # Tokimeki Memorial Taisen Puzzle-dama (ver JAB)
-    # history.xml (command.dat: Weak/Medium/Strong)
     "dragoona":  ["Light Punch", "Medium Punch", "Heavy Punch", "Light Kick", "Medium Kick", "Heavy Kick"],  # Dragoon Might (ver AAB)
     "dragoonj":  ["Light Punch", "Medium Punch", "Heavy Punch", "Light Kick", "Medium Kick", "Heavy Kick"],  # Dragoon Might (ver JAA)
-    "winspike":  ["Button A", "Button B", "Button C"],  # Winning Spike (ver EAA) -- Context sensitive
-    "winspikea": ["Button A", "Button B", "Button C"],  # Winning Spike (ver AAA) -- Context sensitive
-    "winspikej": ["Button A", "Button B", "Button C"],  # Winning Spike (ver JAA) -- Context sensitive
+    "winspike":  ["Normal Spike", "Feint", "Power Spike"],  # Winning Spike (ver EAA) -- Context sensitive
+    "winspikea": ["Normal Spike", "Feint", "Power Spike"],  # Winning Spike (ver AAA) -- Context sensitive
+    "winspikej": ["Normal Spike", "Feint", "Power Spike"],  # Winning Spike (ver JAA) -- Context sensitive
     "salmndr2":  ["Shot", "Option", "-"],  # Salamander 2 (ver JAA)
     "salmndr2a": ["Shot", "Option", "-"],  # Salamander 2 (ver AAB)
     "le2":       ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver EAA)
     "le2u":      ["Trigger", "Reload"],  # Lethal Enforcers II: Gun Fighters (ver UAA)
     "le2j":      ["Trigger", "Reload"],  # Lethal Enforcers II: The Western (ver JAA)
-    # MAME: the gas an analogue pedal (AN1), Brake BUTTON2, Gear Shift BUTTON3
-    # (a toggle); the core takes the pedal as button 1 or the stick
     "racinfrc":  ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver EAC)
     "racinfrcu": ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver UAB)
-    # MAME names these; four players, one button each
-    "opengolf":  ["Shoot"],  # Konami's Open Golf Championship (ver EAE)
-    "opengolf2": ["Shoot"],  # Konami's Open Golf Championship (ver EAD)
-    # MAME's names; Direction and Club left/right are on the stick (KonamiGX.sv)
+    "opengolf":  ["Advice", "Stance Left", "Stance Right"],  # Konami's Open Golf Championship (ver EAE)
+    "opengolf2": ["Advice", "Stance Left", "Stance Right"],  # Konami's Open Golf Championship (ver EAD)
     "ggreats2":  ["Advice", "Stance Left", "Stance Right"],  # Golfing Greats 2 (ver JAC)
+    **{k: ["Shoot/Slide", "Short Pass/Jump", "Cross"]
+       for k in ["soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"]},
+    **{k: ["Shoot/Block", "Pass/Steal", "Select Player"]
+       for k in ["rungun2", "slamdnk2"]},
+    "rushhero": ["Action", "Select", "-"],
+    **{k: ["Shoot/Long Kick", "Short Pass", "Long Pass/Cross"]
+       for k in ["vsnetscr", "vsnetscreb", "vsnetscru", "vsnetscra", "vsnetscrj"]},
 }
 
 
