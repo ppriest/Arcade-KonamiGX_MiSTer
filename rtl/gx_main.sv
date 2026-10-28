@@ -562,10 +562,16 @@ wire        int1, int2, obj_dma_busy, obj_ln_short;
 `ifdef GX_T34
 wire        obj_bank = t3_bank[0];  // type3_bank_w: the list at words 0x800-0xfff
 `else
-wire        obj_bank = 1'b0;
+// objscan (wrport1_0 bit 6): the half of sprite RAM the DMA copies. The 056734
+// sets double-buffer the list, the game passing the half to write in each
+// command and pointing objscan at it before vblank; MAME's C ESC writes the
+// first half only, so it is used for the sets that run the chip.
+wire        obj_bank = esc_chip & wrport1_0[6];
 `endif
 reg         obj_dma_trig;      // start the sprite DMA (below: the ESC has finished)
 wire        esc_busy, esc_irq, esc_req, esc_we, esc_ack;
+wire        k734_busy;
+wire        list_busy = esc_busy | k734_busy;   // either ESC is writing the sprite list
 
 // Type 1's terrain (gx_t1_psac4 in gx_video): the registers it reads and
 // the second ports of the RAMs it reads (declared before gx_video)
@@ -593,7 +599,7 @@ gx_video u_video (
     .spr_ram_cs, .spr_ram_we, .spr_ram_addr, .spr_ram_din(bus_d16), .spr_ram_dout,
     .k46_cs, .k46_we(k46_cs), .k46_addr, .k46_din(bus_d16), .k46_dsn,
     .k47_we, .k47_addr, .k47_din(bus_d16), .wrport2, .primode, .tile_bpp, .obj_layout, .obj_pri_raw, .vis_x0, .vis_w, .obj_hadj, .vis_y0, .obj_vadj,
-    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(esc_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip, .spr_mix_on,
+    .obj_dma_trig(obj_dma_trig), .obj_dma_hold(list_busy), .dbg_mix, .dbg_shd, .dbg_line, .tm_blank_skip, .spr_mix_on,
     .obj_rom_addr, .obj_rom_cs, .obj_rom_ok, .obj_rom_data, .obj_pf_addr, .obj_pf_cs,
     .rmrd_addr, .tile_gfx_bank,
     .k55_we, .k55_addr, .k55_din, .k338_we, .k338_addr, .k338_din(bus_d16),
@@ -676,7 +682,7 @@ wire [15:0] k734_dout;
 k056734 u_esc734 (
     .clk, .rst(rst | ~esc_chip),
     .s10(esc_s10), .s11n(esc_s11n), .dxor(esc_xor), .dlanes(esc_lanes),
-    .mail_we(k734_mail_we), .mail_data(k734_mail), .irq(k734_irq),
+    .mail_we(k734_mail_we), .mail_data(k734_mail), .irq(k734_irq), .busy(k734_busy),
     .m_req(k734_req), .m_we(k734_we), .m_addr(k734_addr), .m_be(k734_be), .m_dout(k734_dout),
     .m_din(u_din), .m_ack(k734_ack),
     .hold(ss_freeze), .ss_hi(ss_en && ss_sel == 4'd7), .ss_lo(ss_en && ss_sel == 4'd8), .ss_rg(ss_en && ss_sel == 4'd9),
@@ -685,7 +691,7 @@ k056734 u_esc734 (
 );
 `else
 // the Type 3/4 and Type 1 bitstreams have no 056734 (none of their sets carries one)
-assign k734_irq = 1'b0; assign k734_req = 1'b0; assign k734_we = 1'b0;
+assign k734_irq = 1'b0; assign k734_busy = 1'b0; assign k734_req = 1'b0; assign k734_we = 1'b0;
 assign k734_addr = 23'd0; assign k734_be = 2'b00; assign k734_dout = 16'd0;
 assign ss_rd_k734 = 16'd0;
 `endif
@@ -1339,10 +1345,11 @@ always @(posedge clk) begin
 end
 
 // The sprite DMA against the ESC: the K053246 starts its copy two lines after
-// vblank, and this ESC -- unlike MAME's, which runs in no time -- may still be
-// writing the list then. jt053246_dma holds off while esc_busy; this starts it
-// as soon as the ESC finishes, so the frame gets a whole list a little late
-// rather than half of the last one and half of this.
+// vblank, and either ESC -- gx_esc, or the 056734 when the game kicks it late
+// in the frame -- may still be writing the list then. MAME 0.289's ESC runs
+// in no time. jt053246_dma holds off while list_busy; this starts it as soon
+// as the list is done, so the frame gets a whole list a little late rather
+// than the last one. Whether the board's K053246 waits is not known.
 reg        dma_pend, lvbl_dt, hs_dt;
 reg  [1:0] hs_cnt;
 always @(posedge clk) begin
@@ -1354,9 +1361,9 @@ always @(posedge clk) begin
         if( !vid_lvbl && lvbl_dt ) hs_cnt <= 0;                       // vblank began
         else if( vid_hs && !hs_dt && hs_cnt != 2'd3 ) begin
             hs_cnt <= hs_cnt + 1'd1;
-            if( hs_cnt == 2'd1 && esc_busy ) dma_pend <= 1;           // the copy's moment, held off
+            if( hs_cnt == 2'd1 && list_busy ) dma_pend <= 1;           // the copy's moment, held off
         end
-        if( dma_pend && !esc_busy ) begin dma_pend <= 0; obj_dma_trig <= 1; end
+        if( dma_pend && !list_busy ) begin dma_pend <= 0; obj_dma_trig <= 1; end
         if( ss_commit ) { dma_pend, hs_cnt, lvbl_dt, hs_dt } <= ss_bq[119:115];
     end
 end
@@ -1488,14 +1495,30 @@ assign dbg_esc = { cst == C_ESC, esc_busy };
 reg  [ 7:0] objset1_m, objset1_vbl, objset1_dma;
 reg  [11:0] c_dma, c_vbl, c_vbl_en, c_short, c_short_f, c_short_last;
 reg  [ 7:0] c_dma_esc;                       // DMA starts while the ESC is writing the list
+// stale: DMA starts with no new list since the last -- no gx_esc completion
+// and no 056734 write to sprite RAM (its sets need not take its IRQ) -- so
+// the frame shows the list before again; held: copies dma_pend made wait.
+// sw_age: clocks since the 056734's last sprite RAM write; a copy within
+// three lines of one counts as during (esc_busy is gx_esc's alone, so the
+// hold above does not see the chip)
+reg  [11:0] c_dma_stale, c_dma_held;
+reg  [13:0] sw_age;
+reg         esc_new, dma_pend_l;
+wire        k734_spr_w = k734_ack && k734_we && k734_addr[23:14] == 10'b1101_0010_00;   // 0xd20000-0xd23fff
 reg         dma_busy_l, lvbl_obs;
 always @(posedge clk) begin
     dma_busy_l <= obj_dma_busy;
     lvbl_obs   <= vid_lvbl;
+    dma_pend_l <= dma_pend;
     if( k46_cs && k46_addr[2:1] == 2'd2 && !k46_dsn[0] ) objset1_m <= bus_d16[7:0];
+    sw_age <= k734_spr_w ? 14'd0 : &sw_age ? sw_age : sw_age + 1'd1;
+    if( esc_irq || k734_spr_w ) esc_new <= 1;
+    if( dma_pend && !dma_pend_l ) c_dma_held <= c_dma_held + 1'd1;
     if( obj_dma_busy && !dma_busy_l ) begin
         c_dma <= c_dma + 1'd1; objset1_dma <= objset1_m;
-        if( esc_busy ) c_dma_esc <= c_dma_esc + 1'd1;
+        if( esc_busy || sw_age < 14'd9216 ) c_dma_esc <= c_dma_esc + 1'd1;
+        if( !esc_new && !esc_irq && !k734_spr_w ) c_dma_stale <= c_dma_stale + 1'd1;
+        esc_new <= 0;
     end
     if( !vid_lvbl && lvbl_obs ) begin
         c_vbl <= c_vbl + 1'd1; objset1_vbl <= objset1_m;
@@ -1507,7 +1530,7 @@ always @(posedge clk) begin
         c_short_f <= c_short_f + 1'd1;
     end
 end
-assign dbg_obj = { c_dma_esc, c_short_last, c_short, objset1_dma, objset1_vbl, objset1_m, 4'd0, c_vbl_en, c_vbl, c_dma };
+assign dbg_obj = { c_dma_esc, c_short_last, c_short, 4'd0, c_dma_held, c_dma_stale, c_vbl_en, c_vbl, c_dma };
 
 // The last write to K054338 register 14's high byte (0xd8001c): on the
 // board that byte is lost (tkmmpzdm's select screen), while the byte

@@ -32,6 +32,13 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGX_20261028** (new RBF)
+  * Fix: the games with the ESC chip (Konami 056734) update their sprites every frame, not every
+    other frame: the sprite list is double-buffered and objscan (`d56000` bit 6) picks the half
+    shown ([docs/MAME_KLUDGES.md](docs/MAME_KLUDGES.md))
+  * The sprite copy waits for the ESC chip to finish the list when the game starts it late in the
+    frame
+
 * **Arcade-KonamiGX_20261013** / **Arcade-KonamiGXT1_20261013** (new RBF)
   * Golf promoted to working: Konami's Open Golf Championship and Golfing Greats 2
     * The lakes and their reflections show: a column's fill stops at its own ground row

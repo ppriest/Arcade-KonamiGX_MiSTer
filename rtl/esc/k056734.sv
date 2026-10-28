@@ -40,6 +40,7 @@ module k056734 (
     input             mail_we,      // the CPU's 32-bit write to 0xCC0000
     input      [23:0] mail_data,
     output reg        irq,          // one clock, on s6 bit 1 rising
+    output reg        busy,         // running a transaction (below)
 
     output reg        m_req,
     output reg        m_we,
@@ -306,6 +307,23 @@ wire [31:0] mskn = ~msk;
 
 reg [32:0] r33;
 reg [31:0] r32;
+
+// busy: from a kick until the firmware fetches the instruction it was polling
+// at again with the mailbox empty (sexyparo's kernel polls at 0x178-0x179).
+// The watchdog (5.5 ms at 48 MHz) frees a sprite DMA held on it should a kick
+// land outside the poll loop, as in the loader or after a state load.
+reg  [15:0] idle_pc;
+reg  [17:0] busy_t;
+always @(posedge clk) begin
+    if( rst || (ss_m && ss_rg && ss_we) ) busy <= 0;
+    else if( mail_we && mail_data != 24'd0 && run ) begin
+        if( !busy ) idle_pc <= pc;
+        busy <= 1; busy_t <= 0;
+    end else if( busy ) begin
+        busy_t <= busy_t + 1'd1;
+        if( (st == S_F0 && pc == idle_pc && mail == 0) || &busy_t ) busy <= 0;
+    end
+end
 
 always @(posedge clk) begin
     lm_we <= 0; rf_we <= 0; hx_go <= 0; irq <= 0;

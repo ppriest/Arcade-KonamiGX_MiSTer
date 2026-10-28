@@ -26,7 +26,7 @@ fi
 
 [ -d sys ] || { echo "run me from the repository root"; exit 1; }
 
-GEN="SR_Read=2 VBR_Stackframe=2 extAddr_Mode=2 MUL_Mode=2 DIV_Mode=2 BitField=2 BarrelShifter=0 MUL_Hardware=1"
+GEN="SR_Read=2 VBR_Stackframe=2 extAddr_Mode=2 MUL_Mode=2 DIV_Mode=2 BitField=2 BarrelShifter=0 MUL_Hardware=1 DIVL_Wait=75"
 OUT=obj_verilator/tg68k_ghdl
 SRC=rtl/cpu/tg68k
 mkdir -p "$OUT"

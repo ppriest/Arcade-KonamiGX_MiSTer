@@ -108,7 +108,7 @@ module gx_video #(
     // 0x2fb - vdump, the scanner working ahead of the line; measured on le2u
     // f2400, which then differs from MAME in zoomed sprites only)
     input             obj_vmirror,
-    input             obj_bank,        // Type 3/4: the DMA copies the list from words 0x800-0xfff
+    input             obj_bank,        // the DMA copies the list from words 0x800-0xfff (Type 3/4 bank, Type 2 objscan)
     input       [1:0] obj_pri_raw,
     input      [ 9:0] obj_hadj,    // the set's K055673 dx - (-26), signed (gx_board_cfg)
     input      [ 4:0] vis_y0,      // the visible window's first bitmap row (16, or 0)

@@ -923,11 +923,11 @@ issp_probe #(.INSTANCE_ID("H"), .PROBE_W(64), .SOURCE_W(8)) u_issp_irq (
 // set, [61:53] entry e, [62] busy, [63] m_req, [71:64] completions, [79:72]
 // the CPU's SR high byte, [95:80] count2 (gx_main dbg_esc_st; fields_I)
 // Instance J, 64 bits: the sprite DMA -- [11:0] DMA starts, [23:12] vblanks,
-// [35:24] vblanks with DMAEN set, [47:40] OBJSET1 now, [55:48] at the last
-// vblank, [63:56] at the last DMA start (gx_main dbg_obj; fields_J)
+// [35:24] vblanks with DMAEN set, [47:36] DMA starts with no ESC completion
+// since the last, [59:48] DMA starts held for the ESC (gx_main dbg_obj; fields_J)
 // [75:64] short lines (the sprite scan had not finished when the next
 // line began), [87:76] short lines in the last whole frame, [95:88] sprite
-// DMA starts while the ESC was busy
+// DMA starts while the ESC was busy (gx_esc), or within three lines of the 056734's last sprite RAM write
 // Instance K, 64 bits: the ROM load -- [25:0] clk_sys cycles of the DDR3
 // copy, [51:26] cycles of the index-0 download, [52] the download streamed
 // bytes (the byte path ran), [53] the copy ran (fields_K)

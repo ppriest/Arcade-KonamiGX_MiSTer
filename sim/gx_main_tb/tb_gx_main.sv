@@ -439,7 +439,7 @@ end
 longint frame_clk = 0;
 always @(posedge clk) frame_clk++;
 // +ESC_LOG=n: how long each of the first n ESC commands holds the CPU
-int esc_log = 0; longint esc_t0 = 0; reg esc_bl = 0; int esc_fr_clk = 0, esc_fr_n = 0;
+int esc_log = 0; longint esc_t0 = 0, esc_vbl_clk = 0; reg esc_bl = 0, esc_dp = 0; int esc_fr_clk = 0, esc_fr_n = 0;
 int esc_nw = 0, esc_nrom = 0, esc_nram = 0;
 int esc_af = 0; string esc_afn;
 initial if ($value$plusargs("ESC_ADDRS=%s", esc_afn)) esc_af = $fopen(esc_afn, "w");
@@ -461,8 +461,8 @@ always @(posedge clk) begin
     if (!dut.esc_busy && esc_bl) begin
         esc_fr_n++;
         if (esc_log > 0) begin
-            $display("ESCLOG f%0d busy %0d clocks: %0d ROM reads, %0d RAM reads, %0d writes",
-                     frame, frame_clk - esc_t0, esc_nrom, esc_nram, esc_nw);
+            $display("ESCLOG f%0d busy %0d clocks from %0d after vblank: %0d ROM reads, %0d RAM reads, %0d writes",
+                     frame, frame_clk - esc_t0, esc_t0 - esc_vbl_clk, esc_nrom, esc_nram, esc_nw);
             esc_log--;
         end
     end
@@ -470,6 +470,10 @@ always @(posedge clk) begin
         $display("ESCFRAME f%0d commands %0d busy %0d clocks", frame, esc_fr_n, esc_fr_clk);
     end
     if (!vid_lvbl && lvbl_st) begin esc_fr_clk = 0; esc_fr_n = 0; end
+    if (!vid_lvbl && lvbl_st) esc_vbl_clk = frame_clk;
+    if (esc_log != 0 && dut.dma_pend && !esc_dp) $display("DMAHOLD f%0d at %0d after vblank", frame, frame_clk - esc_vbl_clk);
+    if (esc_log != 0 && dut.obj_dma_trig) $display("DMATRIG f%0d at %0d after vblank", frame, frame_clk - esc_vbl_clk);
+    esc_dp <= dut.dma_pend;
 end
 int dsp_qlog = 0; reg dsp_ql = 0;
 initial void'($value$plusargs("DSP_QLOG=%d", dsp_qlog));

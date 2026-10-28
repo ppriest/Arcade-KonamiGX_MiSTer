@@ -76,9 +76,8 @@ set fields_J {
     {dma_starts       0  11 dec}
     {vblanks         12  23 dec}
     {vbl_dmaen       24  35 dec}
-    {objset1         40  47 hex}
-    {objset1_vbl     48  55 hex}
-    {objset1_dma     56  63 hex}
+    {dma_stale       36  47 dec}
+    {dma_held        48  59 dec}
     {short_lines     64  75 dec}
     {short_last_frm  76  87 dec}
     {dma_during_esc  88  95 dec}
