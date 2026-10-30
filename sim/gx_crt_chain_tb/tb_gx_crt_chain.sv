@@ -6,6 +6,7 @@
 // raster instead of written in:
 //     scripts/run_verilator.sh gx_crt_chain_tb +REGS=sim/gx_crt_chain_tb/daiskiss.hex +PDIV=8
 //     scripts/run_verilator.sh gx_crt_chain_tb +REGS=sim/gx_crt_chain_tb/dragoonj.hex +PDIV=6
+//     scripts/run_verilator.sh gx_crt_chain_tb +REGS=sim/gx_crt_chain_tb/soccerss.hex +PDIV=4
 // REGS: the 16 K053252 registers a game writes (byte 2n of a capture's
 // reg_k053252.bin); PDIV: 48 MHz clocks a pixel (8 = 6 MHz, 6 = 8 MHz).
 
@@ -53,7 +54,7 @@ logic       ce;
 logic [7:0] r, g, b;
 logic       hs, vs, hb, vb;
 
-gx_crt_chain dut (
+gx_crt_chain #(.LINE_AW(11)) dut (
     .clk(clk), .ce_pix(ce_pix), .pxl_div(4'(pdiv)),
     .active(active), .scale_en(scale_en),
     .hoffset(hoffset), .voffset(voffset), .hsize(hsize),

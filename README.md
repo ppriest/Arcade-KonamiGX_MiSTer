@@ -32,6 +32,11 @@ DE10-nano.
 
 ## History
 
+* **Arcade-KonamiGXT34_20261030** (new RBF)
+  * Fix: CRT Adjust no longer breaks the left of the picture in the Type 3/4 games
+    ([#10](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/10)): their 768-pixel line at
+    12 MHz overran CRT Adjust's 512-pixel line buffer
+
 * **Arcade-KonamiGX_20261028** (new RBF)
   * Fix: the games with the ESC chip (Konami 056734) update their sprites every frame, not every
     other frame: the sprite list is double-buffered and objscan (`d56000` bit 6) picks the half

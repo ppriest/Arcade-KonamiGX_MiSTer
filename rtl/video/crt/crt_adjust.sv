@@ -5,8 +5,9 @@
 //  licence as this project. Do not edit locally: re-vendor from upstream so
 //  fixes there (e.g. the 97-entry H-Position wrap) carry over.
 //
-//  One local fix (LOCAL FIX below): hoff_s's ?: must stay signed, or negative
-//  H-Position is zero-extended and blanks the picture.
+//  Local changes (LOCAL FIX below): hoff_s's ?: must stay signed, or negative
+//  H-Position is zero-extended and blanks the picture; AW is a parameter, as a
+//  bank of 1 << (AW-1) samples must hold the whole line, HSync to HSync.
 //============================================================================
 //============================================================================
 //  crt_adjust.sv  —  "CRT Adjust"
@@ -110,7 +111,8 @@
 module crt_adjust #(
     parameter VTOTAL   = 263,
     parameter HTOTAL   = 384,               // line length in pixels (for the HSync shreg)
-    parameter HPOS_MODE = `HPOS_CONTENTSHIFT // see HPOS_MODE block above
+    parameter HPOS_MODE = `HPOS_CONTENTSHIFT, // see HPOS_MODE block above
+    parameter integer AW = 10               // LOCAL FIX: 1 << AW samples, two banks of a line
 )
 (
     input              clk,
@@ -152,7 +154,6 @@ module crt_adjust #(
     output wire        hs_ref_out
 );
 
-    localparam integer AW = 10;  // 1024 samples per line (ping-pong banks)
 
     // ------------------------------------------------------------------
     //  Input pipeline @ pxl_cen (for latency matching in bypass mode)

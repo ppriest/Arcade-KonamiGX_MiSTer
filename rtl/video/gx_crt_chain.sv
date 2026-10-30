@@ -7,10 +7,16 @@
 //     16 MHz on the 48 MHz clk), so the clocks a pixel are an input; H-Size
 //     counts in eighths of a clock, which is Psikyo's +-31% at 8 MHz and
 //     +-23% at 6 MHz;
-//   * no V-Size: its line ring (30 M10K) went to the ESC's local memory.
+//   * no V-Size: its line ring (30 M10K) went to the ESC's local memory;
+//   * LINE_AW sizes crt_adjust's line buffer: a bank holds 1 << (LINE_AW-1)
+//     pixels, and must hold the line from HSync to HSync. 10 holds 512, the
+//     6 and 8 MHz rasters (384 and 512); the Type 3/4 sets run 768 at 12 MHz
+//     (soccerss's K053252), which need 11. A shorter bank wraps and the line's
+//     end overwrites its start: a band in the picture's left part.
 
 module gx_crt_chain #(
-    parameter int VTOTAL   = 264        // MAME's set_raw, and daiskiss's K053252 (ROADMAP)
+    parameter int VTOTAL   = 264,       // MAME's set_raw, and daiskiss's K053252 (ROADMAP)
+    parameter int LINE_AW  = 10
 ) (
     input  logic              clk,
     input  logic              ce_pix,
@@ -59,7 +65,8 @@ module gx_crt_chain #(
     crt_adjust #(
         .VTOTAL   (VTOTAL),
         .HTOTAL   (512),                // HPOS_MODE 1 does not use it
-        .HPOS_MODE(1)
+        .HPOS_MODE(1),
+        .AW       (LINE_AW)
     ) u_crt_adjust (
         .clk      (clk),
         .pxl_cen  (vz_ce),

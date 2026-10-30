@@ -1075,7 +1075,12 @@ wire signed [8:0] crt_hoffset = crt_hpos_ix <= 7'd48 ? $signed({ 2'b00, crt_hpos
 wire       crt_ce, crt_hs, crt_vs, crt_hb, crt_vb;
 wire [7:0] crt_r, crt_g, crt_b;
 
-gx_crt_chain u_crt (
+`ifdef GX_T34
+localparam CRT_LINE_AW = 11;       // a 768-pixel line (rtl/video/gx_crt_chain.sv)
+`else
+localparam CRT_LINE_AW = 10;
+`endif
+gx_crt_chain #(.LINE_AW(CRT_LINE_AW)) u_crt (
 	.clk(clk_vid), .ce_pix(pxl_cen), .pxl_div,
 	.active(crt_on), .scale_en(crt_scale),
 	.hoffset(crt_hoffset), .voffset($signed(status[88:83])), .hsize($signed(status[93:89])),

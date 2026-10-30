@@ -18,5 +18,8 @@ Marked `LOCAL FIX` in the file.
 - `crt_adjust.sv` (Psikyo's): `hoff_s`'s `?:` kept signed. Mixing a signed and an unsigned operand
   makes the whole expression unsigned, so a negative H-Position was zero-extended and blanked the
   picture.
+- `crt_adjust.sv`: the line buffer's address width `AW` is a parameter (upstream: a localparam
+  of 10). A bank holds `1 << (AW-1)` pixels from HSync to HSync; the Type 3/4 sets' 768-pixel
+  line at 12 MHz overran 512 and overwrote the line's start.
 
 The glue, `rtl/video/gx_crt_chain.sv`, is this project's, after Psikyo's `crt_chain.sv`.
