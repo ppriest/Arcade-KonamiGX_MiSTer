@@ -2,9 +2,12 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """A capture from the board, in scripts/mame/capture.lua's layout.
 
-    python scripts/board_capture.py tkmmpzdm sel --vram-from tkmmpzdm-play2200
+    python scripts/board_capture.py tkmmpzdm sel --vram-from tkmmpzdm-play2200 \
+        --logs <log_path> <log_path> <log_path> <log_path>
 
-Reads, over JTAG (scripts/memdump.py, an instrumented build running):
+The logs are probe_issp's, one dump each (an instrumented build running;
+instance N, action "dump"), in any order; with none it prints the four calls.
+They hold
   * the video chips' registers from gx_main's register copy at 0xe00000,
     which keeps every write to them as capture.lua's write tap does
   * sprite RAM, palette and work RAM, which the CPU can read
@@ -14,8 +17,6 @@ palette.bin and workram.bin as a MAME capture. The tilemap VRAM is banked
 behind an 8 KB window, so it (and manifest.txt, reference.png) is copied
 from the MAME capture named by --vram-from: the video benches then render
 the board's registers, sprites and palette over MAME's tilemaps.
-
-Run it with nothing compiling (JTAG, WORKFLOW).
 """
 import argparse
 import shutil
@@ -25,6 +26,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 import memdump  # noqa: E402
+
+# The dumps: (first byte address, bytes)
+DUMPS = [(0xe00000, 2 * 0xd8), (0xd20000, 0x4000), (0xd90000, 0x8000), (0xc00000, 0x20000)]
 
 # (file, first byte address, last byte address, first word in the copy);
 # gx_main.sv's table
@@ -37,7 +41,6 @@ RANGES = [
     ("k055555",  0xd50000, 0xd500ff, 0x044),
     ("k054338",  0xd80000, 0xd8001f, 0x0c4),
 ]
-WORDS = 0xd8
 
 
 def main():
@@ -45,7 +48,18 @@ def main():
     ap.add_argument("set")
     ap.add_argument("name")
     ap.add_argument("--vram-from", required=True, help="a MAME capture under debug/ for the tilemaps")
+    ap.add_argument("--logs", nargs="*", default=[], help="probe_issp log_path of each dump")
     a = ap.parse_args()
+
+    got = {}
+    for log in a.logs:
+        at, data = memdump.parse(Path(log).read_text(encoding="utf-8", errors="replace"))
+        got[at] = data
+    missing = [(at, n) for at, n in DUMPS if at not in got or len(got[at]) < n]
+    if missing:
+        for at, n in missing:
+            print(f'probe_issp(core="KonamiGX", instance="N", action="dump", value="{at:x} {n // 2}")')
+        sys.exit("missing dumps: run the calls above and pass their log_path with --logs")
 
     src = REPO / "debug" / a.vram_from
     out = REPO / "debug" / f"{a.set}-board-{a.name}"
@@ -53,7 +67,7 @@ def main():
         shutil.rmtree(out)
     shutil.copytree(src, out)
 
-    regs = memdump.dump(0xe00000, 2 * WORDS)
+    regs = got[0xe00000]
     for name, lo, hi, w0 in RANGES:
         n = hi - lo + 1
         (out / f"reg_{name}.bin").write_bytes(regs[2 * w0: 2 * w0 + n])
@@ -63,9 +77,9 @@ def main():
     wr[0x2000:0x2004] = regs[2 * 0xd6: 2 * 0xd6 + 4]
     (out / "reg_wrport.bin").write_bytes(bytes(wr))
 
-    (out / "spriteram.bin").write_bytes(memdump.dump(0xd20000, 0x4000))
-    (out / "palette.bin").write_bytes(memdump.dump(0xd90000, 0x8000))
-    (out / "workram.bin").write_bytes(memdump.dump(0xc00000, 0x20000))
+    (out / "spriteram.bin").write_bytes(got[0xd20000][:0x4000])
+    (out / "palette.bin").write_bytes(got[0xd90000][:0x8000])
+    (out / "workram.bin").write_bytes(got[0xc00000][:0x20000])
     with open(out / "manifest.txt", "a") as f:
         f.write(f"board registers, sprites, palette, work RAM; tilemaps from {a.vram_from}\n")
     print(f"-> {out}")

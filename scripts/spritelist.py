@@ -3,7 +3,7 @@
 """Decode a sprite list -- the board's, dumped by scripts/memdump.py, or
 MAME's, from a capture -- and say what each active entry draws.
 
-    python scripts/memdump.py d20000 1000 debug/board/spriteram.bin
+    python scripts/memdump.py --from-log <probe_issp log_path> debug/board/spriteram.bin
     python scripts/spritelist.py debug/board/spriteram.bin
     python scripts/spritelist.py debug/daiskiss-f2400/spriteram.bin --top-left
 

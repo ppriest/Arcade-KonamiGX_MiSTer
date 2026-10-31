@@ -32,19 +32,25 @@ DE10-nano.
 
 ## History
 
-* **Arcade-KonamiGXT34_20261030** (new RBF)
+* **Arcade-KonamiGX_20261110**
+  * Fix: ESC and video rendering for Salamander 2 finally closing ([#9](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/9))
+  * Fix: Remove rom patch from Tokimeki
+  * Fix: Suggestion to review 054539 soundchip emulation versus Furrtek notes. Should be improved audio and close ([#4](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/4)
+  * All thanks to @niknakniknak
+
+* **Arcade-KonamiGXT34_20261030**
   * Fix: CRT Adjust no longer breaks the left of the picture in the Type 3/4 games
     ([#10](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/10)): their 768-pixel line at
     12 MHz overran CRT Adjust's 512-pixel line buffer
 
-* **Arcade-KonamiGX_20261028** (new RBF)
+* **Arcade-KonamiGX_20261028**
   * Fix: the games with the ESC chip (Konami 056734) update their sprites every frame, not every
     other frame: the sprite list is double-buffered and objscan (`d56000` bit 6) picks the half
     shown ([docs/MAME_KLUDGES.md](docs/MAME_KLUDGES.md))
   * The sprite copy waits for the ESC chip to finish the list when the game starts it late in the
     frame
 
-* **Arcade-KonamiGX_20261013** / **Arcade-KonamiGXT1_20261013** (new RBF)
+* **Arcade-KonamiGX_20261013** / **Arcade-KonamiGXT1_20261013**
   * Golf promoted to working: Konami's Open Golf Championship and Golfing Greats 2
     * The lakes and their reflections show: a column's fill stops at its own ground row
   * Fix: Racin' Force: the sound board passes its power-on test on the first boot (32-bit divides
@@ -164,7 +170,7 @@ Every Type 2 set in `konamigx.cpp` except the bootleg.
 | Twin Bee Yahhoo! / Magical Twin Bee | 1995 | 5bpp | 5bpp | ESC (056734) |
 | Sexy Parodius | 1996 | 5bpp | 5bpp | ESC (056734), with its weather effects; `UNEMULATED_PROTECTION` in MAME |
 | Taisen Tokkae-dama | 1996 | 6bpp | 5bpp | |
-| Tokimeki Memorial Taisen Puzzle-dama | 1995 | 6bpp | 5bpp | ESC (056734); MAME's ROM patch carried in the `.mra` |
+| Tokimeki Memorial Taisen Puzzle-dama | 1995 | 6bpp | 5bpp | ESC (056734); runs without MAME's ROM patch |
 | Dragoon Might | 1995 | 5bpp | 4bpp | 16 MB of sprites; six buttons; sprites can run out of line time |
 | Winning Spike | 1997 | 8bpp | 8bpp | Type 4 Xilinx protection |
 | Salamander 2 | 1996 | 6bpp | 6bpp | ESC (056734) |

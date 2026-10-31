@@ -117,6 +117,11 @@ If the answer turns out to be GPL-2.0-only, the fallback is a from-scratch K0545
 `sound/k054539.cpp` and furrtek's register notes — the notes and schematics are documentation and
 carry no such problem. That is a Phase 3 cost, and the roadmap records it as one.
 
+`rtl/sound/gx_k054539.sv` takes three facts from the notes and the ROM contents, as data, not
+code: the channel volume is 0x03 bits 6-0 at 0.75 dB a step (written as that formula, not the
+table), the group volumes 0x228-0x22B selected by 0x200 + 2n bits 1-0, and the 14 levels of the
+pan curve.
+
 ### MiSTer-devel/Template_MiSTer and `sys/` — GPL-2.0-or-later
 
 <https://github.com/MiSTer-devel/Template_MiSTer> — framework, `hps_io`, the scaler, `sys_top`.

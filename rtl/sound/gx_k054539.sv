@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // K054539, written from MAME's sound/k054539.cpp (BSD-3-Clause, Olivier
-// Galibert). furrtek's SiliconRE HDL is not used (THIRD-PARTY.md).
+// Galibert), with the dry level and the pan from furrtek's SiliconRE
+// register notes and ROM contents. Its HDL is not used (THIRD-PARTY.md).
 //
 // The CPU side, as k054539.cpp:
 //
@@ -36,12 +37,13 @@
 //   jumps to the loop point (0x08-0x0a) with 0x201 bit 0, and is read again
 //   there; one still there keys the channel off with a value of 0 and ends
 //   its steps. A DPCM nibble adds dpcm[n] to the value before, clamped.
-//   the value, times voltab[0x03] * pantab[pan], into each side; the
+//   the value, times the dry level and the pan, into each side; the
 //   position back into 0x0c-0x0e unless 0x22f bit 7 is set
 //
-// voltab[i] = 10^(-36i/64/20) / 4 and pantab[i] = sqrt(i/14), as tables in
-// fixed point (vt, Q24, and pt, Q16, below). MAME caps a side's volume at
-// 1.8, which with a gain of 1 is never reached.
+// The dry level and the pan are the chip's, not MAME's (dv and pc below):
+// MAME's voltab is 0.5625 dB a step over all of 0x03, has no group volumes,
+// and its pan is sqrt(i/14). MAME caps a side's volume at 1.8, which with a
+// gain of 1 is never reached.
 //
 // The reverb, as MAME: the RAM's first 16 KB are 0x2000 16-bit words
 // (little-endian, MAME's int16_t view on its host), a delay line. Each
@@ -132,6 +134,7 @@ wire [14:0] ram_a = { cur_ptr[16], cur_ptr[13:0] };   // (p & 0x3fff) | ((p & 0x
 (* ramstyle = "logic" *) reg [23:0] cpos  [0:7];     // 0x0c-0x0e, the position: read back from here
 (* ramstyle = "logic" *) reg [23:0] hpos  [0:7];     // positions written for the next key on
 (* ramstyle = "logic" *) reg [ 7:0] ctype [0:7];     // 0x200 + 2n: bits 3-2 the type, 5 reverse
+(* ramstyle = "logic" *) reg [ 6:0] gvol  [0:3];     // 0x228-0x22b bits 6-0, the group volumes
 reg  [7:0] lflag;                                     // 0x201 + 2n bit 0: loop
 reg  [7:0] act;                                       // 0x22c: the channels playing
 
@@ -158,8 +161,8 @@ reg  [23:0] tacc;
 reg         t_run;
 
 // ---------------------------------------------------------------- voices
-// voltab and pantab (MAME device_start), rounded: vt = 2^24 * 10^(-36i/64/20) / 4,
-// pt = 2^16 * sqrt(i/14)
+// voltab (MAME device_start), rounded: vt = 2^24 * 10^(-36i/64/20) / 4; the
+// reverb's send only
 function [22:0] vt( input [7:0] v );
     case( v )
         8'h00: vt = 23'd4194304;  8'h01: vt = 23'd3931288;  8'h02: vt = 23'd3684766;  8'h03: vt = 23'd3453702;
@@ -229,13 +232,88 @@ function [22:0] vt( input [7:0] v );
     endcase
 endfunction
 
-function [16:0] pt( input [3:0] p );
-    case( p )
-        4'd0: pt = 17'd0;  4'd1: pt = 17'd17515;  4'd2: pt = 17'd24770;  4'd3: pt = 17'd30337;
-        4'd4: pt = 17'd35030;  4'd5: pt = 17'd39165;  4'd6: pt = 17'd42903;  4'd7: pt = 17'd46341;
-        4'd8: pt = 17'd49541;  4'd9: pt = 17'd52546;  4'd10: pt = 17'd55388;  4'd11: pt = 17'd58091;
-        4'd12: pt = 17'd60675;  4'd13: pt = 17'd63152;  4'd14: pt = 17'd65536;
-        default: pt = 17'd0;
+// The dry level, from the chip (furrtek's SiliconRE, Konami/054539): the
+// channel's 0x03 bits 6-0 and the group volume it selects are each 0.75 dB a
+// step, 0x7f silent. dv(s) = 2^24 * 10^(-0.75s/20) / 4 for their sum s, at
+// MAME's level for 0.
+function [22:0] dv( input [7:0] v );
+    case( v )
+        8'h00: dv = 23'd4194304;  8'h01: dv = 23'd3847334;  8'h02: dv = 23'd3529067;  8'h03: dv = 23'd3237128;
+        8'h04: dv = 23'd2969340;  8'h05: dv = 23'd2723704;  8'h06: dv = 23'd2498388;  8'h07: dv = 23'd2291711;
+        8'h08: dv = 23'd2102132;  8'h09: dv = 23'd1928235;  8'h0a: dv = 23'd1768723;  8'h0b: dv = 23'd1622407;
+        8'h0c: dv = 23'd1488195;  8'h0d: dv = 23'd1365086;  8'h0e: dv = 23'd1252160;  8'h0f: dv = 23'd1148576;
+        8'h10: dv = 23'd1053562;  8'h11: dv = 23'd966407;  8'h12: dv = 23'd886462;  8'h13: dv = 23'd813130;
+        8'h14: dv = 23'd745864;  8'h15: dv = 23'd684164;  8'h16: dv = 23'd627567;  8'h17: dv = 23'd575652;
+        8'h18: dv = 23'd528032;  8'h19: dv = 23'd484351;  8'h1a: dv = 23'd444283;  8'h1b: dv = 23'd407530;
+        8'h1c: dv = 23'd373818;  8'h1d: dv = 23'd342894;  8'h1e: dv = 23'd314528;  8'h1f: dv = 23'd288509;
+        8'h20: dv = 23'd264643;  8'h21: dv = 23'd242750;  8'h22: dv = 23'd222669;  8'h23: dv = 23'd204249;
+        8'h24: dv = 23'd187353;  8'h25: dv = 23'd171854;  8'h26: dv = 23'd157638;  8'h27: dv = 23'd144597;
+        8'h28: dv = 23'd132636;  8'h29: dv = 23'd121663;  8'h2a: dv = 23'd111599;  8'h2b: dv = 23'd102367;
+        8'h2c: dv = 23'd93899;  8'h2d: dv = 23'd86131;  8'h2e: dv = 23'd79006;  8'h2f: dv = 23'd72470;
+        8'h30: dv = 23'd66475;  8'h31: dv = 23'd60976;  8'h32: dv = 23'd55932;  8'h33: dv = 23'd51305;
+        8'h34: dv = 23'd47061;  8'h35: dv = 23'd43168;  8'h36: dv = 23'd39597;  8'h37: dv = 23'd36321;
+        8'h38: dv = 23'd33317;  8'h39: dv = 23'd30560;  8'h3a: dv = 23'd28032;  8'h3b: dv = 23'd25713;
+        8'h3c: dv = 23'd23586;  8'h3d: dv = 23'd21635;  8'h3e: dv = 23'd19845;  8'h3f: dv = 23'd18204;
+        8'h40: dv = 23'd16698;  8'h41: dv = 23'd15317;  8'h42: dv = 23'd14049;  8'h43: dv = 23'd12887;
+        8'h44: dv = 23'd11821;  8'h45: dv = 23'd10843;  8'h46: dv = 23'd9946;  8'h47: dv = 23'd9123;
+        8'h48: dv = 23'd8369;  8'h49: dv = 23'd7676;  8'h4a: dv = 23'd7041;  8'h4b: dv = 23'd6459;
+        8'h4c: dv = 23'd5925;  8'h4d: dv = 23'd5435;  8'h4e: dv = 23'd4985;  8'h4f: dv = 23'd4573;
+        8'h50: dv = 23'd4194;  8'h51: dv = 23'd3847;  8'h52: dv = 23'd3529;  8'h53: dv = 23'd3237;
+        8'h54: dv = 23'd2969;  8'h55: dv = 23'd2724;  8'h56: dv = 23'd2498;  8'h57: dv = 23'd2292;
+        8'h58: dv = 23'd2102;  8'h59: dv = 23'd1928;  8'h5a: dv = 23'd1769;  8'h5b: dv = 23'd1622;
+        8'h5c: dv = 23'd1488;  8'h5d: dv = 23'd1365;  8'h5e: dv = 23'd1252;  8'h5f: dv = 23'd1149;
+        8'h60: dv = 23'd1054;  8'h61: dv = 23'd966;  8'h62: dv = 23'd886;  8'h63: dv = 23'd813;
+        8'h64: dv = 23'd746;  8'h65: dv = 23'd684;  8'h66: dv = 23'd628;  8'h67: dv = 23'd576;
+        8'h68: dv = 23'd528;  8'h69: dv = 23'd484;  8'h6a: dv = 23'd444;  8'h6b: dv = 23'd408;
+        8'h6c: dv = 23'd374;  8'h6d: dv = 23'd343;  8'h6e: dv = 23'd315;  8'h6f: dv = 23'd289;
+        8'h70: dv = 23'd265;  8'h71: dv = 23'd243;  8'h72: dv = 23'd223;  8'h73: dv = 23'd204;
+        8'h74: dv = 23'd187;  8'h75: dv = 23'd172;  8'h76: dv = 23'd158;  8'h77: dv = 23'd145;
+        8'h78: dv = 23'd133;  8'h79: dv = 23'd122;  8'h7a: dv = 23'd112;  8'h7b: dv = 23'd102;
+        8'h7c: dv = 23'd94;  8'h7d: dv = 23'd86;  8'h7e: dv = 23'd79;  8'h7f: dv = 23'd72;
+        8'h80: dv = 23'd66;  8'h81: dv = 23'd61;  8'h82: dv = 23'd56;  8'h83: dv = 23'd51;
+        8'h84: dv = 23'd47;  8'h85: dv = 23'd43;  8'h86: dv = 23'd40;  8'h87: dv = 23'd36;
+        8'h88: dv = 23'd33;  8'h89: dv = 23'd31;  8'h8a: dv = 23'd28;  8'h8b: dv = 23'd26;
+        8'h8c: dv = 23'd24;  8'h8d: dv = 23'd22;  8'h8e: dv = 23'd20;  8'h8f: dv = 23'd18;
+        8'h90: dv = 23'd17;  8'h91: dv = 23'd15;  8'h92: dv = 23'd14;  8'h93: dv = 23'd13;
+        8'h94: dv = 23'd12;  8'h95: dv = 23'd11;  8'h96: dv = 23'd10;  8'h97: dv = 23'd9;
+        8'h98: dv = 23'd8;  8'h99: dv = 23'd8;  8'h9a: dv = 23'd7;  8'h9b: dv = 23'd6;
+        8'h9c: dv = 23'd6;  8'h9d: dv = 23'd5;  8'h9e: dv = 23'd5;  8'h9f: dv = 23'd5;
+        8'ha0: dv = 23'd4;  8'ha1: dv = 23'd4;  8'ha2: dv = 23'd4;  8'ha3: dv = 23'd3;
+        8'ha4: dv = 23'd3;  8'ha5: dv = 23'd3;  8'ha6: dv = 23'd2;  8'ha7: dv = 23'd2;
+        8'ha8: dv = 23'd2;  8'ha9: dv = 23'd2;  8'haa: dv = 23'd2;  8'hab: dv = 23'd2;
+        8'hac: dv = 23'd1;  8'had: dv = 23'd1;  8'hae: dv = 23'd1;  8'haf: dv = 23'd1;
+        8'hb0: dv = 23'd1;  8'hb1: dv = 23'd1;  8'hb2: dv = 23'd1;  8'hb3: dv = 23'd1;
+        8'hb4: dv = 23'd1;  8'hb5: dv = 23'd1;  8'hb6: dv = 23'd1;  8'hb7: dv = 23'd1;
+        8'hb8: dv = 23'd1;  8'hb9: dv = 23'd0;  8'hba: dv = 23'd0;  8'hbb: dv = 23'd0;
+        8'hbc: dv = 23'd0;  8'hbd: dv = 23'd0;  8'hbe: dv = 23'd0;  8'hbf: dv = 23'd0;
+        8'hc0: dv = 23'd0;  8'hc1: dv = 23'd0;  8'hc2: dv = 23'd0;  8'hc3: dv = 23'd0;
+        8'hc4: dv = 23'd0;  8'hc5: dv = 23'd0;  8'hc6: dv = 23'd0;  8'hc7: dv = 23'd0;
+        8'hc8: dv = 23'd0;  8'hc9: dv = 23'd0;  8'hca: dv = 23'd0;  8'hcb: dv = 23'd0;
+        8'hcc: dv = 23'd0;  8'hcd: dv = 23'd0;  8'hce: dv = 23'd0;  8'hcf: dv = 23'd0;
+        8'hd0: dv = 23'd0;  8'hd1: dv = 23'd0;  8'hd2: dv = 23'd0;  8'hd3: dv = 23'd0;
+        8'hd4: dv = 23'd0;  8'hd5: dv = 23'd0;  8'hd6: dv = 23'd0;  8'hd7: dv = 23'd0;
+        8'hd8: dv = 23'd0;  8'hd9: dv = 23'd0;  8'hda: dv = 23'd0;  8'hdb: dv = 23'd0;
+        8'hdc: dv = 23'd0;  8'hdd: dv = 23'd0;  8'hde: dv = 23'd0;  8'hdf: dv = 23'd0;
+        8'he0: dv = 23'd0;  8'he1: dv = 23'd0;  8'he2: dv = 23'd0;  8'he3: dv = 23'd0;
+        8'he4: dv = 23'd0;  8'he5: dv = 23'd0;  8'he6: dv = 23'd0;  8'he7: dv = 23'd0;
+        8'he8: dv = 23'd0;  8'he9: dv = 23'd0;  8'hea: dv = 23'd0;  8'heb: dv = 23'd0;
+        8'hec: dv = 23'd0;  8'hed: dv = 23'd0;  8'hee: dv = 23'd0;  8'hef: dv = 23'd0;
+        8'hf0: dv = 23'd0;  8'hf1: dv = 23'd0;  8'hf2: dv = 23'd0;  8'hf3: dv = 23'd0;
+        8'hf4: dv = 23'd0;  8'hf5: dv = 23'd0;  8'hf6: dv = 23'd0;  8'hf7: dv = 23'd0;
+        8'hf8: dv = 23'd0;  8'hf9: dv = 23'd0;  8'hfa: dv = 23'd0;  8'hfb: dv = 23'd0;
+        8'hfc: dv = 23'd0;  default: dv = 23'd0;
+    endcase
+endfunction
+
+// The pan curve, from the chip's ROM (SiliconRE), Q16: one side's level for
+// the pan register's low nibble n; the other side's is pc(16 - n), 0 for n < 2.
+// MAME's sqrt(i/14) falls off less on the far side.
+function [16:0] pc( input [3:0] n );
+    case( n )
+        4'd0: pc = 17'd0;  4'd1: pc = 17'd65536;  4'd2: pc = 17'd63426;  4'd3: pc = 17'd61148;
+        4'd4: pc = 17'd58672;  4'd5: pc = 17'd55958;  4'd6: pc = 17'd52960;  4'd7: pc = 17'd49608;
+        4'd8: pc = 17'd45807;  4'd9: pc = 17'd44797;  4'd10: pc = 17'd36229;  4'd11: pc = 17'd29879;
+        4'd12: pc = 17'd21691;  4'd13: pc = 17'd10150;  4'd14: pc = 17'd9576;  4'd15: pc = 17'd0;
     endcase
 endfunction
 
@@ -310,13 +388,20 @@ wire [15:0] f_pf   = w_typ == 2'd2 ? { w_pf[16] | w_pos[0], w_pf[15:1] } : w_pf[
 wire [23:0] c_delta = delta[ch];
 wire [26:0] c_step  = ctype[ch][5] ? 27'd0 - { 3'd0, c_delta } : { 3'd0, c_delta };
 
-// the pan register to a pantab index, as MAME (DJ Main's 0x81-0x8f too)
-function [3:0] pan_i( input [7:0] p );
-    if( p >= 8'h81 && p <= 8'h8f )      pan_i = 4'(p - 8'h81);
-    else if( p >= 8'h11 && p <= 8'h1f ) pan_i = 4'(p - 8'h11);
-    else                                pan_i = 4'd7;
+// the pan register's nibble for pc: 0x11-0x1f and 0x81-0x8f as written, any
+// other value the centre, as MAME
+function [3:0] pan_n( input [7:0] p );
+    if( (p[7:4] == 4'h1 || p[7:4] == 4'h8) && p[3:0] != 4'h0 ) pan_n = p[3:0];
+    else                                                       pan_n = 4'd8;
 endfunction
-wire [3:0] c_pan = pan_i( pan[ch] );
+wire [3:0] c_pan = pan_n( pan[ch] );
+wire [3:0] c_pfar = 4'd0 - c_pan;                      // 16 - n
+
+// the dry level's index: 0x03 bits 6-0 plus the group volume 0x228-0x22b
+// that 0x200 + 2n bits 1-0 select, inverted (0 picks 0x22b); either at 0x7f
+// is silent
+wire [6:0] c_gv  = gvol[~ctype[ch][1:0]];
+wire [7:0] c_dv  = (vol[ch][6:0] == 7'h7f || c_gv == 7'h7f) ? 8'hff : { 1'b0, vol[ch][6:0] } + { 1'b0, c_gv };
 
 typedef enum logic [3:0] { E_IDLE, E_RV0, E_RV1, E_CH, E_VOL, E_STEP, E_F0, E_F1, E_CHK, E_MIX, E_RVM,
                            E_OUT, E_RW0, E_RW1, E_ADV } est_t;
@@ -401,7 +486,7 @@ always @(posedge clk) begin
             end
             w_typ <= ctype[ch][3:2]; w_rev <= ctype[ch][5]; w_lp <= lflag[ch]; w_loop <= lpos[ch];
             g_t <= vgt[ch]; g_d <= vgd[ch]; g_v <= vgv[ch];
-            vt_q <= vt( vol[ch] ); pl_q <= pt( c_pan ); pr_q <= pt( 4'd14 - c_pan );
+            vt_q <= dv( c_dv ); pl_q <= c_pan < 4'd2 ? 17'd0 : pc( c_pfar ); pr_q <= pc( c_pan );
             rb_q <= vt( c_bval[8] ? 8'hff : c_bval[7:0] ); rdl_q <= rdl[ch];
             es <= E_VOL;
         end
@@ -529,6 +614,7 @@ always @(posedge clk) begin
                     end
                     11'h215: if( regupd ) act_n = act_n & ~din;
                     11'h22c: act_n = din;
+                    11'h228, 11'h229, 11'h22a, 11'h22b: gvol[addr[1:0]] <= din[6:0];
                     11'h227: begin tstep <= 9'd38 + { 1'b0, din }; tacc <= 24'd0;
                                    t_run <= 1'b1; timer_out <= 1'b0; end
                     11'h22f: begin r22f <= din; if( !din[5] ) timer_out <= 1'b0; end
@@ -576,6 +662,8 @@ always @(posedge clk) begin
     // one write port: the CPU's, or the engine's
     if( ss_sel && ss_we && ss_addr < 12'h500 ) regs[ss_addr[10:0]] <= ss_wd[7:0];
     else if( rf_we ) regs[rf_a] <= rf_d;
+    // the group volumes are restored from the register file's copy
+    if( ss_sel && ss_we && ss_addr[11:2] == 10'h08a ) gvol[ss_addr[1:0]] <= ss_wd[6:0];
     if( ss_sh ) begin
         for( i=0; i<8; i=i+1 ) begin
             { delta[i], vol[i], pan[i], rvl[i], rdl[i], lpos[i], cpos[i], hpos[i], ctype[i] } <= ss_n[144*i +: 144];

@@ -69,11 +69,12 @@ against the games' own code and captures. Nothing here has been changed in the c
 
 IRQ 4 on completion (gated by 0xD56001 bit 4) matches all three.
 
-**Patches.** The only program patches are tkmmpzdm's two (`scripts/build_mra.py` PATCHES,
-MAME `init_konamigx`): 0x21CBA9 `11 -> 1F`, the K055555 input-enable byte in a fade-in, and
-0x2043C7 `01 -> 00`, the checksum that rebalances it. They are not ESC workarounds and the
-manual gives no reason to drop them. Remove both or neither; the test is tkmmpzdm's boot on the
-core without them (do planes B-D return after the copyright screen?).
+**Patches.** None. MAME's two tkmmpzdm patches (`init_konamigx`: 0x21CBA9 `11 -> 1F`, the
+K055555 input-enable byte in a fade-in, and 0x2043C7 `01 -> 00`, the checksum that rebalances
+it) are not carried. The cause is the trigger bit at 0xD5E002 bit 10: it idles high on every game,
+as on le2 with the gun not pulled (`gx_main.sv`), and with it high the game keeps the 0x1F its
+attract mode writes. Checked in MAME with the patch taken out: bit low, the intro shows only the
+sprites; bit high, the copyright screen and planes B-D are back (PR #12, niknakniknak).
 
 **Changes proposed, in order, none made:**
 1. daiskiss `esc_count` 0x100 -> 0x80 (`gx_board_cfg.sv`): identical output on the captures,

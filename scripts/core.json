@@ -1,0 +1,8 @@
+{
+  "mra_folder": "_Konami System GX",
+  "held_back_sets": [],
+  "required_instances": ["hps_io"],
+  "required_macros": {"MISTER_FB": "HDMI rotation and flip: without it emu has no FB_* ports and screen_rotate binds to implicit wires"},
+  "stage_copies": [],
+  "probe_default_instance": "F"
+}
