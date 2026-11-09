@@ -247,14 +247,8 @@ TILE_BYTES = {"tokkae": 6, "tkmmpzdm": 6, "le2": 8, "winspike": 8, "winspikea": 
               "rungun2": 8, "slamdnk2": 8, "rushhero": 8, "racinfrc": 6, "racinfrcu": 6,
               **{k: 8 for k in ['vsnetscr', 'vsnetscreb', 'vsnetscru', 'vsnetscra', 'vsnetscrj']}}
 
-# Program patches MAME applies at start-up, carried as .mra <patch>es:
-# (CPU address, old byte, new byte). tkmmpzdm (init_konamigx, special 2):
-# rom[0x810f1] &= ~1 and rom[0x872ea] |= 0xe0000 on the big-endian program --
-# or.b #$1,d0 becomes #$0 (the checksum, rebalanced) and move.b #$11,($5a,a2)
-# becomes #$1f, re-enabling planes B-D after the copyright screen, which MAME
-# says it could not otherwise explain. Applied at the user's request until the
-# cause is found.
-PATCHES = {"tkmmpzdm": [(0x2043c7, 0x01, 0x00), (0x21cba9, 0x11, 0x1f)]}
+# Program patches carried as .mra <patch>es: (CPU address, old byte, new byte)
+PATCHES = {}
 
 # K055673 layout per set (render_model.OBJ_LAYOUT): GX unless listed. RNG and
 # LE2 regions go into SDRAM as they are, with obj_size4 half the region.
