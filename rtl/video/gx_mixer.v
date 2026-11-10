@@ -174,7 +174,7 @@ reg  [ 1:0] pri1_r;             // layers A, B: this pixel takes PRI 1 (COLPRI)
 // K055555 COLPRI: layers A and B have two priorities, PRI 0 (PRIINP_0, _3) and
 // PRI 1 (PRIINP_1, _4). Where COLCHG ON has the layer's bit (bit 0 A, bit 1 B),
 // a pixel whose pen, the bits COLSEL gives the layer's colour depth, is above
-// its COLPRI (PRIINP_2, _5) takes PRI 1. Salamander 2's stage 3 (COLCHG ON 3):
+    // its COLPRI (PRIINP_2, _5) takes PRI 1. Salamander 2's stage 3 (COLCHG ON 1):
 // layer A's band, pens 0x09-0x17, stays at PRI 0 0x30 behind the ship and the
 // bulbs, pens 0x2a-0x3f, go to PRI 1 0x10 in front of it (COLPRI 0x1f); the
 // purple section turns COLCHG ON off and layer B stays at PRI 0. Settled on
