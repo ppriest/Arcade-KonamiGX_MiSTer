@@ -169,8 +169,23 @@ reg  [12:0] spr_pen_r;
 reg  [ 7:0] spr_pri_r, spr_z_r, spr_idx_r, shd_pri_r, shd_z_r, shd_idx_r;
 reg  [ 1:0] spr_mix_r;
 reg  [ 1:0] shd_code_r;
+reg  [ 1:0] pri1_r;             // layers A, B: this pixel takes PRI 1 (COLPRI)
+
+// K055555 COLPRI: layers A and B have two priorities, PRI 0 (PRIINP_0, _3) and
+// PRI 1 (PRIINP_1, _4). Where COLCHG ON has the layer's bit (bit 0 A, bit 1 B),
+// a pixel whose pen, the bits COLSEL gives the layer's colour depth, is above
+    // its COLPRI (PRIINP_2, _5) takes PRI 1. Salamander 2's stage 3 (COLCHG ON 1):
+// layer A's band, pens 0x09-0x17, stays at PRI 0 0x30 behind the ship and the
+// bulbs, pens 0x2a-0x3f, go to PRI 1 0x10 in front of it (COLPRI 0x1f); the
+// purple section turns COLCHG ON off and layer B stays at PRI 0. Settled on
+// the board against footage of the game.
+function colpri_hit( input [13:0] l, input [2:0] sel, input [7:0] colpri, input on );
+    colpri_hit = on && ( l[7:0] & ~(8'hff << ( 4'd4 + { 1'b0, sel } )) ) > colpri;
+endfunction
 
 always @(posedge clk) if( pxl_cen ) begin
+    pri1_r[0] <= colpri_hit( lyr_a, k55[2][2:0], k55[9],  k55[6][0] );
+    pri1_r[1] <= colpri_hit( lyr_b, k55[2][6:4], k55[12], k55[6][1] );
     bx_r <= bx; by_r <= by;
     lyr[0] <= lyr_a; lyr[1] <= lyr_b; lyr[2] <= lyr_c; lyr[3] <= lyr_d; sub2_r <= sub2;
     t1_valid_r <= t1_valid; t1_pen_r <= t1_pen; t1_pri_r <= t1_pri;
@@ -210,17 +225,20 @@ integer       i;
 // the le2 adder in front of the sort was the critical path (build 54)
 reg  [   7:0] lpri [0:3];
 reg  [   7:0] lpri5;
+reg  [   7:0] lpri1 [0:1];        // layers A, B: PRI 1
 always @(posedge clk) begin
     lpri5   <= t4 ? k55[16] : k55[17];          // SUB1's PRIINP_9 on Type 4, SUB2's PRIINP_10
     lpri[0] <= k55[7];
     lpri[1] <= k55[10];
+    lpri1[0] <= k55[8];
+    lpri1[1] <= k55[11];
     lpri[2] <= pri_c_le2 ? k55[10] + 8'h20 : k55[13];
     lpri[3] <= k55[14];
 end
 
 always @* begin
     for( i=0; i<4; i=i+1 ) begin
-        key[i]   = { lpri[i], 1'b0, 8'd0, 6'd0, i[1:0], 1'b0 };
+        key[i]   = { i < 2 && pri1_r[i[0]] ? lpri1[i[0]] : lpri[i], 1'b0, 8'd0, 6'd0, i[1:0], 1'b0 };
         cand[i]  = disp[i] && lyr[i][7:0] != 8'd0;
         // decode_vmixcolor: pal = colour[3:0] | (colour[5:4] & von) << 4 | PALBASE << 6,
         // pen = pal * 16 + pixel (K056832 colour granularity 16)
@@ -317,7 +335,7 @@ wire [2:0] top_src   = t_unseen ? s : t;
 reg  [7:0] top_pri;
 always @* begin
     case( top_src )
-        3'd0, 3'd1, 3'd2, 3'd3: top_pri = k55[40][top_src[1:0]] ? lpri[top_src[1:0]] : 8'hff;
+        3'd0, 3'd1, 3'd2, 3'd3: top_pri = k55[40][top_src[1:0]] ? key[top_src][KW-1 -: 8] : 8'hff;   // PRI 0 or 1 (COLPRI)
         3'd4:                   top_pri = spr_pri_r;
         3'd5:                   top_pri = type1 ? key[5][KW-1 -: 8] : lpri5;
         default:                top_pri = 8'hff;

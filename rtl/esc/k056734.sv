@@ -508,7 +508,10 @@ always @(posedge clk) begin
             6'b10_01_11: put(fa, lm_q & msk);                                        // ld(l)
             6'b11_01_11: begin lm_d <= (lm_q & mskn) | (va & msk); lm_we <= 1; end    // st(l)
             6'b00_01_00: begin r33 = { 1'b0, va & msk } + { 1'b0, lm_q & msk }; setadd(va, lm_q, r33); put(fa, (va & mskn) | (r33[31:0] & msk)); end
-            6'b00_01_01: begin r32 = va - lm_q; setsub(va, lm_q, r32); end
+            // sub(l) writes rA as add(l)/and(l)/xor(l) do. Salamander 2's program needs it: each sprite class starts
+            // its z codes below the previous class's, so with flags only every class started at 0xff and the brains,
+            // CONTINUE and the pods shared z codes. The kernel's uses only test the flags or use r0
+            6'b00_01_01: begin r32 = va - lm_q; setsub(va, lm_q, r32); put(fa, (va & mskn) | (r32 & msk)); end
             6'b00_01_10: begin r32 = va & lm_q; setzn(r32); put(fa, (va & mskn) | (r32 & msk)); end
             6'b00_01_11: begin r32 = va ^ lm_q; setzn(r32); put(fa, (va & mskn) | (r32 & msk)); end
             6'b10_01_01: begin r32 = va | lm_q; setzn(r32); put(fa, (va & mskn) | (r32 & msk)); end
