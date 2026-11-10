@@ -35,7 +35,7 @@ DE10-nano.
 * **Arcade-KonamiGX_20261110**
   * Fix: ESC and video rendering for Salamander 2 finally closing ([#9](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/9))
   * Fix: Remove rom patch from Tokimeki
-  * Fix: Suggestion to review 054539 soundchip emulation versus Furrtek notes. Should be improved audio and close ([#4](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/4)
+  * Fix: Suggestion to review 054539 soundchip emulation versus Furrtek notes. Should be improved audio and close ([#4](https://github.com/ppriest/Arcade-KonamiGX_MiSTer/issues/4))
   * All thanks to @niknakniknak
 
 * **Arcade-KonamiGXT34_20261030**
