@@ -1130,7 +1130,7 @@ always @(posedge clk) begin
                 usrc <= R_IO;
             end else if( ub >= 24'hd5e000 && ub < 24'hd5e004 ) begin
                 // le2's port: bits 15-8 unknown active low, P2's trigger at bit 10
-                io_q <= ub[1] ? (guns ? { 5'b11111, ~gun_trig2, 2'b11, 8'h00 } : 16'h0000)
+                io_q <= ub[1] ? { 5'b11111, ~(guns & gun_trig2), 2'b11, 8'h00 }
                               : { service, 8'h00 };
                 usrc <= R_IO;
             end else if( ub >= 24'hd80000 && ub < 24'hd80020 ) begin
