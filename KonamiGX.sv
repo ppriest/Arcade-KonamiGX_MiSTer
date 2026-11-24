@@ -522,19 +522,35 @@ endfunction
 wire [31:0] inputs  = !t1g ? { 4'hf, ~joystick_0[5], ~gear, 6'h3f, 20'hfffff } :
                       mod_byte == 8'd39 ? { ggreats2_p(joystick_0), ggreats2_p(joystick_1), 16'hffff } :
                       { player(joystick_0), player(joystick_1), player(joystick_2), player(joystick_3) };
-// the steering (AN0, 0x38-0xc8, centre 0x80, reversed: right is lower) from
-// the left stick's x, or the d-pad at full lock; the gas pedal (AN1, 0xff
-// up, 0x90 down) from button 1, or the stick pushed up
+// racinfrc: the steering (AN0, 0x38-0xc8, centre 0x80, reversed: right is
+// lower) from the left stick's x, or the d-pad at full lock; the gas pedal
+// (AN1, 0xff up, 0x90 down) from button 1, or the stick pushed up.
+// ggreats2: AN0 and AN1 are P1's and P2's swing pedals (0xff up, 0x00 down),
+// each from that player's stick pushed up, or button 4 at full. opengolf
+// reads neither (MAME: unused, 0xff).
 wire signed [7:0] st_x = stick_0[7:0];
 wire signed [7:0] st_y = stick_0[15:8];
 wire [15:0] st_m = 16'($signed(st_x) * 9'sd72);           // x * 0x48 / 128
 wire [15:0] gs_m = 16'(9'(-st_y) * 9'd111);               // up * 0x6f / 128
+function [7:0] swing( input signed [7:0] y, input full );
+	reg [16:0] m;
+	m = 17'((9'sd0 - 9'(y)) * 9'd255);                     // up * 0xff / 128
+	swing = full ? 8'h00 : y < 0 ? 8'hff - m[14:7] : 8'hff;
+endfunction
 // registered here: the ADC takes them on clk_vid (-0.56 ns from the stick
 // through the product in one clock)
 reg   [7:0] an_steer = 8'h80, an_gas = 8'hff;
 always @(posedge clk_sys) begin
-	an_steer <= joystick_0[0] ? 8'h38 : joystick_0[1] ? 8'hc8 : 8'h80 - st_m[14:7];
-	an_gas   <= joystick_0[4] ? 8'h90 : st_y < 0 ? 8'hff - gs_m[14:7] : 8'hff;
+	if( mod_byte == 8'd39 ) begin
+		an_steer <= swing( stick_0[15:8], joystick_0[7] );
+		an_gas   <= swing( stick_1[15:8], joystick_1[7] );
+	end else if( t1g ) begin
+		an_steer <= 8'hff;
+		an_gas   <= 8'hff;
+	end else begin
+		an_steer <= joystick_0[0] ? 8'h38 : joystick_0[1] ? 8'hc8 : 8'h80 - st_m[14:7];
+		an_gas   <= joystick_0[4] ? 8'h90 : st_y < 0 ? 8'hff - gs_m[14:7] : 8'hff;
+	end
 end
 `else
 wire [31:0] inputs  = { player(joystick_0), player(joystick_1),
@@ -549,6 +565,12 @@ wire [31:0] inputs  = { player(joystick_0), player(joystick_1),
 // type3's port: coins 3 and 4 at bits 2-3, service 3 and 4 at 6-7, all
 // active low (MAME reads the byte 0xff idle on soccerss)
 wire  [7:0] coins   = ~{ joystick_3[13], joystick_2[13], svc_coin, joystick_3[11], joystick_2[11], joystick_1[11], joystick_0[11] };
+`elsif GX_T1
+// opengolf's port (MAME): coins 3 and 4 at bits 2-3 and service 3 and 4 at
+// 6-7, active low as type3's; ggreats2 and racinfrc as the rest
+wire  [7:0] coins   = t1g && mod_byte != 8'd39
+                    ? ~{ joystick_3[13], joystick_2[13], svc_coin, joystick_3[11], joystick_2[11], joystick_1[11], joystick_0[11] }
+                    : { 1'b0, ~{ 1'b0, svc_coin, 2'b00, joystick_1[11], joystick_0[11] } };
 `else
 wire  [7:0] coins   = { 1'b0, ~{ 1'b0, svc_coin, 2'b00, joystick_1[11], joystick_0[11] } };  // bit 0 coin 1, bit 1 coin 2, bits 4-5 service coins
 `endif

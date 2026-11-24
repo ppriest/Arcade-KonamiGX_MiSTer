@@ -147,7 +147,7 @@ Its own bitstream, `KonamiGXT1`, released as `Arcade-KonamiGXT1_<date>.rbf` (doc
 | Name | Year | SDRAM | Notes |
 |-|-|-|-|
 | Racin' Force | 1994 | 64 MB | Plays on the board; steering and gas through the ADC0834 |
-| Konami's Open Golf Championship / Golfing Greats 2 | 1994 | 64 MB | Plays on the board (`MACHINE_NOT_WORKING` in MAME) |
+| Konami's Open Golf Championship / Golfing Greats 2 | 1994 | 64 MB | Plays on the board (`MACHINE_NOT_WORKING` in MAME). Open Golf: four players, coins 3 and 4 on P3 and P4. Golfing Greats 2: each player's swing on their own left stick pushed up, or Swing (button 4) at full |
 
 The road and terrain are MAME's renderer (`type1_draw_terrain`, which MAME calls an
 approximation), drawn into a DDR3 frame store over the frame after the game sets it up and shown

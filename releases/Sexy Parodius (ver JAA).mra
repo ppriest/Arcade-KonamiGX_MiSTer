@@ -33,7 +33,7 @@
             <part name="533a17.25g" crc="9947af57" map="0021"/>
             <part name="533a13.28g" crc="58f1fc38" map="2100"/>
         </interleave>
-        <part name="533a11.30g" length="0x100000"/>  <!-- the chip reads this much -->
+        <part name="533a11.30g" crc="983105e1" length="0x100000"/>  <!-- the chip reads this much -->
         <!-- soundcpu: MAME's region as it is -->
         <part repeat="3145728">00</part>
         <interleave output="16">

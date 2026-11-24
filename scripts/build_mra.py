@@ -294,9 +294,9 @@ BUTTON_NAMES = {
     "le2j":      ["Trigger", "Reload"],  # Lethal Enforcers II: The Western (ver JAA)
     "racinfrc":  ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver EAC)
     "racinfrcu": ["Gas", "Brake", "Gear Shift"],  # Racin' Force (ver UAB)
-    "opengolf":  ["Advice", "Stance Left", "Stance Right"],  # Konami's Open Golf Championship (ver EAE)
-    "opengolf2": ["Advice", "Stance Left", "Stance Right"],  # Konami's Open Golf Championship (ver EAD)
-    "ggreats2":  ["Advice", "Stance Left", "Stance Right"],  # Golfing Greats 2 (ver JAC)
+    "opengolf":  ["Shoot"],  # Konami's Open Golf Championship (ver EAE)
+    "opengolf2": ["Shoot"],  # Konami's Open Golf Championship (ver EAD)
+    "ggreats2":  ["Advice", "Stance Left", "Stance Right", "Swing"],  # Golfing Greats 2 (ver JAC): Swing is the pedal at full
     **{k: ["Shoot/Slide", "Short Pass/Jump", "Cross"]
        for k in ["soccerss", "soccerssa", "soccerssj", "soccerssja", "soccerssu"]},
     **{k: ["Shoot/Block", "Pass/Steal", "Select Player"]
@@ -760,11 +760,13 @@ def build(set_name, mod, gl, games, blocks, check_only):
                         for (base, form, length), _ in groups_of(whole))
         emit_loads(st, zips, set_name, whole, truth, 0, lo["obj_base"], end_whole)
     for fname, off, length, full in sorted(clipped, key=lambda c: c[1]):
-        data = bri.read_file(zips, fname, full, set_name)[:length]
+        whole_file = bri.read_file(zips, fname, full, set_name)
+        data = whole_file[:length]
         if bytes(truth[off:off + length]) != data:
             raise SystemExit(f"{fname}: not verbatim in the region?")
         st.fill_to(lo["obj_base"] + off)
-        st.lines.append(f'        <part name="{fname}" '
+        # the crc is the whole file's, so the loader finds it in the zip by crc
+        st.lines.append(f'        <part name="{fname}" crc="{st.crc(whole_file)}" '
                         f'length="{length:#x}"/>  <!-- the chip reads this much -->')
         st.data += data
         st.pos += length
