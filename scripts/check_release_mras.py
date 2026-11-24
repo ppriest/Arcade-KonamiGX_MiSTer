@@ -24,7 +24,8 @@ published and are skipped):
   2. LAYOUT NEEDS A NEW CORE. If the part of an .mra that the core depends on
      changed against what is already pushed -- the <rom> structure (index,
      address, interleave, part offsets/lengths/repeats/maps/CRCs, inline bytes,
-     patches), the bits of a DIP that exists in both, or the number of button
+     patches; a crc added to a part that had none is not a change), the bits of
+     a DIP that exists in both, or the number of button
      slots -- the push
      must also add a new releases/*NAME_*.rbf. Names, comments, zip names,
      descriptions, DIP labels and defaults do not count.
@@ -116,12 +117,24 @@ def layout(root):
     return "\n".join(roms), buttons, (sw.get("base") if sw is not None else None), dips
 
 
+def crc_added_only(r0, r1):
+    """True if the only differences are crcs on parts that had none: the loader
+    finds the same file by its crc, and the core gets the same bytes."""
+    a, b = r0.split("\n"), r1.split("\n")
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if x != y and ("('crc'," in x or re.sub(r"\('crc', '[0-9a-f]+'\), ", "", y) != x):
+            return False
+    return True
+
+
 def layout_change(old, new):
     """Why the new .mra needs a different core than the old one, or None.
 
     A DIP added, removed or relabelled does not; the same DIP on different bits does."""
     (r0, b0, s0, d0), (r1, b1, s1, d1) = layout(old), layout(new)
-    if r0 != r1:
+    if r0 != r1 and not crc_added_only(r0, r1):
         return "the ROM layout changed"
     if b0 != b1:
         return "the number of button slots changed (Start/Coin move)"
